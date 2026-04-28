@@ -657,7 +657,7 @@ fn download_single(
                 .map_err(|e| format!("Open temp file error: {}", e))?
         };
 
-        let mut buf = [0u8; 8192];
+        let mut buf = [0u8; 65536];
 
         loop {
             if ctrl.cancel_flag.load(Ordering::Relaxed) {
