@@ -1,5 +1,6 @@
 use eframe::egui;
 use eframe::Storage;
+use notify_rust::Notification;
 use reqwest::blocking::Client;
 use rfd::FileDialog;
 use std::fs;
@@ -9,6 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
+use directories::UserDirs;
 
 // ---------------------------------------------------------------------------
 // Data structures and constants
@@ -60,6 +62,13 @@ impl DownloadControl {
     }
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
+struct SavedState {
+    selected_mirror: usize,
+    save_dir: String,
+    proxy: String,
+}
+
 struct GhMirrorGui {
     url: String,
     save_dir: PathBuf,
@@ -81,16 +90,36 @@ struct GhMirrorGui {
     speed_test_progress_rx: Option<mpsc::Receiver<(usize, Option<Duration>)>>,
     speed_test_results: Vec<Option<Duration>>,
     speed_test_completed: usize,   // how many mirrors have been tested
+    // Persisted state
+
+    download_complete_notified: bool,
 }
 
 impl GhMirrorGui {
-    fn new() -> Self {
+    fn new(storage: Option<&dyn Storage>) -> Self {
         let names: Vec<String> = MIRRORS.iter().map(|(name, _)| name.to_string()).collect();
         let urls: Vec<String> = MIRRORS.iter().map(|(_, url)| url.to_string()).collect();
 
+        // Load persisted state
+        let mut selected_mirror = 0usize;
+        let mut save_dir = UserDirs::new()
+            .and_then(|d| d.download_dir().map(|p| p.to_string_lossy().to_string()))
+            .unwrap_or_else(|| ".".to_string());
+        let mut proxy = String::new();
+        if let Some(storage) = storage {
+            if let Some(json) = storage.get_string("app_settings") {
+                if let Ok(state) = serde_json::from_str::<SavedState>(&json) {
+                    selected_mirror = state.selected_mirror;
+                    if !state.save_dir.is_empty() {
+                        save_dir = state.save_dir;
+                    }
+                    proxy = state.proxy;
+                }
+            }
+        }
+
         let (final_tx, final_rx) = mpsc::channel();
         let (progress_tx, progress_rx) = mpsc::channel();
-
         let test_urls = urls.clone();
         let handle = thread::spawn(move || {
             let best = run_speed_test(&test_urls, &progress_tx);
@@ -99,9 +128,9 @@ impl GhMirrorGui {
 
         Self {
             url: String::new(),
-            save_dir: PathBuf::from("."),
-            proxy: String::new(),
-            status: "Ready".to_string(),
+            save_dir: PathBuf::from(&save_dir),
+            proxy,
+            status: String::from("Ready"),
             progress: 0.0,
             speed_text: String::new(),
             elapsed_text: String::new(),
@@ -110,255 +139,62 @@ impl GhMirrorGui {
             progress_rx: None,
             mirrors: names,
             mirror_urls: urls,
-            selected_mirror: 0,
-            speed_test_status: "Testing mirrors...".to_string(),
+            selected_mirror,
+            speed_test_status: String::from("Testing mirrors..."),
             speed_test_thread: Some(handle),
             speed_test_rx: Some(final_rx),
             speed_test_progress_rx: Some(progress_rx),
             speed_test_results: vec![None; MIRRORS.len()],
             speed_test_completed: 0,
-        }
-    }
-}
-
-impl eframe::App for GhMirrorGui {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // --- Check speed test progress ---
-        if let Some(rx) = &self.speed_test_progress_rx {
-            while let Ok((i, maybe_dur)) = rx.try_recv() {
-                self.speed_test_results[i] = maybe_dur;
-                self.speed_test_completed += 1;
-                ctx.request_repaint();
-            }
-        }
-
-        // --- Check speed test final result ---
-        if let Some(rx) = &self.speed_test_rx {
-            if let Ok(best_idx) = rx.try_recv() {
-                self.selected_mirror = best_idx;
-                self.speed_test_status = format!("Selected: {} (fastest)", self.mirrors[best_idx]);
-                self.speed_test_rx = None;
-                self.speed_test_progress_rx = None;
-                self.speed_test_thread = None;
-                ctx.request_repaint();
-            }
-        }
-
-        // --- Pump download progress ---
-        if let Some(rx) = &self.progress_rx {
-            while let Ok((downloaded, total, speed, elapsed)) = rx.try_recv() {
-                if total > 0 {
-                    self.progress = downloaded as f32 / total as f32;
-                } else {
-                    // Unknown total: animate indeterminate bar
-                    self.progress = (self.progress + 0.02) % 1.0;
-                }
-                self.speed_text = format_speed(speed);
-                if speed > 0.0 {
-                    self.elapsed_text = format!("{:.0}s elapsed", elapsed);
-                } else {
-                    self.elapsed_text = String::new();
-                }
-                ctx.request_repaint();
-            }
-        }
-
-        // --- UI ---
-        egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("GitHub Mirror Downloader");
-
-            // Mirror selection row
-            ui.horizontal(|ui| {
-                ui.label("Mirror:");
-                let prev = self.selected_mirror;
-                egui::ComboBox::from_id_salt("mirror_select")
-                    .selected_text(&self.mirrors[self.selected_mirror])
-                    .show_ui(ui, |ui| {
-                        for (i, name) in self.mirrors.iter().enumerate() {
-                            ui.selectable_value(&mut self.selected_mirror, i, name);
-                        }
-                    });
-                if self.selected_mirror != prev {
-                    // User manually changed
-                    self.speed_test_status = format!("Manual: {}", self.mirrors[self.selected_mirror]);
-                }
-                if ui.button("Retest").clicked() {
-                    self.retest_mirrors();
-                }
-                ui.label(&self.speed_test_status);
-            });
-
-            // Show per-mirror latency testing progress and results
-            let results = &self.speed_test_results;
-            let total = self.mirrors.len();
-            // Always show this group if we are testing or have results, to provide visual feedback
-            if self.speed_test_progress_rx.is_some() || results.iter().any(|r| r.is_some()) {
-                ui.group(|ui| {
-                    ui.label("Latency (ms) -- lower is faster:");
-                    // Overall progress bar
-                    let done = self.speed_test_completed;
-                    let progress_ratio = if total > 0 { done as f32 / total as f32 } else { 0.0 };
-                    ui.add(egui::ProgressBar::new(progress_ratio).text(format!("{}/{}", done, total)));
-                    // Per-mirror status
-                    for (i, name) in self.mirrors.iter().enumerate() {
-                        let text = match results[i] {
-                            Some(d) => {
-                                if i == self.selected_mirror && self.speed_test_status.contains("fastest") {
-                                    format!("[FASTEST] {} -- {:.0} ms", name, d.as_secs_f64() * 1000.0)
-                                } else {
-                                    format!("   {} -- {:.0} ms", name, d.as_secs_f64() * 1000.0)
-                                }
-                            }
-                            None => {
-                                if self.speed_test_progress_rx.is_some() {
-                                    format!("... {} -- testing...", name)
-                                } else {
-                                    format!("   {} -- not tested", name)
-                                }
-                            }
-                        };
-                        ui.label(&text);
-                    }
-                });
-            }
-
-            // URL row with paste and clear
-            ui.horizontal(|ui| {
-                ui.label("URL:");
-                let url_response = ui.text_edit_singleline(&mut self.url);
-                if ui.button("Paste").on_hover_text("Paste from clipboard").clicked() {
-                    if let Ok(mut clipboard) = arboard::Clipboard::new() {
-                        if let Ok(text) = clipboard.get_text() {
-                            self.url = text.trim().to_string();
-                            url_response.request_focus();
-                        }
-                    }
-                }
-                if ui.button("Clear").on_hover_text("Clear URL").clicked() {
-                    self.url.clear();
-                }
-            });
-
-            // Save to
-            ui.horizontal(|ui| {
-                ui.label("Save to:");
-                ui.label(self.save_dir.display().to_string());
-                if ui.button("Browse...").clicked() {
-                    if let Some(dir) = FileDialog::new().pick_folder() {
-                        self.save_dir = dir;
-                    }
-                }
-            });
-
-            // Proxy
-            ui.horizontal(|ui| {
-                ui.label("Proxy (optional):");
-                ui.text_edit_singleline(&mut self.proxy);
-            });
-
-            ui.separator();
-
-            let can_download = !self.url.is_empty()
-                && self.download_thread.is_none()
-                && self.control.is_none()
-                && self.speed_test_rx.is_none(); // also block download while testing
-
-            ui.horizontal(|ui| {
-                if ui
-                    .add_enabled(can_download, egui::Button::new("Download"))
-                    .clicked()
-                {
-                    self.start_download();
-                }
-
-                if let Some(ctrl) = &self.control {
-                    if ctrl.pause_flag.load(Ordering::Relaxed) {
-                        if ui.button("Resume").clicked() {
-                            ctrl.resume();
-                        }
-                    } else {
-                        if ui.button("Pause").clicked() {
-                            ctrl.pause();
-                        }
-                    }
-                    if ui.button("Cancel").clicked() {
-                        ctrl.cancel();
-                    }
-                }
-            });
-
-            ui.separator();
-
-            if self.download_thread.is_some() || self.control.is_some() {
-                if self.progress_rx.is_some() {
-                    let bar = egui::ProgressBar::new(self.progress)
-                        .show_percentage()
-                        .animate(true);
-                    ui.add(bar);
-                } else {
-                    ui.add(egui::ProgressBar::new(self.progress).show_percentage());
-                }
-
-                if !self.speed_text.is_empty() {
-                    ui.label(&self.speed_text);
-                }
-                if !self.elapsed_text.is_empty() {
-                    ui.label(&self.elapsed_text);
-                }
-            }
-
-            ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
-                ui.label(&self.status);
-            });
-        });
+            download_complete_notified: false,        }
     }
 
-    fn save(&mut self, _storage: &mut dyn Storage) {}
-}
-
-impl GhMirrorGui {
     fn retest_mirrors(&mut self) {
+        if self.speed_test_thread.is_some() {
+            return;
+        }
         let (final_tx, final_rx) = mpsc::channel();
         let (progress_tx, progress_rx) = mpsc::channel();
         let test_urls = self.mirror_urls.clone();
-        self.speed_test_status = "Testing mirrors...".to_string();
-        self.speed_test_results = vec![None; self.mirrors.len()];
-        self.speed_test_completed = 0;
-        self.speed_test_thread = Some(thread::spawn(move || {
+        let handle = thread::spawn(move || {
             let best = run_speed_test(&test_urls, &progress_tx);
             let _ = final_tx.send(best);
-        }));
+        });
+        self.speed_test_status = String::from("Testing mirrors...");
+        self.speed_test_thread = Some(handle);
         self.speed_test_rx = Some(final_rx);
         self.speed_test_progress_rx = Some(progress_rx);
+        self.speed_test_results = vec![None; MIRRORS.len()];
+        self.speed_test_completed = 0;
     }
 
     fn start_download(&mut self) {
-        if self.url.is_empty() {
-            self.status = "Please enter a URL".to_string();
+        if self.url.trim().is_empty() {
+            self.status = String::from("Please enter a URL first");
+            return;
+        }
+        if self.download_thread.is_some() {
+            self.status = String::from("Download already in progress");
             return;
         }
 
-        let original_url = self.url.clone();
-        // Build effective URL using selected mirror
-        let effective_url = if self.selected_mirror > 0 && self.selected_mirror < self.mirror_urls.len() {
-            format!("{}{}", self.mirror_urls[self.selected_mirror], original_url)
-        } else {
-            original_url.clone()
+        let save_path = match self.choose_save_path() {
+            Some(p) => p,
+            None => return,
         };
 
-        let save_path = self
-            .save_dir
-            .join(original_url.rsplit('/').next().unwrap_or("download.bin"));
-        let proxy = self.proxy.clone();
+        self.download_complete_notified = false;
         let control = DownloadControl::new();
         let ctrl = control.clone();
+        let effective_url = build_effective_url(&self.mirror_urls[self.selected_mirror], &self.url);
+        let proxy = self.proxy.clone();
         let (progress_tx, progress_rx) = mpsc::channel();
         self.progress_rx = Some(progress_rx);
 
         self.progress = 0.0;
         self.speed_text.clear();
         self.elapsed_text.clear();
-        self.status = "Starting download...".to_string();
+        self.status = String::from("Starting download...");
 
         self.download_thread = Some(thread::spawn(move || {
             let client = match build_client(&proxy, 30) {
@@ -369,7 +205,6 @@ impl GhMirrorGui {
                 }
             };
 
-            // Fetch total size asynchronously in the thread - non-blocking to UI
             let total = head_info(&client, &effective_url).unwrap_or(0);
 
             match download_file(
@@ -391,13 +226,271 @@ impl GhMirrorGui {
 
         self.control = Some(control);
     }
+
+    fn choose_save_path(&mut self) -> Option<PathBuf> {
+        let default_name = extract_filename(&self.url).unwrap_or_else(|| String::from("download"));
+        let file = FileDialog::new()
+            .set_directory(&self.save_dir)
+            .set_file_name(&default_name)
+            .save_file();
+        if let Some(path) = file {
+            self.save_dir = path.parent().unwrap_or(&self.save_dir).to_path_buf();
+            Some(path)
+        } else {
+            None
+        }
+    }
+}
+
+impl eframe::App for GhMirrorGui {
+    fn save(&mut self, storage: &mut dyn Storage) {
+        let state = SavedState {
+            selected_mirror: self.selected_mirror,
+            save_dir: self.save_dir.to_string_lossy().to_string(),
+            proxy: self.proxy.clone(),
+        };
+        if let Ok(json) = serde_json::to_string(&state) {
+            storage.set_string("app_settings", json);
+        }
+    }
+
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Check for speed test completion
+        if let Some(rx) = &self.speed_test_rx {
+            if let Ok(best_idx) = rx.try_recv() {
+                self.selected_mirror = best_idx;
+                self.speed_test_status = if best_idx > 0 {
+                    let best_name = &self.mirrors[best_idx];
+                    let best_time = self.speed_test_results[best_idx]
+                        .map(|d| format!("{:.0}ms", d.as_secs_f64() * 1000.0))
+                        .unwrap_or_else(|| String::from("N/A"));
+                    format!("✅ Best: {} ({})", best_name, best_time)
+                } else {
+                    String::from("⚠ Direct is fastest (no mirror)")
+                };
+                self.speed_test_thread = None;
+                self.speed_test_rx = None;
+            }
+        }
+
+        // Process per-mirror progress
+        if let Some(rx) = &self.speed_test_progress_rx {
+            while let Ok((idx, duration_opt)) = rx.try_recv() {
+                self.speed_test_results[idx] = duration_opt;
+                self.speed_test_completed += 1;
+                if self.speed_test_completed >= self.mirrors.len() {
+                    self.speed_test_status = String::from("✅ All mirrors tested");
+                }
+            }
+        }
+
+        // Process download progress
+        let progress_rx = self.progress_rx.take();
+        if let Some(rx) = progress_rx {
+            while let Ok((downloaded, total, speed, elapsed)) = rx.try_recv() {
+                if total > 0 {
+                    self.progress = (downloaded as f32) / (total as f32);
+                }
+                if downloaded == 0 && total == 0 {
+                    // Error state
+                    self.status = String::from("❌ Download failed");
+                    self.download_thread = None;
+                    self.control = None;
+                } else if downloaded >= total && total > 0 {
+                    self.progress = 1.0;
+                    self.status = String::from("✅ Download complete!");
+                    self.speed_text.clear();
+                    self.elapsed_text.clear();
+                    self.download_thread = None;
+                    self.control = None;
+                    // Desktop notification
+                    if !self.download_complete_notified {
+                        self.download_complete_notified = true;
+                        let save_path_str = self.save_dir.to_string_lossy().to_string();
+                        thread::spawn(move || {
+                            let _ = Notification::new()
+                                .summary("gh_mirror_gui")
+                                .body(&format!("Download complete!\nSaved to: {}", save_path_str))
+                                .show();
+                        });
+                    }
+                } else {
+                    self.speed_text = format_speed(speed);
+                    let total_min = elapsed / 60.0;
+                    let total_sec = elapsed % 60.0;
+                    self.elapsed_text = format!("{:02.0}:{:04.1}", total_min, total_sec);
+                }
+            }
+        }
+
+        // Draw UI
+        egui::CentralPanel::default().show(ctx, |ui| {
+            // Drag-drop handling
+            if !ctx.input(|i| i.raw.dropped_files.is_empty()) {
+                let dropped = ctx.input(|i| i.raw.dropped_files.clone());
+                if let Some(file) = dropped.first() {
+                    if let Some(path_str) = &file.path {
+                        self.url = path_str.to_string_lossy().to_string();
+                    }
+                }
+            }
+
+            ui.heading("🚀 GitHub Mirror Downloader");
+            ui.separator();
+
+            // URL input
+            ui.horizontal(|ui| {
+                ui.label("URL:");
+                ui.text_edit_singleline(&mut self.url);
+                if ui.button("📋 Paste").clicked() {
+                    if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                        if let Ok(text) = clipboard.get_text() {
+                            self.url = text;
+                        }
+                    }
+                }
+                if ui.button("🗑 Clear").clicked() {
+                    self.url.clear();
+                }
+            });
+
+            // Mirror selector + speed test
+            ui.horizontal(|ui| {
+                ui.label("Mirror:");
+                egui::ComboBox::from_id_salt("mirror_select")
+                    .selected_text(&self.mirrors[self.selected_mirror])
+                    .show_ui(ui, |ui| {
+                        for (i, name) in self.mirrors.iter().enumerate() {
+                            if ui.selectable_label(false, name).clicked() {
+                                self.selected_mirror = i;
+                            }
+                        }
+                    });
+                if ui.button("🔄 Retest").clicked() {
+                    self.retest_mirrors();
+                }
+            });
+
+            // Speed test progress
+            if self.speed_test_thread.is_some() || self.speed_test_completed > 0 {
+                ui.separator();
+                if self.speed_test_thread.is_some() {
+                    ui.label("⏳ Testing mirrors...");
+                } else {
+                    ui.label(egui::RichText::new(&self.speed_test_status).strong());
+                }
+                // Show per-mirror results with color
+                let tested = self.speed_test_completed.min(self.mirrors.len());
+                if tested > 0 {
+                    let pct = (tested as f32) / (self.mirrors.len() as f32);
+                    ui.add(egui::ProgressBar::new(pct).text(format!("{}/{}", tested, self.mirrors.len())));
+                }
+                egui::ScrollArea::vertical()
+                    .max_height(120.0)
+                    .show(ui, |ui| {
+                        for (i, name) in self.mirrors.iter().enumerate() {
+                            match &self.speed_test_results[i] {
+                                Some(dur) => {
+                                    let ms = dur.as_secs_f64() * 1000.0;
+                                    let color = latency_color(ms);
+                                    let mark = if self.selected_mirror == i && self.speed_test_thread.is_none() {
+                                        "⭐"
+                                    } else {
+                                        "  "
+                                    };
+                                    ui.label(
+                                        egui::RichText::new(format!("{} {} {:.0} ms", mark, name, ms))
+                                            .color(color),
+                                    );
+                                }
+                                None => {
+                                    if i < self.speed_test_completed {
+                                        ui.label(format!("  {} ❌ timeout", name));
+                                    } else {
+                                        ui.label(format!("  {} ⏳", name));
+                                    }
+                                }
+                            }
+                        }
+                    });
+            }
+
+            ui.separator();
+
+            // Save directory
+            ui.horizontal(|ui| {
+                ui.label("Save to:");
+                ui.label(self.save_dir.to_string_lossy().to_string());
+                if ui.button("📁 Browse...").clicked() {
+                    if let Some(dir) = FileDialog::new().set_directory(&self.save_dir).pick_folder() {
+                        self.save_dir = dir;
+                    }
+                }
+            });
+
+            // Proxy
+            ui.horizontal(|ui| {
+                ui.label("Proxy:");
+                ui.text_edit_singleline(&mut self.proxy);
+                if ui.button("🗑 Clear").clicked() {
+                    self.proxy.clear();
+                }
+            });
+
+            // Action buttons
+            ui.horizontal(|ui| {
+                if ui.button("⬇ Download").clicked() {
+                    self.start_download();
+                }
+                if let Some(ctrl) = &self.control {
+                    if ctrl.pause_flag.load(Ordering::Relaxed) {
+                        if ui.button("▶ Resume").clicked() {
+                            ctrl.resume();
+                        }
+                    } else {
+                        if ui.button("⏸ Pause").clicked() {
+                            ctrl.pause();
+                        }
+                    }
+                    if ui.button("❌ Cancel").clicked() {
+                        ctrl.cancel();
+                        self.download_thread = None;
+                        self.control = None;
+                        self.status = String::from("Cancelled");
+                    }
+                }
+                // Open downloaded file folder
+                if self.status.contains("✅") {
+                    if ui.button("📂 Open Folder").clicked() {
+                        if self.save_dir.exists() {
+                            let _ = open::that(&self.save_dir);
+                        }
+                    }
+                }
+            });
+
+            // Progress bar and info — always visible during download
+            if self.download_thread.is_some() || self.progress > 0.0 || !self.speed_text.is_empty() {
+                let pct_text = format!("{:.1}%", self.progress * 100.0);
+                ui.add(egui::ProgressBar::new(self.progress).text(pct_text));
+                if !self.speed_text.is_empty() || !self.elapsed_text.is_empty() {
+                    ui.horizontal(|ui| {
+                        ui.label(&self.speed_text);
+                        ui.label(&self.elapsed_text);
+                    });
+                }
+            }
+
+            // Status label
+            ui.label(egui::RichText::new(&self.status).color(egui::Color32::from_rgb(0, 180, 0)));
+        });
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Utility functions
 // ---------------------------------------------------------------------------
 
-#[allow(dead_code)]
 fn extract_filename(url: &str) -> Option<String> {
     let parts: Vec<&str> = url.rsplitn(2, '/').collect();
     if parts.len() >= 2 && !parts[0].is_empty() {
@@ -406,13 +499,34 @@ fn extract_filename(url: &str) -> Option<String> {
     None
 }
 
+fn build_effective_url(mirror_url: &str, raw_url: &str) -> String {
+    if mirror_url.is_empty() {
+        raw_url.to_string()
+    } else {
+        format!("{}{}", mirror_url, raw_url)
+    }
+}
+
+fn latency_color(ms: f64) -> egui::Color32 {
+    if ms < 200.0 {
+        egui::Color32::from_rgb(0, 200, 0)       // green
+    } else if ms < 500.0 {
+        egui::Color32::from_rgb(255, 200, 0)      // yellow/orange
+    } else {
+        egui::Color32::from_rgb(255, 80, 80)      // red
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Network helpers
 // ---------------------------------------------------------------------------
 
 fn build_client(proxy: &str, timeout_secs: u64) -> Result<Client, String> {
     let mut builder = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(timeout_secs));
+        .tcp_nodelay(true)
+        .pool_max_idle_per_host(10)
+        .timeout(Duration::from_secs(timeout_secs))
+        .connect_timeout(Duration::from_secs(timeout_secs));
     if !proxy.is_empty() {
         builder = builder.proxy(reqwest::Proxy::all(proxy)
             .map_err(|e| format!("Invalid proxy URL: {}", e))?);
@@ -420,7 +534,6 @@ fn build_client(proxy: &str, timeout_secs: u64) -> Result<Client, String> {
     builder.build().map_err(|e| format!("Client build error: {}", e))
 }
 
-#[allow(dead_code)]
 fn head_info(client: &Client, url: &str) -> Result<u64, String> {
     let resp = client
         .head(url)
@@ -442,7 +555,6 @@ fn head_info(client: &Client, url: &str) -> Result<u64, String> {
         return Ok(length);
     }
 
-    // Fallback: GET request to obtain Content-Length
     let get_resp = client
         .get(url)
         .send()
@@ -477,14 +589,24 @@ fn download_file(
     url: &str,
     save_path: &str,
     total: u64,
-    ctrl: &DownloadControl,
+    ctrl: &Arc<DownloadControl>,
+    progress_tx: &mpsc::Sender<(u64, u64, f64, f64)>,
+) -> Result<(), String> {
+    download_single(client, url, save_path, total, ctrl, progress_tx)
+}
+
+fn download_single(
+    client: &Client,
+    url: &str,
+    save_path: &str,
+    total: u64,
+    ctrl: &Arc<DownloadControl>,
     progress_tx: &mpsc::Sender<(u64, u64, f64, f64)>,
 ) -> Result<(), String> {
     let tmp_path = format!("{}.part", save_path);
     let start_time = Instant::now();
     let mut downloaded: u64 = 0;
 
-    // Check for existing partial file
     if let Ok(meta) = fs::metadata(&tmp_path) {
         downloaded = meta.len();
         if total > 0 && downloaded >= total {
@@ -510,7 +632,6 @@ fn download_file(
 
         let status = resp.status();
         if status == 416 {
-            // Range not satisfiable
             fs::rename(&tmp_path, save_path)
                 .map_err(|e| format!("Failed to rename temp file: {}", e))?;
             return Ok(());
@@ -520,10 +641,6 @@ fn download_file(
                 return Err(format!("Server returned {}", status));
             }
             continue;
-        }
-
-        if total == 0 && downloaded == 0 {
-            // File created, we'll write from scratch
         }
 
         let mut file = if downloaded == 0 {
@@ -580,7 +697,6 @@ fn download_file(
         }
     }
 
-    // Rename tmp file to final
     fs::rename(&tmp_path, save_path)
         .map_err(|e| format!("Failed to rename temp file: {}", e))?;
     Ok(())
@@ -592,7 +708,7 @@ fn run_speed_test(mirror_urls: &[String], progress_tx: &mpsc::Sender<(usize, Opt
         .build()
     {
         Ok(c) => c,
-        Err(_) => return 0, // default to direct
+        Err(_) => return 0,
     };
 
     let test_target = "https://github.com";
@@ -608,37 +724,30 @@ fn run_speed_test(mirror_urls: &[String], progress_tx: &mpsc::Sender<(usize, Opt
 
         let start = Instant::now();
         let result = client.head(&test_url).send();
-        let elapsed_opt = match result {
-            Ok(resp) => {
-                let status = resp.status();
-                if status.is_success() || status.is_redirection() {
-                    let elapsed = start.elapsed();
-                    if elapsed < best_time {
-                        best_time = elapsed;
-                        best_idx = i;
-                    }
-                    Some(elapsed)
-                } else {
-                    None
-                }
+        let elapsed = start.elapsed();
+
+        if result.is_ok() {
+            let _ = progress_tx.send((i, Some(elapsed)));
+            if elapsed < best_time {
+                best_time = elapsed;
+                best_idx = i;
             }
-            Err(_) => None,
-        };
-        let _ = progress_tx.send((i, elapsed_opt));
+        } else {
+            let _ = progress_tx.send((i, None));
+        }
     }
 
     best_idx
-}
-
-fn main() -> eframe::Result<()> {
+}fn main() -> Result<(), eframe::Error> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([640.0, 480.0]),
+            .with_inner_size([640.0, 480.0])
+            .with_min_inner_size([400.0, 300.0]),
         ..Default::default()
     };
     eframe::run_native(
         "GitHub Mirror Downloader",
         options,
-        Box::new(|_cc| Ok(Box::new(GhMirrorGui::new()))),
+        Box::new(|cc| Ok(Box::new(GhMirrorGui::new(cc.storage)))),
     )
 }
