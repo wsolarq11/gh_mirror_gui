@@ -23,11 +23,6 @@ const SPEED_TEST_TIMEOUT_SECS: u64 = 5;
 /// Known mirror sites.  First entry must be "Direct (no mirror)"
 const MIRRORS: &[(&str, &str)] = &[
     ("Direct (no mirror)", ""),
-    ("ghproxy.com", "https://ghproxy.com/"),
-    ("mirror.ghproxy.com", "https://mirror.ghproxy.com/"),
-    ("gh.api.99988866.xyz", "https://gh.api.99988866.xyz/"),
-    ("gh-proxy.com", "https://gh-proxy.com/"),
-    ("gh.con.sh", "https://gh.con.sh/"),
 ];
 
 struct DownloadControl {
