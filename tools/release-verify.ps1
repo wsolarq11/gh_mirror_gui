@@ -319,6 +319,7 @@ $Receipt.provenance = [ordered]@{
         cargo_lock = Get-OptionalFileEvidence -RelativePath 'Cargo.lock'
         rust_toolchain = Get-OptionalFileEvidence -RelativePath 'rust-toolchain.toml'
         ci_workflow = Get-OptionalFileEvidence -RelativePath '.github\workflows\ci.yml'
+        release_workflow = Get-OptionalFileEvidence -RelativePath '.github\workflows\release.yml'
         release_verify_script = Get-OptionalFileEvidence -RelativePath 'tools\release-verify.ps1'
     }
 }

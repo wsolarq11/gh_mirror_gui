@@ -1,0 +1,169 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  windows-release:
+    name: Windows trusted release
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate release tag and package version
+        shell: pwsh
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          if ($tag -notmatch '^v\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$') {
+            throw "release tags must look like vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH-prerelease; got '$tag'"
+          }
+
+          $cargoVersionLine = Select-String -LiteralPath Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"' | Select-Object -First 1
+          if ($null -eq $cargoVersionLine) {
+            throw "Cargo.toml package version not found"
+          }
+          $cargoVersion = $cargoVersionLine.Matches[0].Groups[1].Value
+          $expectedVersion = $tag.Substring(1)
+          if ($cargoVersion -ne $expectedVersion) {
+            throw "tag/package version mismatch: tag '$tag' expects Cargo.toml version '$expectedVersion', got '$cargoVersion'"
+          }
+
+          "RELEASE_TAG=$tag" >> $env:GITHUB_ENV
+          "PACKAGE_VERSION=$cargoVersion" >> $env:GITHUB_ENV
+
+      - name: Install pinned Rust toolchain
+        shell: pwsh
+        run: |
+          rustup toolchain install
+          rustup show active-toolchain
+          rustc -vV
+          cargo -vV
+
+      - name: Cache Cargo registry and build output
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-release-cargo-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-release-cargo-
+            ${{ runner.os }}-cargo-
+
+      - name: Format check
+        run: cargo fmt --check
+
+      - name: Test all targets
+        run: cargo test --all-targets --locked
+
+      - name: Clippy all targets
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+      - name: Build release binary
+        run: cargo build --release --locked
+
+      - name: Stage release assets
+        shell: pwsh
+        run: |
+          $gitHead = git rev-parse HEAD
+          $gitDescribe = git describe --tags --always --dirty
+          $gitStatus = @(git status --short --branch)
+
+          $dist = "dist"
+          New-Item -ItemType Directory -Force -Path $dist | Out-Null
+
+          $exe = "target\release\gh_mirror_gui.exe"
+          if (!(Test-Path -LiteralPath $exe)) {
+            throw "release binary missing: $exe"
+          }
+
+          $assetExe = Join-Path $dist "gh_mirror_gui.exe"
+          Copy-Item -LiteralPath $exe -Destination $assetExe -Force
+          $exeHash = (Get-FileHash -LiteralPath $assetExe -Algorithm SHA256).Hash
+          "$exeHash  gh_mirror_gui.exe" | Set-Content -LiteralPath (Join-Path $dist "SHA256SUMS.txt") -Encoding ASCII
+
+          $provenance = [ordered]@{
+            schema_version = 1
+            release_tag = $env:RELEASE_TAG
+            package_version = $env:PACKAGE_VERSION
+            generated_at = (Get-Date).ToUniversalTime().ToString("o")
+            github = [ordered]@{
+              repository = $env:GITHUB_REPOSITORY
+              workflow = $env:GITHUB_WORKFLOW
+              run_id = $env:GITHUB_RUN_ID
+              run_attempt = $env:GITHUB_RUN_ATTEMPT
+              ref = $env:GITHUB_REF
+              ref_name = $env:GITHUB_REF_NAME
+              sha = $env:GITHUB_SHA
+            }
+            git = [ordered]@{
+              head = $gitHead
+              describe = $gitDescribe
+              status_short = $gitStatus
+            }
+            toolchain = [ordered]@{
+              rustc_vv = @(rustc -vV)
+              cargo_vv = @(cargo -vV)
+            }
+            files = [ordered]@{
+              cargo_lock_sha256 = (Get-FileHash -LiteralPath "Cargo.lock" -Algorithm SHA256).Hash
+              rust_toolchain_sha256 = (Get-FileHash -LiteralPath "rust-toolchain.toml" -Algorithm SHA256).Hash
+              release_workflow_sha256 = (Get-FileHash -LiteralPath ".github\workflows\release.yml" -Algorithm SHA256).Hash
+            }
+            artifacts = [ordered]@{
+              release_binary = [ordered]@{
+                path = "gh_mirror_gui.exe"
+                size = (Get-Item -LiteralPath $assetExe).Length
+                sha256 = $exeHash
+              }
+              sha256sums = [ordered]@{
+                path = "SHA256SUMS.txt"
+                size = (Get-Item -LiteralPath (Join-Path $dist "SHA256SUMS.txt")).Length
+                sha256 = (Get-FileHash -LiteralPath (Join-Path $dist "SHA256SUMS.txt") -Algorithm SHA256).Hash
+              }
+            }
+          }
+
+          $provenance | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $dist "release-provenance.json") -Encoding UTF8
+          Get-ChildItem -LiteralPath $dist | Format-Table Name,Length
+
+      - name: Upload release build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: gh_mirror_gui-${{ github.ref_name }}-windows-release
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Create GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh --version
+          gh release create $env:RELEASE_TAG `
+            dist\gh_mirror_gui.exe `
+            dist\SHA256SUMS.txt `
+            dist\release-provenance.json `
+            --repo $env:GITHUB_REPOSITORY `
+            --title $env:RELEASE_TAG `
+            --notes-file RELEASE_NOTES.md `
+            --verify-tag

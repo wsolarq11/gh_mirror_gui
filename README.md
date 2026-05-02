@@ -78,6 +78,22 @@ Evidence is written under `target\delivery\<run_id>\`.
 The receipt records build provenance including the git commit, Rust toolchain,
 `Cargo.lock` hash, release binary hash, and verification command logs.
 
+## Release automation
+
+Future trusted releases are created by pushing a version tag. The tag must match
+the package version in `Cargo.toml`:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\release-verify.ps1 -SkipBenchmarkMatrix
+git tag -a v0.1.1 -m "Release v0.1.1"
+git push origin main
+git push origin v0.1.1
+```
+
+The `Release` GitHub Actions workflow rebuilds the Windows release binary with
+the pinned Rust toolchain, reruns `fmt` / `test` / `clippy`, generates
+`SHA256SUMS.txt` and `release-provenance.json`, and creates the GitHub Release.
+
 ## License
 
 This project is licensed under the MIT License. See `LICENSE` for details.
