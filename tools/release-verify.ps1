@@ -243,6 +243,14 @@ $Receipt.artifacts.release_binary = [ordered]@{
     last_write_time = $exeItem.LastWriteTimeUtc.ToString('o')
     sha256 = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash
 }
+$sha256SumsPath = Join-Path $EvidenceDir 'SHA256SUMS.txt'
+"$($Receipt.artifacts.release_binary.sha256)  gh_mirror_gui.exe" |
+    Set-Content -LiteralPath $sha256SumsPath -Encoding ASCII
+$Receipt.artifacts.sha256sums = [ordered]@{
+    path = $sha256SumsPath
+    size = (Get-Item -LiteralPath $sha256SumsPath).Length
+    sha256 = (Get-FileHash -LiteralPath $sha256SumsPath -Algorithm SHA256).Hash
+}
 
 $originRelease = Invoke-GitHubLatestRelease -Repo 'wsolarq11/gh_mirror_gui'
 $targetRelease = Invoke-GitHubLatestRelease -Repo 'carrot-hu23/dst-admin-go'
@@ -375,4 +383,5 @@ $Receipt | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $receiptPath -Enc
     status = 'PASS'
     receipt = $receiptPath
     release_binary = $Receipt.artifacts.release_binary
+    sha256sums = $Receipt.artifacts.sha256sums
 } | ConvertTo-Json -Depth 10

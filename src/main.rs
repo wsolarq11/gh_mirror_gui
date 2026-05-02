@@ -54,6 +54,14 @@ struct DownloadControl {
     pause_condvar: Condvar,
 }
 
+#[derive(Clone)]
+struct CachedClient {
+    proxy: String,
+    timeout_secs: u64,
+    allow_invalid_certs: bool,
+    client: Client,
+}
+
 impl DownloadControl {
     fn new() -> Arc<Self> {
         Arc::new(Self {
@@ -84,6 +92,8 @@ struct SavedState {
     selected_mirror: usize,
     save_dir: String,
     proxy: String,
+    #[serde(default)]
+    allow_invalid_certs: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -123,6 +133,7 @@ struct BenchConfig {
     json: Option<PathBuf>,
     history: Option<PathBuf>,
     proxy: String,
+    allow_invalid_certs: bool,
     mode: BenchMode,
     segment_size: Option<u64>,
     concurrency: Option<usize>,
@@ -214,6 +225,7 @@ struct GhMirrorGui {
     url: String,
     save_dir: PathBuf,
     proxy: String,
+    allow_invalid_certs: bool,
     status: String,
     progress: f32,
     speed_text: String,
@@ -246,6 +258,7 @@ impl GhMirrorGui {
             .and_then(|d| d.download_dir().map(|p| p.to_string_lossy().to_string()))
             .unwrap_or_else(|| ".".to_string());
         let mut proxy = String::new();
+        let mut allow_invalid_certs = false;
         if let Some(storage) = storage {
             if let Some(json) = storage.get_string("app_settings") {
                 if let Ok(state) = serde_json::from_str::<SavedState>(&json) {
@@ -254,6 +267,7 @@ impl GhMirrorGui {
                         save_dir = state.save_dir;
                     }
                     proxy = state.proxy;
+                    allow_invalid_certs = state.allow_invalid_certs;
                 }
             }
         }
@@ -270,6 +284,7 @@ impl GhMirrorGui {
             url: String::new(),
             save_dir: PathBuf::from(&save_dir),
             proxy,
+            allow_invalid_certs,
             status: String::from("Ready"),
             progress: 0.0,
             speed_text: String::new(),
@@ -329,6 +344,7 @@ impl GhMirrorGui {
         let ctrl = control.clone();
         let effective_url = build_effective_url(&self.mirror_urls[self.selected_mirror], &self.url);
         let proxy = self.proxy.clone();
+        let allow_invalid_certs = self.allow_invalid_certs;
         let (progress_tx, progress_rx) = mpsc::channel();
         self.progress_rx = Some(progress_rx);
 
@@ -338,7 +354,7 @@ impl GhMirrorGui {
         self.status = String::from("Starting download...");
 
         self.download_thread = Some(thread::spawn(move || {
-            let client = match build_client(&proxy, 3600) {
+            let client = match build_client(&proxy, 3600, allow_invalid_certs) {
                 Ok(c) => c,
                 Err(e) => {
                     log_error(&format!("build_client error: {}", e));
@@ -419,6 +435,7 @@ impl eframe::App for GhMirrorGui {
             selected_mirror: self.selected_mirror,
             save_dir: self.save_dir.to_string_lossy().to_string(),
             proxy: self.proxy.clone(),
+            allow_invalid_certs: self.allow_invalid_certs,
         };
         if let Ok(json) = serde_json::to_string(&state) {
             storage.set_string("app_settings", json);
@@ -619,6 +636,18 @@ impl eframe::App for GhMirrorGui {
                     self.proxy.clear();
                 }
             });
+            ui.horizontal(|ui| {
+                ui.checkbox(
+                    &mut self.allow_invalid_certs,
+                    "Allow invalid TLS certificates (unsafe)",
+                );
+                if self.allow_invalid_certs {
+                    ui.colored_label(
+                        egui::Color32::from_rgb(255, 180, 0),
+                        "Only use this for trusted debugging proxies.",
+                    );
+                }
+            });
 
             // Action buttons
             ui.horizontal(|ui| {
@@ -704,21 +733,30 @@ fn latency_color(ms: f64) -> egui::Color32 {
 // Network helpers
 // ---------------------------------------------------------------------------
 
-fn build_client(proxy: &str, timeout_secs: u64) -> Result<Client, String> {
-    static GLOBAL_CLIENT: OnceLock<Mutex<Option<(String, u64, Client)>>> = OnceLock::new();
+fn build_client(
+    proxy: &str,
+    timeout_secs: u64,
+    allow_invalid_certs: bool,
+) -> Result<Client, String> {
+    static GLOBAL_CLIENT: OnceLock<Mutex<Option<CachedClient>>> = OnceLock::new();
     let cell = GLOBAL_CLIENT.get_or_init(|| Mutex::new(None));
     let mut guard = cell.lock().unwrap();
-    if let Some((ref stored_proxy, stored_timeout, ref client)) = *guard {
-        if stored_proxy == proxy && stored_timeout == timeout_secs {
-            return Ok(client.clone());
+    if let Some(ref cached) = *guard {
+        if cached.proxy == proxy
+            && cached.timeout_secs == timeout_secs
+            && cached.allow_invalid_certs == allow_invalid_certs
+        {
+            return Ok(cached.client.clone());
         }
     }
     let mut builder = reqwest::blocking::Client::builder()
         .tcp_nodelay(true)
         .pool_max_idle_per_host(10)
         .timeout(Duration::from_secs(timeout_secs))
-        .connect_timeout(Duration::from_secs(timeout_secs.clamp(1, 30)))
-        .danger_accept_invalid_certs(true);
+        .connect_timeout(Duration::from_secs(timeout_secs.clamp(1, 30)));
+    if allow_invalid_certs {
+        builder = builder.danger_accept_invalid_certs(true);
+    }
     if !proxy.is_empty() {
         builder = builder
             .proxy(reqwest::Proxy::all(proxy).map_err(|e| format!("Invalid proxy URL: {}", e))?);
@@ -726,7 +764,12 @@ fn build_client(proxy: &str, timeout_secs: u64) -> Result<Client, String> {
     let client = builder
         .build()
         .map_err(|e| format!("Client build error: {}", e))?;
-    *guard = Some((proxy.to_string(), timeout_secs, client.clone()));
+    *guard = Some(CachedClient {
+        proxy: proxy.to_string(),
+        timeout_secs,
+        allow_invalid_certs,
+        client: client.clone(),
+    });
     Ok(client)
 }
 
@@ -1469,6 +1512,7 @@ fn parse_bench_config(args: &[String]) -> Result<BenchConfig, String> {
     let mut json = None;
     let mut history = None;
     let mut proxy = String::new();
+    let mut allow_invalid_certs = false;
     let mut mode = BenchMode::Auto;
     let mut segment_size = None;
     let mut concurrency = None;
@@ -1495,6 +1539,9 @@ fn parse_bench_config(args: &[String]) -> Result<BenchConfig, String> {
             "--proxy" => {
                 i += 1;
                 proxy = args.get(i).cloned().unwrap_or_default();
+            }
+            "--allow-invalid-certs" => {
+                allow_invalid_certs = true;
             }
             "--mode" => {
                 i += 1;
@@ -1531,7 +1578,7 @@ fn parse_bench_config(args: &[String]) -> Result<BenchConfig, String> {
             }
             "--help" | "-h" => {
                 return Err(
-                    "Usage: gh_mirror_gui.exe --bench-download --url <URL> --out <PATH> [--json <PATH>] [--history <PATH>] [--proxy <URL>] [--mode auto|single|segmented|adaptive] [--segment-size BYTES] [--concurrency N]"
+                    "Usage: gh_mirror_gui.exe --bench-download --url <URL> --out <PATH> [--json <PATH>] [--history <PATH>] [--proxy <URL>] [--allow-invalid-certs] [--mode auto|single|segmented|adaptive] [--segment-size BYTES] [--concurrency N]"
                         .to_string(),
                 );
             }
@@ -1548,6 +1595,7 @@ fn parse_bench_config(args: &[String]) -> Result<BenchConfig, String> {
         json,
         history,
         proxy,
+        allow_invalid_certs,
         mode,
         segment_size,
         concurrency,
@@ -1903,7 +1951,7 @@ fn run_bench_download(args: &[String]) -> Result<(), String> {
     let _ = fs::remove_file(&meta_path);
 
     let total_start = Instant::now();
-    let client = build_client(&config.proxy, 3600)?;
+    let client = build_client(&config.proxy, 3600, config.allow_invalid_certs)?;
     let probe_start = Instant::now();
     let probe = probe_download(&client, &config.url)?;
     let probe_ms = probe_start.elapsed().as_millis();
@@ -2258,8 +2306,28 @@ mod tests {
 
     #[test]
     fn client_builder_rejects_invalid_proxy_url() {
-        let err = build_client("http://127.0.0.1:abc", 5).unwrap_err();
+        let err = build_client("http://127.0.0.1:abc", 5, false).unwrap_err();
         assert!(err.contains("Invalid proxy URL"));
+    }
+
+    #[test]
+    fn saved_state_defaults_to_safe_tls() {
+        let state: SavedState =
+            serde_json::from_str(r#"{"selected_mirror":0,"save_dir":"","proxy":""}"#).unwrap();
+        assert!(!state.allow_invalid_certs);
+    }
+
+    #[test]
+    fn bench_config_accepts_explicit_unsafe_tls_flag() {
+        let config = parse_bench_config(&[
+            "--url".to_string(),
+            "https://example.test/file.bin".to_string(),
+            "--out".to_string(),
+            "target/test.bin".to_string(),
+            "--allow-invalid-certs".to_string(),
+        ])
+        .unwrap();
+        assert!(config.allow_invalid_certs);
     }
 
     #[test]

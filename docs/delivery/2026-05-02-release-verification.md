@@ -52,9 +52,10 @@ Latest `dst-admin-go` release notes captured from GitHub:
 | URL/mirror helpers | `src/main.rs` tests | Added direct URL/mirror URL and filename extraction assertions | `url_helpers_cover_direct_and_mirror_cases` passed |
 | Speed display | `src/main.rs` tests | Added bytes/KB/MB formatting assertions | `speed_formatting_covers_bytes_kb_and_mb` passed |
 | Proxy validation | `src/main.rs` tests | Added invalid proxy URL rejection assertion | `client_builder_rejects_invalid_proxy_url` passed |
+| TLS release hardening | `Cargo.toml`; `src/main.rs` | Restored safe TLS defaults using OS-native certificate trust and moved invalid-certificate compatibility behind explicit GUI checkbox / `--allow-invalid-certs` CLI flag | `saved_state_defaults_to_safe_tls` and `bench_config_accepts_explicit_unsafe_tls_flag` passed |
 | Clippy hygiene | `src/main.rs` | Collapsed nested Open Folder `if` blocks | `cargo clippy --all-targets -- -D warnings` passed |
-| Evidence/release gate | `tools/release-verify.ps1` | Added one-command verification: git status, fmt, tests, clippy, release build, latest release lookup, network range smoke, GUI launch smoke, JSON receipt | Final receipt `status=PASS` |
-| Headless benchmark gate | `src/main.rs`; `tools/release-verify.ps1` | Added `--bench-download --url <URL> --out <PATH> --json <PATH> --history <PATH> --mode auto|single|segmented|adaptive --segment-size <bytes> --concurrency <n>` for full real-asset benchmark without GUI/file dialogs; release verification now records benchmark JSON/matrix and verifies size/hash | `target/delivery/20260503-005353/bench-download.json` |
+| Evidence/release gate | `tools/release-verify.ps1` | Added one-command verification: git status, fmt, tests, clippy, release build, latest release lookup, network range smoke, GUI launch smoke, JSON receipt, and `SHA256SUMS.txt` | Final receipt `status=PASS` |
+| Headless benchmark gate | `src/main.rs`; `tools/release-verify.ps1` | Added `--bench-download --url <URL> --out <PATH> --json <PATH> --history <PATH> --mode auto|single|segmented|adaptive --segment-size <bytes> --concurrency <n> [--allow-invalid-certs]` for full real-asset benchmark without GUI/file dialogs; release verification now records benchmark JSON/matrix and verifies size/hash | `target/delivery/20260503-005353/bench-download.json` |
 | GUI adaptive mainline | `src/main.rs` | GUI downloads now choose a history-backed strategy before full download, using matching history when available and falling back to the static matrix winner; successful GUI downloads append full-download history | `history_backed_strategy_*` tests passed; GUI launch smoke passed |
 | Ignore hygiene | `.gitignore` | Removed duplicate target-specific tar.gz rules; kept generic `*.tar.gz` and `download_error.log` | `git status` confirms only intended tracked changes/untracked `tools/` |
 
@@ -75,6 +76,7 @@ Latest `dst-admin-go` release notes captured from GitHub:
 | Progress channel emits useful download progress | Unit test asserts progress event with downloaded bytes and expected total | `download_single_creates_new_temp_file_with_write_access` |
 | Speed text formatting | Unit test | `speed_formatting_covers_bytes_kb_and_mb` |
 | Invalid proxy is rejected before download | Unit test | `client_builder_rejects_invalid_proxy_url` |
+| Invalid TLS certificates are rejected by default | Unit tests and UI/CLI option review | `saved_state_defaults_to_safe_tls`; `bench_config_accepts_explicit_unsafe_tls_flag`; unsafe mode requires checkbox or `--allow-invalid-certs` |
 | Latest upstream GitHub asset reachable | `curl --range 0-65535` via `tools/release-verify.ps1` | `65536` bytes downloaded; SHA256 `9EEF6F54DC65E105A089C093AAF4FEB4BA0810BA109A3C55CA8D2D48F2B813BD` |
 | GUI binary can launch on this machine | `Start-Process target\release\gh_mirror_gui.exe`, observe 3s, then terminate | `gui_launch_smoke.ok=true` |
 | Full latest asset benchmark, final default | `target\release\gh_mirror_gui.exe --bench-download ...` | `mode=adaptive`, `selected_variant=seg-c16-s2m`, `history_matches=7`, `concurrency=16`, `segment_size=2097152`, `segments=16`, `total_bytes=32353113`, `download_ms=140602`, `avg_mib_s=0.2194`, SHA256 `BE8AADC431C88F370235AB8F29793647BD7638AE172696B350907D7FD993DE0E` |
@@ -110,9 +112,9 @@ The fresh-download branch requested `create(true)` and `truncate(true)` without 
 - Rust `OpenOptions` docs: <https://doc.rust-lang.org/std/fs/struct.OpenOptions.html>
 - Reqwest `ClientBuilder` TLS warning context for future hardening: <https://docs.rs/reqwest/latest/reqwest/blocking/struct.ClientBuilder.html#method.danger_accept_invalid_certs>
 
-## Noted follow-up risk
+## Closed follow-up risk
 
-`build_client` currently uses `danger_accept_invalid_certs(true)`. That was not changed in this pass to avoid altering the existing network behavior while fixing the decisive download failure. Reqwest documents this as a last-resort setting because it trusts invalid certificates. Recommended follow-up: replace it with a user-visible advanced option or proper custom root certificate handling.
+`build_client` no longer enables `danger_accept_invalid_certs(true)` by default. The release build uses `reqwest` with the `native-tls` feature so normal validation follows the OS-native trust store. Invalid-certificate compatibility is explicit opt-in via the GUI checkbox `Allow invalid TLS certificates (unsafe)` or CLI benchmark flag `--allow-invalid-certs`. Reqwest still documents the method as a last-resort setting because it trusts invalid certificates, so the option is labeled unsafe and should only be used for trusted debugging proxies or controlled environments.
 
 
 
