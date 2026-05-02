@@ -75,6 +75,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\release-verify.ps1
 ```
 
 Evidence is written under `target\delivery\<run_id>\`.
+The receipt records build provenance including the git commit, Rust toolchain,
+`Cargo.lock` hash, release binary hash, and verification command logs.
 
 ## License
 

@@ -81,6 +81,77 @@ function Invoke-LoggedNative {
     }
 }
 
+function Invoke-CapturedNative {
+    param(
+        [string]$Name,
+        [string]$Exe,
+        [string[]]$Arguments = @()
+    )
+
+    Push-Location $RepoRoot
+    try {
+        $logPath = Join-Path $EvidenceDir "$Name.log"
+        $display = (@($Exe) + $Arguments) -join ' '
+        $sw = [Diagnostics.Stopwatch]::StartNew()
+        $oldErrorActionPreference = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            $output = & $Exe @Arguments 2>&1
+            $exitCode = if ($null -eq $LASTEXITCODE) { 0 } else { [int]$LASTEXITCODE }
+        }
+        finally {
+            $ErrorActionPreference = $oldErrorActionPreference
+        }
+        $sw.Stop()
+
+        $lines = @($output | ForEach-Object { $_.ToString() })
+        if ($lines.Count -eq 0) {
+            '' | Set-Content -LiteralPath $logPath -Encoding UTF8
+        }
+        else {
+            $lines | Set-Content -LiteralPath $logPath -Encoding UTF8
+        }
+        Add-CommandResult -Name $Name -Command $display -ExitCode $exitCode -LogPath $logPath -DurationSeconds $sw.Elapsed.TotalSeconds
+        if ($exitCode -ne 0) {
+            throw "$Name failed with exit code $exitCode"
+        }
+        return $lines
+    }
+    finally {
+        Pop-Location
+    }
+}
+
+function Get-OptionalFileEvidence {
+    param([string]$RelativePath)
+
+    $path = Join-Path $RepoRoot $RelativePath
+    if (!(Test-Path -LiteralPath $path)) {
+        return [ordered]@{
+            path = $path
+            exists = $false
+        }
+    }
+
+    $item = Get-Item -LiteralPath $path
+    return [ordered]@{
+        path = $path
+        exists = $true
+        size = $item.Length
+        last_write_time = $item.LastWriteTimeUtc.ToString('o')
+        sha256 = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
+    }
+}
+
+function Get-FirstLineOrEmpty {
+    param([string[]]$Lines)
+
+    if ($null -eq $Lines -or $Lines.Count -eq 0) {
+        return ''
+    }
+    return $Lines[0]
+}
+
 function Invoke-GitHubLatestRelease {
     param([string]$Repo)
 
@@ -226,11 +297,37 @@ function Invoke-BenchVariant {
     return $bench
 }
 
+$gitHead = @(Invoke-CapturedNative -Name 'provenance-git-head' -Exe 'git' -Arguments @('rev-parse', 'HEAD'))
+$gitBranch = @(Invoke-CapturedNative -Name 'provenance-git-branch' -Exe 'git' -Arguments @('branch', '--show-current'))
+$gitDescribe = @(Invoke-CapturedNative -Name 'provenance-git-describe' -Exe 'git' -Arguments @('describe', '--tags', '--always', '--dirty'))
+$gitStatus = @(Invoke-CapturedNative -Name 'provenance-git-status' -Exe 'git' -Arguments @('status', '--short', '--branch'))
+$rustcVersion = @(Invoke-CapturedNative -Name 'provenance-rustc-vv' -Exe 'rustc' -Arguments @('-vV'))
+$cargoVersion = @(Invoke-CapturedNative -Name 'provenance-cargo-vv' -Exe 'cargo' -Arguments @('-vV'))
+
+$Receipt.provenance = [ordered]@{
+    git = [ordered]@{
+        head = Get-FirstLineOrEmpty -Lines $gitHead
+        branch = Get-FirstLineOrEmpty -Lines $gitBranch
+        describe = Get-FirstLineOrEmpty -Lines $gitDescribe
+        status_short = $gitStatus
+    }
+    toolchain = [ordered]@{
+        rustc_vv = $rustcVersion
+        cargo_vv = $cargoVersion
+    }
+    files = [ordered]@{
+        cargo_lock = Get-OptionalFileEvidence -RelativePath 'Cargo.lock'
+        rust_toolchain = Get-OptionalFileEvidence -RelativePath 'rust-toolchain.toml'
+        ci_workflow = Get-OptionalFileEvidence -RelativePath '.github\workflows\ci.yml'
+        release_verify_script = Get-OptionalFileEvidence -RelativePath 'tools\release-verify.ps1'
+    }
+}
+
 Invoke-LoggedNative -Name 'git-status' -Exe 'git' -Arguments @('status', '--short', '--branch')
 Invoke-LoggedNative -Name 'cargo-fmt-check' -Exe 'cargo' -Arguments @('fmt', '--check')
-Invoke-LoggedNative -Name 'cargo-test-all-targets' -Exe 'cargo' -Arguments @('test', '--all-targets')
-Invoke-LoggedNative -Name 'cargo-clippy-all-targets' -Exe 'cargo' -Arguments @('clippy', '--all-targets', '--', '-D', 'warnings')
-Invoke-LoggedNative -Name 'cargo-build-release' -Exe 'cargo' -Arguments @('build', '--release')
+Invoke-LoggedNative -Name 'cargo-test-all-targets' -Exe 'cargo' -Arguments @('test', '--all-targets', '--locked')
+Invoke-LoggedNative -Name 'cargo-clippy-all-targets' -Exe 'cargo' -Arguments @('clippy', '--all-targets', '--locked', '--', '-D', 'warnings')
+Invoke-LoggedNative -Name 'cargo-build-release' -Exe 'cargo' -Arguments @('build', '--release', '--locked')
 
 $exe = Join-Path $RepoRoot 'target\release\gh_mirror_gui.exe'
 if (!(Test-Path -LiteralPath $exe)) {
@@ -382,6 +479,7 @@ $Receipt | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $receiptPath -Enc
 [ordered]@{
     status = 'PASS'
     receipt = $receiptPath
+    provenance = $Receipt.provenance
     release_binary = $Receipt.artifacts.release_binary
     sha256sums = $Receipt.artifacts.sha256sums
 } | ConvertTo-Json -Depth 10

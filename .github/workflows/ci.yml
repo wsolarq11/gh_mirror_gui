@@ -29,10 +29,10 @@ jobs:
       - name: Install Rust stable toolchain
         shell: pwsh
         run: |
-          rustup toolchain install stable --profile minimal --component rustfmt --component clippy
-          rustup default stable
-          rustc --version
-          cargo --version
+          rustup toolchain install
+          rustup show active-toolchain
+          rustc -vV
+          cargo -vV
 
       - name: Cache Cargo registry and build output
         uses: actions/cache@v4
@@ -41,7 +41,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
           restore-keys: |
             ${{ runner.os }}-cargo-
 
