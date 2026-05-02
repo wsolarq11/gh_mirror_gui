@@ -75,3 +75,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\release-verify.ps1
 ```
 
 Evidence is written under `target\delivery\<run_id>\`.
+
+## License
+
+This project is licensed under the MIT License. See `LICENSE` for details.

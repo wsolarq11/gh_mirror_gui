@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  windows-rust:
+    name: Windows Rust checks
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable toolchain
+        shell: pwsh
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+          rustup default stable
+          rustc --version
+          cargo --version
+
+      - name: Cache Cargo registry and build output
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Format check
+        run: cargo fmt --check
+
+      - name: Test all targets
+        run: cargo test --all-targets --locked
+
+      - name: Clippy all targets
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+      - name: Build release binary
+        run: cargo build --release --locked
+
+      - name: Verify release binary and checksum
+        shell: pwsh
+        run: |
+          $exe = "target\release\gh_mirror_gui.exe"
+          if (!(Test-Path -LiteralPath $exe)) {
+            throw "release binary missing: $exe"
+          }
+          Get-FileHash -LiteralPath $exe -Algorithm SHA256 |
+            Format-List Algorithm,Hash,Path
+
+      - name: Upload CI release binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: gh_mirror_gui-windows-release-ci
+          path: target/release/gh_mirror_gui.exe
+          if-no-files-found: error
+          retention-days: 14
