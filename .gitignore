@@ -2,3 +2,5 @@
 **/*.rs.bk
 *.pdb
 *.exe
+*.tar.gz
+download_error.log
