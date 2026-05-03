@@ -1,0 +1,137 @@
+# gh_mirror_gui Architecture
+
+## Architecture statement
+
+The product should look like one Windows UI to the user, but internally it should behave like a trusted local acquisition backend with a thin UI shell.
+
+```text
+UI Shell
+  -> Core / backend contract
+     -> Source adapter
+     -> Download engine
+     -> Verification engine
+     -> Source trust engine
+     -> Policy engine
+     -> Evidence ledger
+     -> Release verification front door
+```
+
+## Current module map
+
+- `src/releases.rs`: GitHub Release discovery and asset selection helpers.
+- `src/download.rs`: direct, resumable, and segmented download primitives.
+- `src/bench.rs`: headless benchmark and adaptive strategy evaluation.
+- `src/verification.rs`: checksum/provenance parsing, source selection, hash verification, and source-trust attachment.
+- `src/source_trust.rs`: Ed25519 detached signature verification/signing, publisher key pinning, and `source_trust` evidence.
+- `src/trust_policy.rs`: trust policy, file disposition, quarantine/delete/open-location decisions.
+- `src/history.rs`: benchmark history and verification evidence JSON.
+- `src/main.rs`: current egui UI plus temporary app orchestration. Keep this layer thinner over time.
+- `tools\release-verify.ps1`: single delivery front door and receipt producer.
+
+## Boundary rules
+
+### UI Shell
+
+The UI may:
+
+- collect input
+- call core/backend operations
+- display verdicts
+- import/normalize publisher key pins
+- open evidence or folders selected by policy
+
+The UI must not:
+
+- invent final trust verdicts
+- silently override policy decisions
+- write evidence schemas independently of core/backend records
+- decide quarantine/delete outside the policy engine
+
+### Core / backend contract
+
+The core/backend is responsible for:
+
+- release resolution
+- asset metadata normalization
+- download strategy
+- hash/provenance verification
+- source authenticity verification
+- policy verdict
+- file disposition
+- evidence/history writes
+
+The future backend may be a Rust crate first, then a local process/daemon later. Do not daemonize before the core contract is clean.
+
+### Verification engine
+
+Hash match and source authenticity are separate facts:
+
+- hash status: `VERIFIED`, `MISMATCH`, `UNKNOWN`
+- source authenticity: `TRUSTED_SIGNATURE`, `UNSIGNED`, `MISSING_SIGNATURE`, `BAD_SIGNATURE`, `NO_TRUSTED_KEY`, `NOT_APPLICABLE`
+- effective trust decision: `TRUSTED`, `BLOCK`, or `RISK`
+
+A hash-verified file can still be blocked if the verification source is not authentic under policy.
+
+### Source trust engine
+
+Current MVP:
+
+- Ed25519 detached signature over the exact source bytes.
+- Signature assets:
+  - `SHA256SUMS.txt.sig`
+  - `release-provenance.json.sig`
+- Publisher key pin is an Ed25519 public key.
+- Evidence stores key SHA256 fingerprint, not raw public/private key material.
+
+Future adapters may support minisign, cosign, GitHub attestation, SLSA provenance, or enterprise CA chains through the same `source_trust` concept.
+
+### Policy engine
+
+Policy decides:
+
+- whether `UNKNOWN` downloads are kept or deleted
+- whether `UNKNOWN` may expose open-folder UI
+- whether `MISMATCH` is quarantined or deleted
+- whether signed source is required
+- whether a publisher key is pinned and valid
+
+Enterprise policy should become a stricter layer above user policy later.
+
+### Evidence ledger
+
+Evidence must remain reviewable and machine-readable:
+
+- history JSONL stores summary fields for strategy and trust decisions
+- evidence JSON stores the exact trust facts and file disposition
+- `Open Evidence` must use the exact evidence path recorded for the completed download
+- schema changes must be covered by tests and release-verify receipt gates
+
+## Release verification front door
+
+`tools\release-verify.ps1` is the delivery judge. It must keep recording:
+
+- git provenance
+- toolchain provenance
+- key source files and guardrail document hashes
+- fmt/test/clippy/build command results
+- trust-policy/source-trust gate coverage
+- origin release verification for the existing release
+- network smoke
+- benchmark
+- GUI launch smoke
+
+Passing CI is useful but not a replacement for the local receipt when a task requires full delivery evidence.
+
+## Future local agent
+
+The likely end-state is:
+
+```text
+gh_mirror_gui.exe
+  starts UI
+  embeds or launches local trusted backend
+  communicates through JSON-RPC / named pipe / localhost API
+```
+
+User experience remains one UI. Engineering gains stable contracts shared by GUI, CLI, self-updater, enterprise policy tooling, and future source adapters.
+

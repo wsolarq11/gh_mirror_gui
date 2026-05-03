@@ -22,6 +22,26 @@ A small Windows desktop GUI for downloading GitHub release assets with progress,
 - Optional proxy URL support.
 - Safe TLS defaults: TLS uses the OS-native trust store and rejects invalid certificates unless the explicit unsafe compatibility switch is enabled.
 
+## Route and architecture
+
+The project route is intentionally trust-first:
+
+```text
+Windows-first Trusted GitHub Release Downloader
+  -> Windows-first Artifact Trust Broker
+  -> Windows Local Software Trust Root
+```
+
+User-side experience should stay one Windows UI. Internally, trust-critical
+logic should stay in testable core/backend surfaces and be proven by
+`tools\release-verify.ps1 + receipt.json`.
+
+See:
+
+- `AGENTS.md` for repo guardrails.
+- `docs\ROADMAP.md` for the phased route.
+- `docs\ARCHITECTURE.md` for layer boundaries.
+
 ## Download and verify
 
 Download `gh_mirror_gui.exe` and `SHA256SUMS.txt` from the latest GitHub Release, then verify:

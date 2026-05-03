@@ -183,6 +183,33 @@ function Assert-CommandLogContains {
     }
 }
 
+function Assert-FileContains {
+    param(
+        [string]$RelativePath,
+        [string[]]$RequiredPatterns
+    )
+
+    $path = Join-Path $RepoRoot $RelativePath
+    if (!(Test-Path -LiteralPath $path)) {
+        throw "required guardrail file missing: $RelativePath"
+    }
+    $text = Get-Content -LiteralPath $path -Raw
+    $missing = @($RequiredPatterns | Where-Object {
+        $pattern = [regex]::Escape($_)
+        $text -notmatch $pattern
+    })
+    if ($missing.Count -gt 0) {
+        throw "$RelativePath missing required route guardrails: $($missing -join ', ')"
+    }
+
+    return [ordered]@{
+        ok = $true
+        path = $path
+        required_patterns = $RequiredPatterns
+        sha256 = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
+    }
+}
+
 function Invoke-GitHubLatestRelease {
     param([string]$Repo)
 
@@ -466,6 +493,9 @@ $Receipt.provenance = [ordered]@{
         cargo_vv = $cargoVersion
     }
     files = [ordered]@{
+        repo_agents = Get-OptionalFileEvidence -RelativePath 'AGENTS.md'
+        roadmap = Get-OptionalFileEvidence -RelativePath 'docs\ROADMAP.md'
+        architecture = Get-OptionalFileEvidence -RelativePath 'docs\ARCHITECTURE.md'
         cargo_lock = Get-OptionalFileEvidence -RelativePath 'Cargo.lock'
         rust_toolchain = Get-OptionalFileEvidence -RelativePath 'rust-toolchain.toml'
         ci_workflow = Get-OptionalFileEvidence -RelativePath '.github\workflows\ci.yml'
@@ -475,6 +505,39 @@ $Receipt.provenance = [ordered]@{
 }
 
 Invoke-LoggedNative -Name 'git-status' -Exe 'git' -Arguments @('status', '--short', '--branch')
+$Receipt.checks.route_guardrails = [ordered]@{
+    ok = $true
+    agents = Assert-FileContains `
+        -RelativePath 'AGENTS.md' `
+        -RequiredPatterns @(
+            'Windows-first Trusted GitHub Release Downloader',
+            'Windows-first Artifact Trust Broker',
+            'Windows Local Software Trust Root',
+            'Do **not** let the UI make final trust verdicts',
+            'tools\release-verify.ps1 + receipt.json'
+        )
+    roadmap = Assert-FileContains `
+        -RelativePath 'docs\ROADMAP.md' `
+        -RequiredPatterns @(
+            'Signed source true end-to-end release',
+            'Trust Center UI',
+            'Auto-update MVP',
+            'Core crate and backend contract',
+            'Artifact Trust Broker',
+            'Windows Local Software Trust Root'
+        )
+    architecture = Assert-FileContains `
+        -RelativePath 'docs\ARCHITECTURE.md' `
+        -RequiredPatterns @(
+            'UI Shell',
+            'Core / backend contract',
+            'Verification engine',
+            'Source trust engine',
+            'Policy engine',
+            'Evidence ledger',
+            'Release verification front door'
+        )
+}
 Invoke-LoggedNative -Name 'cargo-fmt-check' -Exe 'cargo' -Arguments @('fmt', '--check')
 Invoke-LoggedNative -Name 'cargo-test-all-targets' -Exe 'cargo' -Arguments @('test', '--all-targets', '--locked')
 $Receipt.checks.trust_policy_contract = [ordered]@{
