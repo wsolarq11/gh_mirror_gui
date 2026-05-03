@@ -1370,7 +1370,7 @@ if (!$SkipBenchmark) {
         -Url $targetAsset.browser_download_url `
         -OutFile $benchOut `
         -JsonFile $benchJson `
-        -ExtraArgs @('--mode', 'adaptive')
+        -ExtraArgs @('--mode', 'auto')
     $Receipt.checks.download_benchmark = $bench
     $Receipt.artifacts.benchmark_download = [ordered]@{
         path = $benchOut
