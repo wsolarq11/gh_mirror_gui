@@ -12,7 +12,7 @@ use bench::{choose_history_backed_strategy, run_bench_download};
 use directories::UserDirs;
 use download::{
     build_client, build_effective_url, download_with_strategy, extract_filename, format_speed,
-    probe_download, DownloadControl, DownloadProbe,
+    probe_download, sha256_file, DownloadControl, DownloadProbe,
 };
 #[cfg(test)]
 use download::{
@@ -1486,6 +1486,100 @@ fn run_sign_verification_source(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+fn run_verify_verification_source(args: &[String]) -> Result<(), String> {
+    let mut source = None;
+    let mut signature = None;
+    let mut public_key = None;
+    let mut public_key_file = None;
+    let mut json_out = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--source" => {
+                i += 1;
+                source = args.get(i).map(PathBuf::from);
+            }
+            "--signature" => {
+                i += 1;
+                signature = args.get(i).map(PathBuf::from);
+            }
+            "--public-key" => {
+                i += 1;
+                public_key = args.get(i).cloned();
+            }
+            "--public-key-file" => {
+                i += 1;
+                public_key_file = args.get(i).map(PathBuf::from);
+            }
+            "--json" => {
+                i += 1;
+                json_out = args.get(i).map(PathBuf::from);
+            }
+            other => {
+                return Err(format!(
+                    "unknown --verify-verification-source option: {other}"
+                ))
+            }
+        }
+        i += 1;
+    }
+
+    let source = source.ok_or_else(|| "--source is required".to_string())?;
+    let signature = signature.ok_or_else(|| "--signature is required".to_string())?;
+    if public_key.is_some() == public_key_file.is_some() {
+        return Err("provide exactly one of --public-key or --public-key-file".to_string());
+    }
+
+    let source_bytes =
+        std::fs::read(&source).map_err(|e| format!("Read source asset error: {e}"))?;
+    let signature_text = std::fs::read_to_string(&signature)
+        .map_err(|e| format!("Read signature asset error: {e}"))?;
+    let (public_key_text, public_key_source) = if let Some(path) = public_key_file {
+        (
+            std::fs::read_to_string(&path)
+                .map_err(|e| format!("Read public key asset error: {e}"))?,
+            path.display().to_string(),
+        )
+    } else {
+        (
+            public_key.expect("checked exactly one public key source"),
+            "--public-key".to_string(),
+        )
+    };
+    let public_key = normalize_public_key_pin(&public_key_text)?;
+    source_trust::verify_ed25519_detached(&source_bytes, signature_text.trim(), &public_key)?;
+    let fingerprint = trusted_key_fingerprint(&public_key)
+        .ok_or_else(|| "publisher key fingerprint failed".to_string())?;
+    let source_sha256 = sha256_file(&source)?;
+
+    let report = serde_json::json!({
+        "schema_version": 1,
+        "ok": true,
+        "signature_format": SIGNATURE_FORMAT,
+        "source": {
+            "path": source,
+            "size": source_bytes.len(),
+            "sha256": source_sha256,
+        },
+        "signature": {
+            "path": signature,
+            "hex_chars": signature_text.trim().len(),
+            "verified": true,
+        },
+        "public_key": {
+            "source": public_key_source,
+            "fingerprint_sha256": fingerprint,
+        },
+    });
+    let pretty_report =
+        serde_json::to_string_pretty(&report).map_err(|e| format!("Serialize verify JSON: {e}"))?;
+    if let Some(json_path) = json_out {
+        write_text_file(&json_path, &format!("{pretty_report}\n"))?;
+    }
+    println!("{pretty_report}");
+    Ok(())
+}
+
 fn main() -> Result<(), eframe::Error> {
     let args = env::args().skip(1).collect::<Vec<_>>();
     if args.first().map(|s| s.as_str()) == Some("--release-signing-doctor") {
@@ -1499,6 +1593,14 @@ fn main() -> Result<(), eframe::Error> {
     if args.first().map(|s| s.as_str()) == Some("--sign-verification-source") {
         if let Err(e) = run_sign_verification_source(&args[1..]) {
             eprintln!("sign verification source failed: {e}");
+            std::process::exit(2);
+        }
+        return Ok(());
+    }
+
+    if args.first().map(|s| s.as_str()) == Some("--verify-verification-source") {
+        if let Err(e) = run_verify_verification_source(&args[1..]) {
+            eprintln!("verify verification source failed: {e}");
             std::process::exit(2);
         }
         return Ok(());
@@ -1542,6 +1644,77 @@ mod tests {
             nonce,
             name
         ))
+    }
+
+    #[test]
+    fn verify_verification_source_cli_accepts_publisher_key_file() {
+        let source = unique_test_path("signed-source.txt");
+        let signature_path = unique_test_path("signed-source.txt.sig");
+        let public_key_path = unique_test_path("publisher-key.ed25519.pub");
+        let json_path = unique_test_path("verify-source.json");
+        let private_key = "1111111111111111111111111111111111111111111111111111111111111111";
+        let source_bytes = b"release verification source bytes";
+        fs::write(&source, source_bytes).unwrap();
+        let signature = source_trust::sign_ed25519_detached(source_bytes, private_key).unwrap();
+        let public_key = source_trust::public_key_from_private_seed(private_key).unwrap();
+        fs::write(&signature_path, format!("{signature}\n")).unwrap();
+        fs::write(&public_key_path, format!("ed25519:{public_key}\n")).unwrap();
+
+        run_verify_verification_source(&[
+            "--source".to_string(),
+            source.display().to_string(),
+            "--signature".to_string(),
+            signature_path.display().to_string(),
+            "--public-key-file".to_string(),
+            public_key_path.display().to_string(),
+            "--json".to_string(),
+            json_path.display().to_string(),
+        ])
+        .unwrap();
+
+        let report: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&json_path).unwrap()).unwrap();
+        assert_eq!(report["ok"], true);
+        assert_eq!(report["signature"]["verified"], true);
+        assert_eq!(
+            report["public_key"]["fingerprint_sha256"]
+                .as_str()
+                .unwrap()
+                .len(),
+            64
+        );
+
+        let _ = fs::remove_file(source);
+        let _ = fs::remove_file(signature_path);
+        let _ = fs::remove_file(public_key_path);
+        let _ = fs::remove_file(json_path);
+    }
+
+    #[test]
+    fn verify_verification_source_cli_rejects_bad_signature() {
+        let source = unique_test_path("bad-signed-source.txt");
+        let signature_path = unique_test_path("bad-signed-source.txt.sig");
+        let private_key = "1111111111111111111111111111111111111111111111111111111111111111";
+        let source_bytes = b"release verification source bytes";
+        fs::write(&source, source_bytes).unwrap();
+        let mut signature = source_trust::sign_ed25519_detached(source_bytes, private_key).unwrap();
+        signature.replace_range(0..2, "00");
+        let public_key = source_trust::public_key_from_private_seed(private_key).unwrap();
+        fs::write(&signature_path, format!("{signature}\n")).unwrap();
+
+        let err = run_verify_verification_source(&[
+            "--source".to_string(),
+            source.display().to_string(),
+            "--signature".to_string(),
+            signature_path.display().to_string(),
+            "--public-key".to_string(),
+            public_key,
+        ])
+        .unwrap_err();
+        assert!(err.contains("invalid Ed25519 signature"));
+
+        let _ = fs::remove_file(source);
+        let _ = fs::remove_file(signature_path);
     }
 
     fn serve_once(body: Vec<u8>) -> (String, thread::JoinHandle<()>) {

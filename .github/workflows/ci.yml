@@ -68,6 +68,15 @@ jobs:
           Get-FileHash -LiteralPath $exe -Algorithm SHA256 |
             Format-List Algorithm,Hash,Path
 
+      - name: Release verification receipt (signed staging)
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\release-verify.ps1 `
+            -SkipNetworkSmoke `
+            -SkipBenchmark `
+            -SkipBenchmarkMatrix `
+            -SkipGuiSmoke
+
       - name: Upload CI release binary
         uses: actions/upload-artifact@v4
         with:

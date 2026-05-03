@@ -123,6 +123,8 @@ Evidence must remain reviewable and machine-readable:
 - trust-policy/source-trust gate coverage
 - release signing readiness, including public key export and next-release
   `.sig` asset contract
+- signed release staging dry-run, including `release-provenance.json` schema
+  checks and detached signature verification for both signed source assets
 - origin release verification for the existing release
 - network smoke
 - benchmark

@@ -48,6 +48,7 @@ Deliverables:
 - Next version release uploads `SHA256SUMS.txt.sig`, `release-provenance.json.sig`, and `publisher-key.ed25519.pub`.
 - README explains how users pin/import the matching publisher public key.
 - Release verification receipt proves signed-source behavior without changing `v0.1.2`.
+- Release verification stages a local signed dry-run release asset set and proves both `SHA256SUMS.txt` and `release-provenance.json` signatures against the exported `publisher-key.ed25519.pub`.
 
 Stop condition: a fresh release can be downloaded by the app, hash verified, source-signature verified, and recorded in evidence.
 

@@ -307,6 +307,342 @@ function Invoke-ReleaseSigningReadiness {
     }
 }
 
+function Get-CargoPackageVersion {
+    $cargoToml = Join-Path $RepoRoot 'Cargo.toml'
+    $versionLine = Select-String -LiteralPath $cargoToml -Pattern '^version\s*=\s*"([^"]+)"' | Select-Object -First 1
+    if ($null -eq $versionLine) {
+        throw 'Cargo.toml package version not found'
+    }
+    return $versionLine.Matches[0].Groups[1].Value
+}
+
+function Assert-UpperHexTextFile {
+    param(
+        [string]$Path,
+        [int]$ExpectedChars,
+        [string]$Label
+    )
+
+    if (!(Test-Path -LiteralPath $Path)) {
+        throw "$Label missing: $Path"
+    }
+    $text = (Get-Content -LiteralPath $Path -Raw).Trim()
+    if ($text -notmatch "^[0-9A-F]{$ExpectedChars}$") {
+        throw "$Label must be $ExpectedChars uppercase hex characters"
+    }
+    return $text
+}
+
+function Assert-StagedReleaseProvenance {
+    param(
+        [string]$Path,
+        [string]$ExpectedPackageVersion,
+        [string]$ExpectedBinarySha256,
+        [string]$ExpectedSha256SumsSha256,
+        [string]$ExpectedPublisherKeySha256,
+        [string]$ExpectedPublisherKeyFingerprint
+    )
+
+    if (!(Test-Path -LiteralPath $Path)) {
+        throw "staged release provenance missing: $Path"
+    }
+    $provenance = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json
+    if ([int]$provenance.schema_version -ne 1) {
+        throw 'staged release-provenance.json schema_version mismatch'
+    }
+    if ($provenance.dry_run -ne $true) {
+        throw 'staged release-provenance.json must declare dry_run=true'
+    }
+    if ([string]$provenance.package_version -ne $ExpectedPackageVersion) {
+        throw "staged release-provenance.json package_version mismatch: $($provenance.package_version)"
+    }
+    if ([string]$provenance.artifacts.release_binary.path -ne 'gh_mirror_gui.exe') {
+        throw "staged release-provenance.json release_binary.path mismatch: $($provenance.artifacts.release_binary.path)"
+    }
+    if (([string]$provenance.artifacts.release_binary.sha256).ToUpperInvariant() -ne $ExpectedBinarySha256) {
+        throw 'staged release-provenance.json release binary hash mismatch'
+    }
+    if ([string]$provenance.artifacts.sha256sums.path -ne 'SHA256SUMS.txt') {
+        throw "staged release-provenance.json sha256sums.path mismatch: $($provenance.artifacts.sha256sums.path)"
+    }
+    if (([string]$provenance.artifacts.sha256sums.sha256).ToUpperInvariant() -ne $ExpectedSha256SumsSha256) {
+        throw 'staged release-provenance.json SHA256SUMS hash mismatch'
+    }
+    if ([string]$provenance.artifacts.publisher_public_key.path -ne 'publisher-key.ed25519.pub') {
+        throw "staged release-provenance.json publisher key path mismatch: $($provenance.artifacts.publisher_public_key.path)"
+    }
+    if (([string]$provenance.artifacts.publisher_public_key.sha256).ToUpperInvariant() -ne $ExpectedPublisherKeySha256) {
+        throw 'staged release-provenance.json publisher key asset hash mismatch'
+    }
+    if (([string]$provenance.artifacts.publisher_public_key.fingerprint_sha256).ToUpperInvariant() -ne $ExpectedPublisherKeyFingerprint) {
+        throw 'staged release-provenance.json publisher key fingerprint mismatch'
+    }
+    if ([int]$provenance.source_trust.schema_version -ne 1) {
+        throw 'staged release-provenance.json source_trust schema mismatch'
+    }
+    if ([string]$provenance.source_trust.signature_format -ne 'ed25519-detached-hex') {
+        throw 'staged release-provenance.json source_trust signature_format mismatch'
+    }
+    if ([string]$provenance.source_trust.publisher_public_key_asset -ne 'publisher-key.ed25519.pub') {
+        throw 'staged release-provenance.json source_trust publisher key asset mismatch'
+    }
+    if (([string]$provenance.source_trust.publisher_public_key_sha256_fingerprint).ToUpperInvariant() -ne $ExpectedPublisherKeyFingerprint) {
+        throw 'staged release-provenance.json source_trust publisher key fingerprint mismatch'
+    }
+    $signedAssets = @($provenance.source_trust.signed_assets | ForEach-Object { [string]$_ })
+    $missingSignedAssets = @(@('SHA256SUMS.txt.sig', 'release-provenance.json.sig') | Where-Object { $signedAssets -notcontains $_ })
+    if ($missingSignedAssets.Count -gt 0) {
+        throw "staged release-provenance.json missing signed asset contract: $($missingSignedAssets -join ', ')"
+    }
+
+    return [ordered]@{
+        ok = $true
+        path = $Path
+        schema_version = [int]$provenance.schema_version
+        dry_run = [bool]$provenance.dry_run
+        release_tag = [string]$provenance.release_tag
+        package_version = [string]$provenance.package_version
+        source_trust = [ordered]@{
+            schema_version = [int]$provenance.source_trust.schema_version
+            signature_format = [string]$provenance.source_trust.signature_format
+            publisher_public_key_asset = [string]$provenance.source_trust.publisher_public_key_asset
+            publisher_public_key_sha256_fingerprint = [string]$provenance.source_trust.publisher_public_key_sha256_fingerprint
+            signed_assets = $signedAssets
+        }
+    }
+}
+
+function Invoke-SignedReleaseStagingSelfTest {
+    param(
+        [string]$Exe,
+        [string]$StageDir
+    )
+
+    $testPrivateKey = '1111111111111111111111111111111111111111111111111111111111111111'
+    $oldReleaseKey = $env:RELEASE_ED25519_PRIVATE_KEY_HEX
+    $oldLegacyKey = $env:GH_MIRROR_GUI_ED25519_PRIVATE_KEY_HEX
+    $assetExe = Join-Path $StageDir 'gh_mirror_gui.exe'
+    $sha256SumsPath = Join-Path $StageDir 'SHA256SUMS.txt'
+    $sha256SumsSignaturePath = Join-Path $StageDir 'SHA256SUMS.txt.sig'
+    $provenancePath = Join-Path $StageDir 'release-provenance.json'
+    $provenanceSignaturePath = Join-Path $StageDir 'release-provenance.json.sig'
+    $publicKeyAsset = Join-Path $StageDir 'publisher-key.ed25519.pub'
+    $doctorJson = Join-Path $StageDir 'release-signing-readiness.json'
+    $doctorFixtureDir = Join-Path $StageDir 'doctor-fixture'
+    $sha256SumsVerifyJson = Join-Path $StageDir 'SHA256SUMS.txt.sig.verify.json'
+    $provenanceVerifyJson = Join-Path $StageDir 'release-provenance.json.sig.verify.json'
+
+    try {
+        $env:RELEASE_ED25519_PRIVATE_KEY_HEX = $testPrivateKey
+        Remove-Item Env:GH_MIRROR_GUI_ED25519_PRIVATE_KEY_HEX -ErrorAction SilentlyContinue
+
+        New-Item -ItemType Directory -Force -Path $StageDir | Out-Null
+        Copy-Item -LiteralPath $Exe -Destination $assetExe -Force
+        $exeHash = (Get-FileHash -LiteralPath $assetExe -Algorithm SHA256).Hash
+        "$exeHash  gh_mirror_gui.exe" | Set-Content -LiteralPath $sha256SumsPath -Encoding ASCII
+        $sha256SumsHash = (Get-FileHash -LiteralPath $sha256SumsPath -Algorithm SHA256).Hash
+
+        Invoke-LoggedNative `
+            -Name 'signed-release-staging-doctor' `
+            -Exe $Exe `
+            -Arguments @(
+                '--release-signing-doctor',
+                '--fixture-dir', $doctorFixtureDir,
+                '--json', $doctorJson,
+                '--public-key-out', $publicKeyAsset
+            )
+
+        $doctor = Get-Content -LiteralPath $doctorJson -Raw | ConvertFrom-Json
+        if (!$doctor.ok) {
+            throw 'signed release staging doctor did not report ok=true'
+        }
+        $publisherKeyFingerprint = ([string]$doctor.public_key.fingerprint_sha256).ToUpperInvariant()
+        if ($publisherKeyFingerprint -notmatch '^[0-9A-F]{64}$') {
+            throw 'signed release staging publisher key fingerprint was not 64 uppercase hex characters'
+        }
+        $publisherKeyText = Assert-UpperHexTextFile -Path $publicKeyAsset -ExpectedChars 64 -Label 'signed release staging publisher key'
+        $publisherKeyHash = (Get-FileHash -LiteralPath $publicKeyAsset -Algorithm SHA256).Hash
+
+        $packageVersion = Get-CargoPackageVersion
+        $stagingTag = "v$packageVersion-signed-staging"
+        $provenance = [ordered]@{
+            schema_version = 1
+            dry_run = $true
+            release_tag = $stagingTag
+            package_version = $packageVersion
+            generated_by = 'tools\release-verify.ps1 signed_release_staging'
+            git = [ordered]@{
+                head = $Receipt.provenance.git.head
+                branch = $Receipt.provenance.git.branch
+                describe = $Receipt.provenance.git.describe
+                status_short = @($Receipt.provenance.git.status_short)
+            }
+            files = [ordered]@{
+                cargo_lock_sha256 = $Receipt.provenance.files.cargo_lock.sha256
+                rust_toolchain_sha256 = $Receipt.provenance.files.rust_toolchain.sha256
+                release_workflow_sha256 = $Receipt.provenance.files.release_workflow.sha256
+                release_verify_script_sha256 = $Receipt.provenance.files.release_verify_script.sha256
+            }
+            source_trust = [ordered]@{
+                schema_version = 1
+                signature_format = 'ed25519-detached-hex'
+                publisher_public_key_asset = 'publisher-key.ed25519.pub'
+                publisher_public_key_sha256_fingerprint = $publisherKeyFingerprint
+                signed_assets = @(
+                    'SHA256SUMS.txt.sig',
+                    'release-provenance.json.sig'
+                )
+            }
+            artifacts = [ordered]@{
+                release_binary = [ordered]@{
+                    path = 'gh_mirror_gui.exe'
+                    size = (Get-Item -LiteralPath $assetExe).Length
+                    sha256 = $exeHash
+                }
+                sha256sums = [ordered]@{
+                    path = 'SHA256SUMS.txt'
+                    size = (Get-Item -LiteralPath $sha256SumsPath).Length
+                    sha256 = $sha256SumsHash
+                }
+                publisher_public_key = [ordered]@{
+                    path = 'publisher-key.ed25519.pub'
+                    size = (Get-Item -LiteralPath $publicKeyAsset).Length
+                    sha256 = $publisherKeyHash
+                    fingerprint_sha256 = $publisherKeyFingerprint
+                }
+            }
+        }
+        $provenance | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $provenancePath -Encoding UTF8
+
+        $provenanceSchema = Assert-StagedReleaseProvenance `
+            -Path $provenancePath `
+            -ExpectedPackageVersion $packageVersion `
+            -ExpectedBinarySha256 $exeHash `
+            -ExpectedSha256SumsSha256 $sha256SumsHash `
+            -ExpectedPublisherKeySha256 $publisherKeyHash `
+            -ExpectedPublisherKeyFingerprint $publisherKeyFingerprint
+
+        Invoke-LoggedNative `
+            -Name 'signed-release-staging-sign-sha256sums' `
+            -Exe $Exe `
+            -Arguments @(
+                '--sign-verification-source',
+                '--source', $sha256SumsPath,
+                '--out', $sha256SumsSignaturePath
+            )
+        Invoke-LoggedNative `
+            -Name 'signed-release-staging-sign-provenance' `
+            -Exe $Exe `
+            -Arguments @(
+                '--sign-verification-source',
+                '--source', $provenancePath,
+                '--out', $provenanceSignaturePath
+            )
+        $sha256SumsSignature = Assert-UpperHexTextFile -Path $sha256SumsSignaturePath -ExpectedChars 128 -Label 'signed release staging SHA256SUMS signature'
+        $provenanceSignature = Assert-UpperHexTextFile -Path $provenanceSignaturePath -ExpectedChars 128 -Label 'signed release staging provenance signature'
+
+        Invoke-LoggedNative `
+            -Name 'signed-release-staging-verify-sha256sums' `
+            -Exe $Exe `
+            -Arguments @(
+                '--verify-verification-source',
+                '--source', $sha256SumsPath,
+                '--signature', $sha256SumsSignaturePath,
+                '--public-key-file', $publicKeyAsset,
+                '--json', $sha256SumsVerifyJson
+            )
+        Invoke-LoggedNative `
+            -Name 'signed-release-staging-verify-provenance' `
+            -Exe $Exe `
+            -Arguments @(
+                '--verify-verification-source',
+                '--source', $provenancePath,
+                '--signature', $provenanceSignaturePath,
+                '--public-key-file', $publicKeyAsset,
+                '--json', $provenanceVerifyJson
+            )
+    }
+    finally {
+        if ($null -eq $oldReleaseKey) {
+            Remove-Item Env:RELEASE_ED25519_PRIVATE_KEY_HEX -ErrorAction SilentlyContinue
+        }
+        else {
+            $env:RELEASE_ED25519_PRIVATE_KEY_HEX = $oldReleaseKey
+        }
+        if ($null -eq $oldLegacyKey) {
+            Remove-Item Env:GH_MIRROR_GUI_ED25519_PRIVATE_KEY_HEX -ErrorAction SilentlyContinue
+        }
+        else {
+            $env:GH_MIRROR_GUI_ED25519_PRIVATE_KEY_HEX = $oldLegacyKey
+        }
+    }
+
+    $sha256SumsVerify = Get-Content -LiteralPath $sha256SumsVerifyJson -Raw | ConvertFrom-Json
+    $provenanceVerify = Get-Content -LiteralPath $provenanceVerifyJson -Raw | ConvertFrom-Json
+    if (!$sha256SumsVerify.ok) {
+        throw 'signed release staging SHA256SUMS signature verification did not report ok=true'
+    }
+    if (!$provenanceVerify.ok) {
+        throw 'signed release staging release-provenance signature verification did not report ok=true'
+    }
+
+    $requiredAssetNames = @(
+        'gh_mirror_gui.exe',
+        'SHA256SUMS.txt',
+        'SHA256SUMS.txt.sig',
+        'release-provenance.json',
+        'release-provenance.json.sig',
+        'publisher-key.ed25519.pub'
+    )
+    $assets = @($requiredAssetNames | ForEach-Object {
+        $path = Join-Path $StageDir $_
+        if (!(Test-Path -LiteralPath $path)) {
+            throw "signed release staging required asset missing: $_"
+        }
+        [ordered]@{
+            name = $_
+            path = $path
+            size = (Get-Item -LiteralPath $path).Length
+            sha256 = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
+        }
+    })
+
+    return [ordered]@{
+        ok = $true
+        stage_dir = $StageDir
+        dry_run = $true
+        required_assets = $requiredAssetNames
+        assets = $assets
+        provenance_schema = $provenanceSchema
+        publisher_key = [ordered]@{
+            path = $publicKeyAsset
+            value = $publisherKeyText
+            sha256 = $publisherKeyHash
+            fingerprint_sha256 = $publisherKeyFingerprint
+        }
+        signatures = [ordered]@{
+            sha256sums = [ordered]@{
+                path = $sha256SumsSignaturePath
+                hex_chars = $sha256SumsSignature.Length
+            }
+            provenance = [ordered]@{
+                path = $provenanceSignaturePath
+                hex_chars = $provenanceSignature.Length
+            }
+        }
+        verifications = [ordered]@{
+            sha256sums = $sha256SumsVerify
+            provenance = $provenanceVerify
+        }
+        covered_by = Assert-CommandLogContains `
+            -CommandName 'cargo-test-all-targets' `
+            -RequiredPatterns @(
+                'verify_verification_source_cli_accepts_publisher_key_file',
+                'verify_verification_source_cli_rejects_bad_signature'
+            )
+    }
+}
+
 function Invoke-GitHubLatestRelease {
     param([string]$Repo)
 
@@ -757,6 +1093,9 @@ $Receipt.checks.release_signing_readiness = [ordered]@{
         -JsonFile (Join-Path $EvidenceDir 'release-signing-readiness.json') `
         -PublicKeyOut (Join-Path $EvidenceDir 'publisher-key.ed25519.pub')
 }
+$Receipt.checks.signed_release_staging = Invoke-SignedReleaseStagingSelfTest `
+    -Exe $exe `
+    -StageDir (Join-Path $EvidenceDir 'signed-release-staging')
 
 $originRelease = Invoke-GitHubLatestRelease -Repo 'wsolarq11/gh_mirror_gui'
 $targetRelease = Invoke-GitHubLatestRelease -Repo 'carrot-hu23/dst-admin-go'

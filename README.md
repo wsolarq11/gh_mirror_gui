@@ -174,7 +174,11 @@ Evidence is written under `target\delivery\<run_id>\`.
 The receipt records build provenance including the git commit, Rust toolchain,
 `Cargo.lock` hash, release binary hash, verification command logs, and
 `checks.trust_policy_contract` for the `VERIFIED` / `MISMATCH` / `UNKNOWN`
-decision rules and signed verification source trust gates.
+decision rules and signed verification source trust gates. It also records
+`checks.signed_release_staging`, a no-publish dry run that stages
+`gh_mirror_gui.exe`, `SHA256SUMS.txt`, `release-provenance.json`, detached
+`.sig` assets, and `publisher-key.ed25519.pub`, then verifies the two signed
+source assets against that exported public key.
 
 ## Release automation
 
