@@ -55,7 +55,11 @@ use trust_policy::{
     plan_file_disposition_for_report, AppliedFileDisposition, MismatchFilePolicy,
     TrustPolicyConfig, TrustPolicySnapshot,
 };
-use update_candidate::run_update_candidate_contract_selftest;
+use update_candidate::{
+    check_latest_update_candidate, refused_update_candidate_check_report,
+    run_update_candidate_contract_selftest, run_update_candidate_latest_selftest,
+    UpdateCandidateCheckConfig, UpdateCandidateCheckReport,
+};
 use verification::{
     verification_plan_for_selected_asset, verification_source_summary, verify_downloaded_file,
     DownloadVerificationPlan, VerificationReport, VerificationStatus,
@@ -241,6 +245,78 @@ fn render_trust_center_snapshot(ui: &mut egui::Ui, snapshot: &TrustCenterSnapsho
     });
 }
 
+fn render_update_candidate_check(ui: &mut egui::Ui, report: &UpdateCandidateCheckReport) {
+    ui.group(|ui| {
+        ui.label(egui::RichText::new("Trust Center · Self-update Stage 1").strong());
+        ui.small(
+            "Backend/core verdict only: no install, no exe replacement, no system persistence.",
+        );
+        egui::Grid::new("trust_center_update_candidate")
+            .num_columns(2)
+            .striped(true)
+            .show(ui, |ui| {
+                ui.label("Status");
+                ui.label(report.status_display());
+                ui.end_row();
+
+                ui.label("Release");
+                ui.label(format!("{} @ {}", report.repo, report.release_tag));
+                ui.end_row();
+
+                ui.label("Asset");
+                ui.label(&report.asset_name);
+                ui.end_row();
+
+                ui.label("Reason");
+                ui.label(&report.evaluation.reason);
+                ui.end_row();
+
+                ui.label("refusal_reason");
+                ui.label(report.refusal_reason().unwrap_or("none"));
+                ui.end_row();
+
+                ui.label("Publisher fingerprint");
+                ui.label(
+                    report
+                        .publisher_key_fingerprint_sha256()
+                        .unwrap_or("not available"),
+                );
+                ui.end_row();
+
+                ui.label("Evidence path");
+                ui.label(
+                    report
+                        .evaluation
+                        .evidence_path
+                        .as_deref()
+                        .unwrap_or("not recorded"),
+                );
+                ui.end_row();
+
+                ui.label("No mutation");
+                ui.label(report.evaluation.no_mutation.to_string());
+                ui.end_row();
+            });
+
+        if let Some(error) = &report.evidence_write_error {
+            ui.colored_label(
+                egui::Color32::from_rgb(220, 160, 0),
+                format!("Evidence write warning: {error}"),
+            );
+        }
+        if let Some(path) = report.evaluation.evidence_path.as_deref() {
+            let evidence_path = Path::new(path);
+            if evidence_path.is_file() {
+                if ui.button("📄 Open Update Evidence").clicked() {
+                    let _ = open::that(evidence_path);
+                }
+            } else {
+                ui.small("Update evidence path is recorded but not present on disk.");
+            }
+        }
+    });
+}
+
 fn import_publisher_key_pin_from_path(path: &Path) -> Result<String, String> {
     let text = std::fs::read_to_string(path)
         .map_err(|e| format!("Read publisher public key {}: {e}", path.display()))?;
@@ -287,6 +363,7 @@ const SPEED_TEST_TIMEOUT_SECS: u64 = 5;
 const MIRRORS: &[(&str, &str)] = &[("Direct (no mirror)", "")];
 type ReleaseLookupMessage = (String, Result<ResolvedRelease, String>);
 type PublisherKeyImportMessage = (String, Result<ImportedPublisherKeyPin, String>);
+type UpdateCandidateCheckMessage = UpdateCandidateCheckReport;
 type DownloadResultMessage = Result<DownloadCompletion, String>;
 
 struct DownloadCompletion {
@@ -362,6 +439,10 @@ struct GhMirrorGui {
     publisher_key_import_rx: Option<mpsc::Receiver<PublisherKeyImportMessage>>,
     publisher_key_import_asset_url: Option<String>,
     publisher_key_import_source_label: Option<String>,
+    update_candidate_status: String,
+    update_candidate_report: Option<UpdateCandidateCheckReport>,
+    update_candidate_thread: Option<thread::JoinHandle<()>>,
+    update_candidate_rx: Option<mpsc::Receiver<UpdateCandidateCheckMessage>>,
     // Persisted state
     download_complete_notified: bool,
     last_download_path: Option<PathBuf>,
@@ -454,6 +535,10 @@ impl GhMirrorGui {
             publisher_key_import_rx: None,
             publisher_key_import_asset_url: None,
             publisher_key_import_source_label: None,
+            update_candidate_status: String::new(),
+            update_candidate_report: None,
+            update_candidate_thread: None,
+            update_candidate_rx: None,
             download_complete_notified: false,
             last_download_path: None,
             last_verification: None,
@@ -487,6 +572,13 @@ impl GhMirrorGui {
         history_path_from_setting(&self.history_path)
     }
 
+    fn update_candidate_evidence_dir(&self) -> PathBuf {
+        self.effective_history_path()
+            .parent()
+            .map(|path| path.join("update-candidate-evidence"))
+            .unwrap_or_else(|| PathBuf::from("update-candidate-evidence"))
+    }
+
     fn clear_release_lookup_result(&mut self) {
         self.release = None;
         self.selected_release_asset = None;
@@ -496,6 +588,42 @@ impl GhMirrorGui {
         self.publisher_key_import_rx = None;
         self.publisher_key_import_asset_url = None;
         self.publisher_key_import_source_label = None;
+    }
+
+    fn start_update_candidate_check(&mut self) {
+        if self.update_candidate_thread.is_some() {
+            self.update_candidate_status =
+                "Self-update candidate check is already running...".to_string();
+            return;
+        }
+
+        let proxy = self.proxy.clone();
+        let allow_invalid_certs = self.allow_invalid_certs;
+        let source_trust_policy = self.trust_policy.source_trust.clone();
+        let evidence_dir = self.update_candidate_evidence_dir();
+        let (tx, rx) = mpsc::channel::<UpdateCandidateCheckMessage>();
+        self.update_candidate_status =
+            "Checking latest self-update candidate (no install)...".to_string();
+        self.update_candidate_rx = Some(rx);
+        self.update_candidate_thread = Some(thread::spawn(move || {
+            let report = match build_client(&proxy, 60, allow_invalid_certs) {
+                Ok(client) => check_latest_update_candidate(
+                    &client,
+                    UpdateCandidateCheckConfig {
+                        current_version: env!("CARGO_PKG_VERSION"),
+                        source_trust_policy: &source_trust_policy,
+                        evidence_dir: &evidence_dir,
+                        api_base: None,
+                    },
+                ),
+                Err(e) => refused_update_candidate_check_report(
+                    env!("CARGO_PKG_VERSION"),
+                    format!("self-update client build failed: {e}"),
+                    &evidence_dir,
+                ),
+            };
+            let _ = tx.send(report);
+        }));
     }
 
     fn start_release_lookup(&mut self) {
@@ -919,6 +1047,22 @@ impl eframe::App for GhMirrorGui {
                         }
                     }
                 }
+            }
+        }
+
+        // Process latest self-update candidate check result. This is no-mutation:
+        // backend/core reports candidate/no-update/refused only; UI just displays it.
+        if let Some(rx) = &self.update_candidate_rx {
+            if let Ok(report) = rx.try_recv() {
+                self.update_candidate_thread = None;
+                self.update_candidate_rx = None;
+                self.update_candidate_status = format!(
+                    "Self-update check: {} ({})",
+                    report.status_display(),
+                    report.evaluation.reason
+                );
+                self.status = self.update_candidate_status.clone();
+                self.update_candidate_report = Some(report);
             }
         }
 
@@ -1401,6 +1545,31 @@ impl eframe::App for GhMirrorGui {
                     self.effective_history_path().display()
                 ));
                 ui.small("Open Evidence uses the exact JSON evidence path recorded for the completed download.");
+            });
+
+            ui.group(|ui| {
+                ui.label(egui::RichText::new("Self-update Stage 1").strong());
+                ui.small("Checks the public latest release and only reports candidate / no-update / refused.");
+                ui.horizontal(|ui| {
+                    let running = self.update_candidate_thread.is_some();
+                    if ui
+                        .add_enabled(
+                            !running,
+                            egui::Button::new("Check latest self-update candidate"),
+                        )
+                        .clicked()
+                    {
+                        self.start_update_candidate_check();
+                    }
+                    if running {
+                        ui.label("⏳ Checking...");
+                    } else if !self.update_candidate_status.is_empty() {
+                        ui.label(&self.update_candidate_status);
+                    }
+                });
+                if let Some(report) = &self.update_candidate_report {
+                    render_update_candidate_check(ui, report);
+                }
             });
 
             // Action buttons
@@ -1912,6 +2081,14 @@ fn main() -> Result<(), eframe::Error> {
     if args.first().map(|s| s.as_str()) == Some("--update-candidate-contract-selftest") {
         if let Err(e) = run_update_candidate_contract_selftest(&args[1..]) {
             eprintln!("update candidate contract selftest failed: {e}");
+            std::process::exit(2);
+        }
+        return Ok(());
+    }
+
+    if args.first().map(|s| s.as_str()) == Some("--update-candidate-latest-selftest") {
+        if let Err(e) = run_update_candidate_latest_selftest(&args[1..]) {
+            eprintln!("update candidate latest selftest failed: {e}");
             std::process::exit(2);
         }
         return Ok(());

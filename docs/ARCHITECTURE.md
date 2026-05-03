@@ -146,6 +146,10 @@ Evidence must remain reviewable and machine-readable:
   public release assets
 - update candidate contract selftest that proves the next self-update layer is
   no-mutation and refuses untrusted candidates before any install/replace step
+- Self-update Stage 1 latest-release check and Trust Center display: backend
+  reports only `candidate`, `no-update`, or `refused`, records evidence, and
+  never installs, replaces the executable, writes system persistence, mutates
+  tags, publishes releases, or touches secrets
 - network smoke
 - benchmark
 - GUI launch smoke

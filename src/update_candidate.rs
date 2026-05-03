@@ -1,10 +1,36 @@
-use crate::source_trust::{SourceAuthenticityStatus, SourceTrustDecision, SourceTrustEvidence};
-use crate::verification::{VerificationReport, VerificationStatus};
+use crate::releases::{
+    resolve_release_assets, resolve_release_assets_with_base, ReleaseAsset, ReleaseQuery,
+    ReleaseQueryKind, ResolvedRelease,
+};
+use crate::source_trust::{
+    import_publisher_key_pin_from_release_asset, not_applicable_source_trust, publisher_key_asset,
+    SourceAuthenticityStatus, SourceTrustDecision, SourceTrustEvidence, SourceTrustPolicyConfig,
+};
+use crate::verification::{
+    verification_plan_for_selected_asset, verify_downloaded_file, VerificationReport,
+    VerificationStatus,
+};
+use reqwest::blocking::Client;
 use std::cmp::Ordering;
-use std::path::PathBuf;
+use std::fs;
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const UPDATE_CANDIDATE_SCHEMA_VERSION: u32 = 1;
+const UPDATE_CANDIDATE_EVIDENCE_SCHEMA_VERSION: u32 = 1;
+const SELF_UPDATE_OWNER: &str = "wsolarq11";
+const SELF_UPDATE_REPO: &str = "gh_mirror_gui";
 const SELF_UPDATE_ASSET_NAME: &str = "gh_mirror_gui.exe";
+const MAX_SELF_UPDATE_CANDIDATE_BYTES: u64 = 256 * 1024 * 1024;
+const UPDATE_CANDIDATE_USER_AGENT: &str = "gh_mirror_gui-update-candidate";
+
+pub(crate) struct UpdateCandidateCheckConfig<'a> {
+    pub(crate) current_version: &'a str,
+    pub(crate) source_trust_policy: &'a SourceTrustPolicyConfig,
+    pub(crate) evidence_dir: &'a Path,
+    pub(crate) api_base: Option<&'a str>,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -41,12 +67,201 @@ pub(crate) struct UpdateCandidateEvaluation {
     pub(crate) no_mutation: bool,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct UpdateCandidateCheckReport {
+    pub(crate) schema_version: u32,
+    pub(crate) repo: String,
+    pub(crate) release_tag: String,
+    pub(crate) release_url: String,
+    pub(crate) asset_name: String,
+    pub(crate) release_publisher_key_fingerprint_sha256: Option<String>,
+    pub(crate) evaluation: UpdateCandidateEvaluation,
+    pub(crate) verification_report: Option<VerificationReport>,
+    pub(crate) evidence_write_error: Option<String>,
+}
+
+impl UpdateCandidateCheckReport {
+    pub(crate) fn status_display(&self) -> &'static str {
+        match self.evaluation.status {
+            UpdateCandidateStatus::Candidate => "candidate",
+            UpdateCandidateStatus::NoUpdate => "no-update",
+            UpdateCandidateStatus::Refused => "refused",
+        }
+    }
+
+    pub(crate) fn refusal_reason(&self) -> Option<&str> {
+        if self.evaluation.status == UpdateCandidateStatus::Refused {
+            Some(self.evaluation.reason.as_str())
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn publisher_key_fingerprint_sha256(&self) -> Option<&str> {
+        self.evaluation
+            .publisher_key_fingerprint_sha256
+            .as_deref()
+            .or(self.release_publisher_key_fingerprint_sha256.as_deref())
+    }
+}
+
 pub(crate) struct UpdateCandidateInput<'a> {
     pub(crate) current_version: &'a str,
     pub(crate) release_tag: &'a str,
     pub(crate) asset_name: &'a str,
     pub(crate) verification_report: &'a VerificationReport,
     pub(crate) evidence_path: Option<&'a str>,
+}
+
+pub(crate) fn check_latest_update_candidate(
+    client: &Client,
+    config: UpdateCandidateCheckConfig<'_>,
+) -> UpdateCandidateCheckReport {
+    let repo = format!("{SELF_UPDATE_OWNER}/{SELF_UPDATE_REPO}");
+    let lookup_query = ReleaseQuery {
+        owner: SELF_UPDATE_OWNER.to_string(),
+        repo: SELF_UPDATE_REPO.to_string(),
+        kind: ReleaseQueryKind::Latest,
+    };
+
+    let release = match config.api_base {
+        Some(api_base) => resolve_release_assets_with_base(client, api_base, &lookup_query),
+        None => resolve_release_assets(client, &lookup_query),
+    };
+
+    let release = match release {
+        Ok(release) => release,
+        Err(e) => {
+            let evidence_path =
+                allocate_update_candidate_evidence_path(config.evidence_dir, "lookup-failed");
+            let evidence_path_str = evidence_path
+                .as_deref()
+                .map(|path| path.display().to_string());
+            let evaluation = refused_update_candidate_evaluation(
+                config.current_version,
+                "unknown",
+                SELF_UPDATE_ASSET_NAME,
+                format!("latest release lookup failed: {e}"),
+                None,
+                evidence_path_str.as_deref(),
+            );
+            let report = UpdateCandidateCheckReport {
+                schema_version: UPDATE_CANDIDATE_SCHEMA_VERSION,
+                repo,
+                release_tag: "unknown".to_string(),
+                release_url: "unknown".to_string(),
+                asset_name: SELF_UPDATE_ASSET_NAME.to_string(),
+                release_publisher_key_fingerprint_sha256: None,
+                evaluation,
+                verification_report: None,
+                evidence_write_error: None,
+            };
+            return finish_update_candidate_check_report(report, evidence_path);
+        }
+    };
+
+    evaluate_resolved_latest_release(client, config, repo, release)
+}
+
+pub(crate) fn refused_update_candidate_check_report(
+    current_version: &str,
+    reason: impl Into<String>,
+    evidence_dir: &Path,
+) -> UpdateCandidateCheckReport {
+    let evidence_path = allocate_update_candidate_evidence_path(evidence_dir, "runtime-refused");
+    let evidence_path_str = evidence_path
+        .as_deref()
+        .map(|path| path.display().to_string());
+    let evaluation = refused_update_candidate_evaluation(
+        current_version,
+        "unknown",
+        SELF_UPDATE_ASSET_NAME,
+        reason,
+        None,
+        evidence_path_str.as_deref(),
+    );
+    let report = UpdateCandidateCheckReport {
+        schema_version: UPDATE_CANDIDATE_SCHEMA_VERSION,
+        repo: format!("{SELF_UPDATE_OWNER}/{SELF_UPDATE_REPO}"),
+        release_tag: "unknown".to_string(),
+        release_url: "unknown".to_string(),
+        asset_name: SELF_UPDATE_ASSET_NAME.to_string(),
+        release_publisher_key_fingerprint_sha256: None,
+        evaluation,
+        verification_report: None,
+        evidence_write_error: None,
+    };
+    finish_update_candidate_check_report(report, evidence_path)
+}
+
+pub(crate) fn run_update_candidate_latest_selftest(args: &[String]) -> Result<(), String> {
+    let mut json_out: Option<PathBuf> = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--json" => {
+                i += 1;
+                json_out = args.get(i).map(PathBuf::from);
+            }
+            other => {
+                return Err(format!(
+                    "unknown --update-candidate-latest-selftest option: {other}"
+                ));
+            }
+        }
+        i += 1;
+    }
+
+    let evidence_dir = json_out
+        .as_ref()
+        .and_then(|path| path.parent())
+        .map(|path| path.join("update-candidate-latest-evidence"))
+        .unwrap_or_else(|| std::env::temp_dir().join("gh_mirror_gui-update-candidate-evidence"));
+    let policy = SourceTrustPolicyConfig::default();
+    let client = Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .map_err(|e| format!("Build update candidate selftest client: {e}"))?;
+    let report = check_latest_update_candidate(
+        &client,
+        UpdateCandidateCheckConfig {
+            current_version: env!("CARGO_PKG_VERSION"),
+            source_trust_policy: &policy,
+            evidence_dir: &evidence_dir,
+            api_base: None,
+        },
+    );
+    let evidence_ready = report
+        .evaluation
+        .evidence_path
+        .as_deref()
+        .is_some_and(|path| Path::new(path).is_file());
+    let ok = report.release_tag != "unknown"
+        && report.evaluation.no_mutation
+        && report.evidence_write_error.is_none()
+        && evidence_ready;
+    let status = report.evaluation.status.as_str();
+    let output = serde_json::json!({
+        "schema_version": UPDATE_CANDIDATE_SCHEMA_VERSION,
+        "ok": ok,
+        "status": status,
+        "allowed_statuses": ["CANDIDATE", "NO_UPDATE", "REFUSED"],
+        "no_mutation": report.evaluation.no_mutation,
+        "evidence_ready": evidence_ready,
+        "report": report,
+    });
+    let pretty =
+        serde_json::to_string_pretty(&output).map_err(|e| format!("Serialize JSON: {e}"))?;
+    if let Some(json_path) = json_out {
+        std::fs::write(&json_path, format!("{pretty}\n"))
+            .map_err(|e| format!("Write update candidate latest selftest JSON: {e}"))?;
+    }
+    println!("{pretty}");
+    if ok {
+        Ok(())
+    } else {
+        Err("update candidate latest selftest did not produce a live no-mutation verdict with evidence".to_string())
+    }
 }
 
 pub(crate) fn evaluate_update_candidate(
@@ -152,6 +367,406 @@ pub(crate) fn evaluate_update_candidate(
     evaluation.reason =
         "newer candidate passed hash, signed source, publisher key, and policy checks".to_string();
     evaluation
+}
+
+fn evaluate_resolved_latest_release(
+    client: &Client,
+    config: UpdateCandidateCheckConfig<'_>,
+    repo: String,
+    release: ResolvedRelease,
+) -> UpdateCandidateCheckReport {
+    let evidence_path =
+        allocate_update_candidate_evidence_path(config.evidence_dir, &release.tag_name);
+    let evidence_path_str = evidence_path
+        .as_deref()
+        .map(|path| path.display().to_string());
+    let release_publisher_key_fingerprint = release_publisher_key_fingerprint(client, &release)
+        .ok()
+        .flatten();
+    let required_policy = required_self_update_source_policy(config.source_trust_policy);
+
+    let Some(asset_index) = self_update_asset_index(&release) else {
+        let evaluation = refused_update_candidate_evaluation(
+            config.current_version,
+            &release.tag_name,
+            SELF_UPDATE_ASSET_NAME,
+            format!("latest release does not contain required asset {SELF_UPDATE_ASSET_NAME}"),
+            release_publisher_key_fingerprint.clone(),
+            evidence_path_str.as_deref(),
+        );
+        let report = UpdateCandidateCheckReport {
+            schema_version: UPDATE_CANDIDATE_SCHEMA_VERSION,
+            repo,
+            release_tag: release.tag_name,
+            release_url: release.html_url,
+            asset_name: SELF_UPDATE_ASSET_NAME.to_string(),
+            release_publisher_key_fingerprint_sha256: release_publisher_key_fingerprint,
+            evaluation,
+            verification_report: None,
+            evidence_write_error: None,
+        };
+        return finish_update_candidate_check_report(report, evidence_path);
+    };
+
+    let asset = release.assets[asset_index].clone();
+    let candidate_version = version_from_release_tag(&release.tag_name);
+    let version_order = compare_versions(config.current_version, &candidate_version);
+    if version_order != Some(Ordering::Less) {
+        let verification_report = not_downloaded_verification_report(
+            &asset.name,
+            &required_policy,
+            "latest release is not newer; candidate artifact was not downloaded",
+        );
+        let evaluation = evaluate_update_candidate(UpdateCandidateInput {
+            current_version: config.current_version,
+            release_tag: &release.tag_name,
+            asset_name: &asset.name,
+            verification_report: &verification_report,
+            evidence_path: evidence_path_str.as_deref(),
+        });
+        let report = UpdateCandidateCheckReport {
+            schema_version: UPDATE_CANDIDATE_SCHEMA_VERSION,
+            repo,
+            release_tag: release.tag_name,
+            release_url: release.html_url,
+            asset_name: asset.name,
+            release_publisher_key_fingerprint_sha256: release_publisher_key_fingerprint,
+            evaluation,
+            verification_report: Some(verification_report),
+            evidence_write_error: None,
+        };
+        return finish_update_candidate_check_report(report, evidence_path);
+    }
+
+    if asset.size > MAX_SELF_UPDATE_CANDIDATE_BYTES {
+        let evaluation = refused_update_candidate_evaluation(
+            config.current_version,
+            &release.tag_name,
+            &asset.name,
+            format!(
+                "{} is too large for a no-mutation update candidate check: {} bytes",
+                asset.name, asset.size
+            ),
+            release_publisher_key_fingerprint.clone(),
+            evidence_path_str.as_deref(),
+        );
+        let report = UpdateCandidateCheckReport {
+            schema_version: UPDATE_CANDIDATE_SCHEMA_VERSION,
+            repo,
+            release_tag: release.tag_name,
+            release_url: release.html_url,
+            asset_name: asset.name,
+            release_publisher_key_fingerprint_sha256: release_publisher_key_fingerprint,
+            evaluation,
+            verification_report: None,
+            evidence_write_error: None,
+        };
+        return finish_update_candidate_check_report(report, evidence_path);
+    }
+    if !required_policy.has_trusted_key() {
+        let evaluation = refused_update_candidate_evaluation(
+            config.current_version,
+            &release.tag_name,
+            &asset.name,
+            "self-update candidate check requires a pinned Ed25519 publisher key before downloading a candidate",
+            release_publisher_key_fingerprint.clone(),
+            evidence_path_str.as_deref(),
+        );
+        let report = UpdateCandidateCheckReport {
+            schema_version: UPDATE_CANDIDATE_SCHEMA_VERSION,
+            repo,
+            release_tag: release.tag_name,
+            release_url: release.html_url,
+            asset_name: asset.name,
+            release_publisher_key_fingerprint_sha256: release_publisher_key_fingerprint,
+            evaluation,
+            verification_report: None,
+            evidence_write_error: None,
+        };
+        return finish_update_candidate_check_report(report, evidence_path);
+    }
+
+    let temp_path = temp_update_candidate_path(&asset.name);
+    let verification_report = download_and_verify_update_candidate(
+        client,
+        &release,
+        asset_index,
+        &asset,
+        &temp_path,
+        &required_policy,
+    );
+    let _ = fs::remove_file(&temp_path);
+
+    let verification_report = match verification_report {
+        Ok(report) => report,
+        Err(e) => {
+            let evaluation = refused_update_candidate_evaluation(
+                config.current_version,
+                &release.tag_name,
+                &asset.name,
+                e,
+                release_publisher_key_fingerprint.clone(),
+                evidence_path_str.as_deref(),
+            );
+            let report = UpdateCandidateCheckReport {
+                schema_version: UPDATE_CANDIDATE_SCHEMA_VERSION,
+                repo,
+                release_tag: release.tag_name,
+                release_url: release.html_url,
+                asset_name: asset.name,
+                release_publisher_key_fingerprint_sha256: release_publisher_key_fingerprint,
+                evaluation,
+                verification_report: None,
+                evidence_write_error: None,
+            };
+            return finish_update_candidate_check_report(report, evidence_path);
+        }
+    };
+
+    let evaluation = evaluate_update_candidate(UpdateCandidateInput {
+        current_version: config.current_version,
+        release_tag: &release.tag_name,
+        asset_name: &asset.name,
+        verification_report: &verification_report,
+        evidence_path: evidence_path_str.as_deref(),
+    });
+    let report = UpdateCandidateCheckReport {
+        schema_version: UPDATE_CANDIDATE_SCHEMA_VERSION,
+        repo,
+        release_tag: release.tag_name,
+        release_url: release.html_url,
+        asset_name: asset.name,
+        release_publisher_key_fingerprint_sha256: release_publisher_key_fingerprint,
+        evaluation,
+        verification_report: Some(verification_report),
+        evidence_write_error: None,
+    };
+    finish_update_candidate_check_report(report, evidence_path)
+}
+
+fn download_and_verify_update_candidate(
+    client: &Client,
+    release: &ResolvedRelease,
+    asset_index: usize,
+    asset: &ReleaseAsset,
+    temp_path: &Path,
+    required_policy: &SourceTrustPolicyConfig,
+) -> Result<VerificationReport, String> {
+    download_release_asset_to_path(client, asset, temp_path)?;
+    let verification_plan = verification_plan_for_selected_asset(release, asset_index);
+    verify_downloaded_file(
+        client,
+        &temp_path.to_path_buf(),
+        &asset.name,
+        verification_plan.as_ref(),
+        required_policy,
+    )
+}
+
+fn download_release_asset_to_path(
+    client: &Client,
+    asset: &ReleaseAsset,
+    output: &Path,
+) -> Result<(), String> {
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("Create update candidate temp dir: {e}"))?;
+    }
+    let mut response = client
+        .get(&asset.browser_download_url)
+        .header("User-Agent", UPDATE_CANDIDATE_USER_AGENT)
+        .send()
+        .map_err(|e| format!("Download update candidate {} failed: {e}", asset.name))?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(format!(
+            "Download update candidate {} failed: HTTP {}",
+            asset.name,
+            status.as_u16()
+        ));
+    }
+    if response
+        .content_length()
+        .is_some_and(|len| len > MAX_SELF_UPDATE_CANDIDATE_BYTES)
+    {
+        return Err(format!(
+            "{} response is too large for a no-mutation update candidate check",
+            asset.name
+        ));
+    }
+
+    let mut file =
+        fs::File::create(output).map_err(|e| format!("Create update candidate temp file: {e}"))?;
+    let mut total = 0u64;
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let n = response
+            .read(&mut buffer)
+            .map_err(|e| format!("Read update candidate body failed: {e}"))?;
+        if n == 0 {
+            break;
+        }
+        total += n as u64;
+        if total > MAX_SELF_UPDATE_CANDIDATE_BYTES {
+            let _ = fs::remove_file(output);
+            return Err(format!(
+                "{} response exceeded update candidate size limit",
+                asset.name
+            ));
+        }
+        file.write_all(&buffer[..n])
+            .map_err(|e| format!("Write update candidate temp file failed: {e}"))?;
+    }
+    Ok(())
+}
+
+fn release_publisher_key_fingerprint(
+    client: &Client,
+    release: &ResolvedRelease,
+) -> Result<Option<String>, String> {
+    let Some(asset) = publisher_key_asset(&release.assets) else {
+        return Ok(None);
+    };
+    import_publisher_key_pin_from_release_asset(client, asset)
+        .map(|pin| Some(pin.fingerprint_sha256))
+}
+
+fn self_update_asset_index(release: &ResolvedRelease) -> Option<usize> {
+    release
+        .assets
+        .iter()
+        .position(|asset| asset.name == SELF_UPDATE_ASSET_NAME)
+}
+
+fn required_self_update_source_policy(policy: &SourceTrustPolicyConfig) -> SourceTrustPolicyConfig {
+    SourceTrustPolicyConfig {
+        require_trusted_source: true,
+        trusted_publisher_key: policy.trusted_publisher_key.clone(),
+    }
+}
+
+fn not_downloaded_verification_report(
+    asset_name: &str,
+    policy: &SourceTrustPolicyConfig,
+    detail: &str,
+) -> VerificationReport {
+    VerificationReport {
+        status: VerificationStatus::Unknown,
+        asset_name: asset_name.to_string(),
+        file_sha256: "not downloaded".to_string(),
+        expected_sha256: None,
+        source: None,
+        source_trust: Some(not_applicable_source_trust(policy, detail)),
+        detail: detail.to_string(),
+    }
+}
+
+fn refused_update_candidate_evaluation(
+    current_version: &str,
+    release_tag: &str,
+    asset_name: &str,
+    reason: impl Into<String>,
+    publisher_key_fingerprint_sha256: Option<String>,
+    evidence_path: Option<&str>,
+) -> UpdateCandidateEvaluation {
+    UpdateCandidateEvaluation {
+        schema_version: UPDATE_CANDIDATE_SCHEMA_VERSION,
+        status: UpdateCandidateStatus::Refused,
+        current_version: current_version.to_string(),
+        candidate_version: version_from_release_tag(release_tag),
+        release_tag: release_tag.to_string(),
+        asset_name: asset_name.to_string(),
+        reason: reason.into(),
+        verification_status: "NOT_EVALUATED".to_string(),
+        source_authenticity_status: None,
+        source_trust_decision: None,
+        publisher_key_fingerprint_sha256,
+        evidence_path: evidence_path.map(ToString::to_string),
+        no_mutation: true,
+    }
+}
+
+fn finish_update_candidate_check_report(
+    mut report: UpdateCandidateCheckReport,
+    evidence_path: Option<PathBuf>,
+) -> UpdateCandidateCheckReport {
+    if let Some(path) = evidence_path {
+        if let Err(e) = write_update_candidate_evidence(&path, &report) {
+            report.evidence_write_error = Some(e);
+        }
+    }
+    report
+}
+
+fn allocate_update_candidate_evidence_path(
+    evidence_dir: &Path,
+    release_tag: &str,
+) -> Option<PathBuf> {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    Some(evidence_dir.join(format!(
+        "{}-{}-{}.json",
+        now.as_secs(),
+        now.as_nanos(),
+        sanitize_evidence_component(release_tag)
+    )))
+}
+
+fn temp_update_candidate_path(asset_name: &str) -> PathBuf {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    std::env::temp_dir()
+        .join("gh_mirror_gui-update-candidate")
+        .join(format!(
+            "{}-{}-{}",
+            std::process::id(),
+            now.as_nanos(),
+            sanitize_evidence_component(asset_name)
+        ))
+}
+
+fn write_update_candidate_evidence(
+    path: &Path,
+    report: &UpdateCandidateCheckReport,
+) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("Create update candidate evidence dir: {e}"))?;
+    }
+    let record = serde_json::json!({
+        "schema_version": UPDATE_CANDIDATE_EVIDENCE_SCHEMA_VERSION,
+        "no_mutation": true,
+        "repo": &report.repo,
+        "release_tag": &report.release_tag,
+        "release_url": &report.release_url,
+        "asset_name": &report.asset_name,
+        "release_publisher_key_fingerprint_sha256": &report.release_publisher_key_fingerprint_sha256,
+        "evaluation": &report.evaluation,
+        "verification_report": &report.verification_report,
+    });
+    let pretty =
+        serde_json::to_string_pretty(&record).map_err(|e| format!("Serialize evidence: {e}"))?;
+    fs::write(path, format!("{pretty}\n")).map_err(|e| format!("Write evidence: {e}"))
+}
+
+fn sanitize_evidence_component(value: &str) -> String {
+    let sanitized = value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    let trimmed = sanitized.trim_matches('_');
+    if trimmed.is_empty() {
+        "unknown".to_string()
+    } else {
+        trimmed.to_string()
+    }
 }
 
 pub(crate) fn run_update_candidate_contract_selftest(args: &[String]) -> Result<(), String> {
@@ -403,6 +1018,300 @@ fn parse_dotted_version(value: &str) -> Option<Vec<u64>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::source_trust::{
+        public_key_from_private_seed, sign_ed25519_detached, trusted_key_fingerprint,
+    };
+    use sha2::{Digest, Sha256};
+    use std::collections::HashMap;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
+    use std::time::Duration;
+
+    struct RouteResponse {
+        status: &'static str,
+        content_type: &'static str,
+        body: Vec<u8>,
+    }
+
+    fn serve_routes<F>(
+        expected_requests: usize,
+        make_routes: F,
+    ) -> (String, thread::JoinHandle<Vec<String>>)
+    where
+        F: FnOnce(&str) -> HashMap<String, RouteResponse>,
+    {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let base = format!("http://{addr}");
+        let routes = make_routes(&base);
+        let handle = thread::spawn(move || {
+            let mut requests = Vec::new();
+            for _ in 0..expected_requests {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut buf = [0u8; 8192];
+                let n = stream.read(&mut buf).unwrap();
+                let request = String::from_utf8_lossy(&buf[..n]).to_string();
+                let path = request
+                    .lines()
+                    .next()
+                    .and_then(|line| line.split_whitespace().nth(1))
+                    .unwrap_or("/")
+                    .to_string();
+                requests.push(request);
+                let fallback = RouteResponse {
+                    status: "404 Not Found",
+                    content_type: "text/plain",
+                    body: b"not found".to_vec(),
+                };
+                let response = routes.get(&path).unwrap_or(&fallback);
+                let header = format!(
+                    "HTTP/1.1 {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    response.status,
+                    response.content_type,
+                    response.body.len()
+                );
+                stream.write_all(header.as_bytes()).unwrap();
+                stream.write_all(&response.body).unwrap();
+            }
+            requests
+        });
+
+        (base, handle)
+    }
+
+    fn unique_evidence_dir(name: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "gh_mirror_gui_update_candidate_{}_{}_{}",
+            std::process::id(),
+            nonce,
+            name
+        ))
+    }
+
+    fn test_client() -> Client {
+        Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap()
+    }
+
+    fn sha256_hex(bytes: &[u8]) -> String {
+        let digest = Sha256::digest(bytes);
+        digest.iter().map(|byte| format!("{byte:02X}")).collect()
+    }
+
+    fn signed_release_routes(
+        base: &str,
+        tag: &str,
+        exe_body: &[u8],
+        public_key: &str,
+    ) -> HashMap<String, RouteResponse> {
+        let exe_sha256 = sha256_hex(exe_body);
+        let checksums = format!("{exe_sha256}  {SELF_UPDATE_ASSET_NAME}\n");
+        let signature = sign_ed25519_detached(checksums.as_bytes(), TEST_PRIVATE_KEY).unwrap();
+        let api_body = serde_json::json!({
+            "tag_name": tag,
+            "name": tag,
+            "html_url": format!("https://github.com/{SELF_UPDATE_OWNER}/{SELF_UPDATE_REPO}/releases/tag/{tag}"),
+            "assets": [
+                {
+                    "name": SELF_UPDATE_ASSET_NAME,
+                    "size": exe_body.len(),
+                    "browser_download_url": format!("{base}/{SELF_UPDATE_ASSET_NAME}"),
+                    "content_type": "application/x-msdownload"
+                },
+                {
+                    "name": "publisher-key.ed25519.pub",
+                    "size": public_key.len(),
+                    "browser_download_url": format!("{base}/publisher-key.ed25519.pub"),
+                    "content_type": "application/octet-stream"
+                },
+                {
+                    "name": "SHA256SUMS.txt",
+                    "size": checksums.len(),
+                    "browser_download_url": format!("{base}/SHA256SUMS.txt"),
+                    "content_type": "text/plain"
+                },
+                {
+                    "name": "SHA256SUMS.txt.sig",
+                    "size": signature.len(),
+                    "browser_download_url": format!("{base}/SHA256SUMS.txt.sig"),
+                    "content_type": "application/octet-stream"
+                }
+            ]
+        });
+
+        HashMap::from([
+            (
+                format!("/repos/{SELF_UPDATE_OWNER}/{SELF_UPDATE_REPO}/releases/latest"),
+                RouteResponse {
+                    status: "200 OK",
+                    content_type: "application/json",
+                    body: serde_json::to_vec(&api_body).unwrap(),
+                },
+            ),
+            (
+                format!("/{SELF_UPDATE_ASSET_NAME}"),
+                RouteResponse {
+                    status: "200 OK",
+                    content_type: "application/x-msdownload",
+                    body: exe_body.to_vec(),
+                },
+            ),
+            (
+                "/publisher-key.ed25519.pub".to_string(),
+                RouteResponse {
+                    status: "200 OK",
+                    content_type: "application/octet-stream",
+                    body: format!("{public_key}\n").into_bytes(),
+                },
+            ),
+            (
+                "/SHA256SUMS.txt".to_string(),
+                RouteResponse {
+                    status: "200 OK",
+                    content_type: "text/plain",
+                    body: checksums.into_bytes(),
+                },
+            ),
+            (
+                "/SHA256SUMS.txt.sig".to_string(),
+                RouteResponse {
+                    status: "200 OK",
+                    content_type: "application/octet-stream",
+                    body: signature.into_bytes(),
+                },
+            ),
+        ])
+    }
+
+    const TEST_PRIVATE_KEY: &str =
+        "1111111111111111111111111111111111111111111111111111111111111111";
+
+    #[test]
+    fn latest_update_check_reports_no_update_without_downloading_candidate() {
+        let public_key = public_key_from_private_seed(TEST_PRIVATE_KEY).unwrap();
+        let expected_fingerprint = trusted_key_fingerprint(&public_key).unwrap();
+        let exe_body = b"current public release binary";
+        let (api_base, server) = serve_routes(2, |base| {
+            signed_release_routes(base, "v0.1.3", exe_body, &public_key)
+        });
+        let evidence_dir = unique_evidence_dir("no_update");
+        let policy = SourceTrustPolicyConfig::default();
+
+        let report = check_latest_update_candidate(
+            &test_client(),
+            UpdateCandidateCheckConfig {
+                current_version: "0.1.3",
+                source_trust_policy: &policy,
+                evidence_dir: &evidence_dir,
+                api_base: Some(&api_base),
+            },
+        );
+        let requests = server.join().unwrap();
+
+        assert_eq!(report.evaluation.status, UpdateCandidateStatus::NoUpdate);
+        assert_eq!(report.status_display(), "no-update");
+        assert!(report.evaluation.no_mutation);
+        assert_eq!(
+            report.publisher_key_fingerprint_sha256(),
+            Some(expected_fingerprint.as_str())
+        );
+        assert!(Path::new(report.evaluation.evidence_path.as_ref().unwrap()).is_file());
+        assert!(!requests
+            .iter()
+            .any(|request| request.starts_with("GET /gh_mirror_gui.exe ")));
+        let _ = std::fs::remove_dir_all(evidence_dir);
+    }
+
+    #[test]
+    fn latest_update_check_accepts_newer_signed_candidate_with_pinned_key() {
+        let public_key = public_key_from_private_seed(TEST_PRIVATE_KEY).unwrap();
+        let expected_fingerprint = trusted_key_fingerprint(&public_key).unwrap();
+        let exe_body = b"new trusted candidate binary";
+        let (api_base, server) = serve_routes(5, |base| {
+            signed_release_routes(base, "v0.1.4", exe_body, &public_key)
+        });
+        let evidence_dir = unique_evidence_dir("candidate");
+        let policy = SourceTrustPolicyConfig {
+            require_trusted_source: false,
+            trusted_publisher_key: public_key,
+        };
+
+        let report = check_latest_update_candidate(
+            &test_client(),
+            UpdateCandidateCheckConfig {
+                current_version: "0.1.3",
+                source_trust_policy: &policy,
+                evidence_dir: &evidence_dir,
+                api_base: Some(&api_base),
+            },
+        );
+        let requests = server.join().unwrap();
+
+        assert_eq!(report.evaluation.status, UpdateCandidateStatus::Candidate);
+        assert!(report.evaluation.no_mutation);
+        assert_eq!(
+            report
+                .evaluation
+                .publisher_key_fingerprint_sha256
+                .as_deref(),
+            Some(expected_fingerprint.as_str())
+        );
+        assert_eq!(report.evaluation.verification_status, "VERIFIED");
+        assert_eq!(
+            report.evaluation.source_authenticity_status.as_deref(),
+            Some("TRUSTED_SIGNATURE")
+        );
+        assert!(Path::new(report.evaluation.evidence_path.as_ref().unwrap()).is_file());
+        assert!(requests
+            .iter()
+            .any(|request| request.starts_with("GET /gh_mirror_gui.exe ")));
+        let _ = std::fs::remove_dir_all(evidence_dir);
+    }
+
+    #[test]
+    fn latest_update_check_refuses_newer_candidate_without_pinned_key_before_download() {
+        let public_key = public_key_from_private_seed(TEST_PRIVATE_KEY).unwrap();
+        let expected_fingerprint = trusted_key_fingerprint(&public_key).unwrap();
+        let exe_body = b"new candidate that must not be downloaded without a pin";
+        let (api_base, server) = serve_routes(2, |base| {
+            signed_release_routes(base, "v0.1.4", exe_body, &public_key)
+        });
+        let evidence_dir = unique_evidence_dir("missing_pin");
+        let policy = SourceTrustPolicyConfig::default();
+
+        let report = check_latest_update_candidate(
+            &test_client(),
+            UpdateCandidateCheckConfig {
+                current_version: "0.1.3",
+                source_trust_policy: &policy,
+                evidence_dir: &evidence_dir,
+                api_base: Some(&api_base),
+            },
+        );
+        let requests = server.join().unwrap();
+
+        assert_eq!(report.evaluation.status, UpdateCandidateStatus::Refused);
+        assert!(report
+            .refusal_reason()
+            .unwrap()
+            .contains("requires a pinned Ed25519 publisher key"));
+        assert_eq!(
+            report.publisher_key_fingerprint_sha256(),
+            Some(expected_fingerprint.as_str())
+        );
+        assert!(report.evaluation.no_mutation);
+        assert!(!requests
+            .iter()
+            .any(|request| request.starts_with("GET /gh_mirror_gui.exe ")));
+        let _ = std::fs::remove_dir_all(evidence_dir);
+    }
 
     #[test]
     fn update_candidate_accepts_newer_trusted_signed_release() {

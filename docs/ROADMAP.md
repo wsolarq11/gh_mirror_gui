@@ -94,6 +94,11 @@ Deliverables:
   - policy must be trusted
 - Same-version, bad-signature, missing-key, and unsigned-required cases must be
   refused or reported as no-update by tests.
+- Self-update Stage 1 connects the same backend contract to a real latest
+  release check and Trust Center display. It shows only `candidate`,
+  `no-update`, or `refused`, plus `refusal_reason`, publisher fingerprint, and
+  evidence path; it still performs no install, exe replacement, system
+  persistence, tag mutation, release publication, or secret access.
 
 Stop condition: release verification receipt reports public signature
 verification `ok=true`, update candidate contract `ok=true`, and no tag,

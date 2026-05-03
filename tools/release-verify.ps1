@@ -1314,6 +1314,49 @@ function Invoke-UpdateCandidateContractSelfTest {
     return $selftest
 }
 
+function Invoke-UpdateCandidateLatestSelfTest {
+    param(
+        [string]$Exe,
+        [string]$JsonFile
+    )
+
+    Invoke-LoggedNative `
+        -Name 'update-candidate-latest-selftest' `
+        -Exe $Exe `
+        -Arguments @(
+            '--update-candidate-latest-selftest',
+            '--json', $JsonFile
+        )
+    if (!(Test-Path -LiteralPath $JsonFile)) {
+        throw "update candidate latest selftest JSON missing: $JsonFile"
+    }
+    $selftest = Get-Content -LiteralPath $JsonFile -Raw | ConvertFrom-Json
+    if (!$selftest.ok) {
+        throw 'update candidate latest selftest did not report ok=true'
+    }
+    if (!$selftest.no_mutation) {
+        throw 'update candidate latest selftest must be no-mutation'
+    }
+    if (!$selftest.evidence_ready) {
+        throw 'update candidate latest selftest evidence path was not ready'
+    }
+    $allowed = @('CANDIDATE', 'NO_UPDATE', 'REFUSED')
+    if ($allowed -notcontains [string]$selftest.status) {
+        throw "update candidate latest selftest status $($selftest.status) was not allowed"
+    }
+    if ([string]$selftest.report.release_tag -eq 'unknown') {
+        throw 'update candidate latest selftest did not resolve a live latest release'
+    }
+    if (!$selftest.report.evaluation.no_mutation) {
+        throw 'update candidate latest report evaluation must be no-mutation'
+    }
+    if ([string]$selftest.report.evaluation.status -ne [string]$selftest.status) {
+        throw 'update candidate latest status mismatch between wrapper and report'
+    }
+
+    return $selftest
+}
+
 function Invoke-NetworkRangeSmoke {
     param(
         [string]$Url,
@@ -1618,7 +1661,10 @@ $Receipt.checks.update_candidate_unit_tests = [ordered]@{
             'update_candidate_treats_same_version_as_no_update',
             'update_candidate_refuses_bad_signature',
             'update_candidate_refuses_missing_publisher_key',
-            'update_candidate_refuses_unsigned_required_source'
+            'update_candidate_refuses_unsigned_required_source',
+            'latest_update_check_reports_no_update_without_downloading_candidate',
+            'latest_update_check_accepts_newer_signed_candidate_with_pinned_key',
+            'latest_update_check_refuses_newer_candidate_without_pinned_key_before_download'
         )
 }
 Invoke-LoggedNative -Name 'cargo-clippy-all-targets' -Exe 'cargo' -Arguments @('clippy', '--all-targets', '--locked', '--', '-D', 'warnings')
@@ -1696,6 +1742,9 @@ $Receipt.checks.target_latest_release = $targetRelease
 $Receipt.checks.origin_release_verification = Invoke-OriginReleaseVerificationSmoke `
     -Release $originRelease `
     -Exe $exe
+$Receipt.checks.update_candidate_latest_selftest = Invoke-UpdateCandidateLatestSelfTest `
+    -Exe $exe `
+    -JsonFile (Join-Path $EvidenceDir 'update-candidate-latest-selftest.json')
 
 if (!$targetRelease.found) {
     throw 'target latest release lookup failed'

@@ -199,6 +199,12 @@ that candidate evaluation can accept only a newer trusted signed
 missing-key, or unsigned-required candidates without installing or replacing
 anything.
 
+The GUI now exposes that contract as **Self-update Stage 1**: it checks the
+public latest `wsolarq11/gh_mirror_gui` release and displays only the backend
+verdict (`candidate`, `no-update`, or `refused`), `refusal_reason`, publisher
+fingerprint, and evidence path. This stage does not install, replace the exe,
+write system persistence, create tags, or publish releases.
+
 ## Release automation
 
 `v0.1.3` is the first public signed release with `.sig` assets and
