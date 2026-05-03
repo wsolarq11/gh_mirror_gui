@@ -173,6 +173,7 @@ struct TrustCenterSnapshot {
     policy_verdict: String,
     policy_at_decision: String,
     evidence_path: String,
+    evidence_access: String,
     file_disposition: String,
     final_path: String,
 }
@@ -245,6 +246,7 @@ fn trust_center_snapshot(
         evidence_path: evidence_path
             .map(|path| path.display().to_string())
             .unwrap_or_else(|| "not recorded".to_string()),
+        evidence_access: evidence_access_status(evidence_path),
         file_disposition: format!(
             "{} ({})",
             disposition.action.as_str(),
@@ -305,6 +307,10 @@ fn render_trust_center_snapshot(ui: &mut egui::Ui, snapshot: &TrustCenterSnapsho
                 ui.label(&snapshot.evidence_path);
                 ui.end_row();
 
+                ui.label("Evidence access");
+                ui.label(&snapshot.evidence_access);
+                ui.end_row();
+
                 ui.label("File disposition");
                 ui.label(&snapshot.file_disposition);
                 ui.end_row();
@@ -328,6 +334,14 @@ fn publisher_key_source_label_for_fingerprint(
         .filter(|source| !source.is_empty())
         .unwrap_or("not recorded")
         .to_string()
+}
+
+fn evidence_access_status(evidence_path: Option<&Path>) -> String {
+    match evidence_path {
+        None => "not recorded".to_string(),
+        Some(path) if path.is_file() => "ready to open".to_string(),
+        Some(_) => "recorded but missing on disk".to_string(),
+    }
 }
 
 fn publisher_key_source_label_for_policy(
@@ -1570,8 +1584,16 @@ impl eframe::App for GhMirrorGui {
                     }
 
                     if let Some(evidence_path) = &self.last_verification_evidence_path {
-                        if ui.button("📄 Open Evidence").clicked() && evidence_path.exists() {
-                            let _ = open::that(evidence_path);
+                        if evidence_path.is_file() {
+                            if ui.button("📄 Open Evidence").clicked() {
+                                let _ = open::that(evidence_path);
+                            }
+                        } else {
+                            ui.add_enabled(false, egui::Button::new("📄 Evidence Missing"));
+                            ui.small(format!(
+                                "Evidence path recorded but file is missing: {}",
+                                evidence_path.display()
+                            ));
                         }
                     }
                     if let (Some(download_path), Some(disposition)) =
@@ -2416,7 +2438,7 @@ mod tests {
             original_path: PathBuf::from("gh_mirror_gui.exe"),
             final_path: Some(PathBuf::from(r"C:\Downloads\gh_mirror_gui.exe")),
         };
-        let evidence_path = PathBuf::from(r"C:\Evidence\download.json");
+        let evidence_path = unique_test_path("missing-download-evidence.json");
 
         let snapshot = trust_center_snapshot(
             &report,
@@ -2444,7 +2466,8 @@ mod tests {
             .policy_at_decision
             .contains("signed_source=required"));
         assert!(snapshot.policy_at_decision.contains(&fingerprint));
-        assert_eq!(snapshot.evidence_path, r"C:\Evidence\download.json");
+        assert_eq!(snapshot.evidence_path, evidence_path.display().to_string());
+        assert_eq!(snapshot.evidence_access, "recorded but missing on disk");
         assert_eq!(snapshot.file_disposition, "KEEP (file kept)");
         assert_eq!(snapshot.final_path, r"C:\Downloads\gh_mirror_gui.exe");
     }
@@ -2512,6 +2535,7 @@ mod tests {
             "local file C:\\Keys\\publisher-key.ed25519.pub"
         );
         assert_eq!(snapshot.evidence_path, "not recorded");
+        assert_eq!(snapshot.evidence_access, "not recorded");
     }
 
     #[test]
@@ -2552,6 +2576,7 @@ mod tests {
             snapshot.source_trust_detail,
             "no source trust evidence recorded"
         );
+        assert_eq!(snapshot.evidence_access, "not recorded");
     }
 
     #[test]
@@ -2603,6 +2628,41 @@ mod tests {
         assert_eq!(snapshot.signature_asset, "SHA256SUMS.txt.sig");
         assert_eq!(snapshot.source_trust_detail, detail);
         assert_eq!(snapshot.evidence_path, "not recorded");
+        assert_eq!(snapshot.evidence_access, "not recorded");
+    }
+
+    #[test]
+    fn trust_center_snapshot_marks_openable_evidence_path() {
+        let evidence_path = unique_test_path("trust-center-evidence.json");
+        fs::write(&evidence_path, "{}\n").unwrap();
+        let hash = "A9BDB5AE91B153ED8E04513CA9322B4445A91D3BE8DD2695A8F1C206C9937CCC";
+        let report = VerificationReport {
+            status: VerificationStatus::Verified,
+            asset_name: "gh_mirror_gui.exe".to_string(),
+            file_sha256: hash.to_string(),
+            expected_sha256: Some(hash.to_string()),
+            source: Some("SHA256SUMS.txt".to_string()),
+            source_trust: None,
+            detail: "SHA256 matched SHA256SUMS.txt".to_string(),
+        };
+        let disposition = AppliedFileDisposition {
+            action: FileDispositionAction::Keep,
+            original_path: PathBuf::from("gh_mirror_gui.exe"),
+            final_path: Some(PathBuf::from(r"C:\Downloads\gh_mirror_gui.exe")),
+        };
+
+        let snapshot = trust_center_snapshot(
+            &report,
+            Some(&evidence_path),
+            &disposition,
+            &TrustPolicyConfig::default().snapshot(),
+            None,
+        );
+
+        assert_eq!(snapshot.evidence_path, evidence_path.display().to_string());
+        assert_eq!(snapshot.evidence_access, "ready to open");
+
+        let _ = fs::remove_file(evidence_path);
     }
 
     #[test]
