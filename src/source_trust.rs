@@ -1,7 +1,12 @@
+use crate::releases::ReleaseAsset;
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use reqwest::blocking::Client;
 use sha2::{Digest, Sha256};
+use std::io::Read;
 
 const SOURCE_TRUST_SCHEMA_VERSION: u32 = 1;
+const PUBLISHER_KEY_ASSET_NAME: &str = "publisher-key.ed25519.pub";
+const MAX_PUBLISHER_KEY_ASSET_BYTES: u64 = 16 * 1024;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct SourceTrustPolicyConfig {
@@ -110,6 +115,80 @@ impl SourceTrustEvidence {
     pub(crate) fn decision_label(&self) -> &'static str {
         self.decision.as_str()
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ImportedPublisherKeyPin {
+    pub(crate) public_key: String,
+    pub(crate) fingerprint_sha256: String,
+    pub(crate) asset_name: String,
+}
+
+pub(crate) fn publisher_key_asset(assets: &[ReleaseAsset]) -> Option<&ReleaseAsset> {
+    assets
+        .iter()
+        .find(|asset| asset.name == PUBLISHER_KEY_ASSET_NAME)
+}
+
+pub(crate) fn import_publisher_key_pin_from_release_asset(
+    client: &Client,
+    asset: &ReleaseAsset,
+) -> Result<ImportedPublisherKeyPin, String> {
+    if asset.name != PUBLISHER_KEY_ASSET_NAME {
+        return Err(format!(
+            "publisher key import requires {PUBLISHER_KEY_ASSET_NAME}, got {}",
+            asset.name
+        ));
+    }
+    if asset.size > MAX_PUBLISHER_KEY_ASSET_BYTES {
+        return Err(format!(
+            "{} is too large for a publisher key asset: {} bytes",
+            asset.name, asset.size
+        ));
+    }
+
+    let mut response = client
+        .get(&asset.browser_download_url)
+        .send()
+        .map_err(|e| format!("Download {} failed: {e}", asset.name))?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(format!(
+            "Download {} failed: HTTP {}",
+            asset.name,
+            status.as_u16()
+        ));
+    }
+    if response
+        .content_length()
+        .is_some_and(|len| len > MAX_PUBLISHER_KEY_ASSET_BYTES)
+    {
+        return Err(format!(
+            "{} response is too large for a publisher key asset",
+            asset.name
+        ));
+    }
+
+    let mut text = String::new();
+    let mut limited = response.by_ref().take(MAX_PUBLISHER_KEY_ASSET_BYTES + 1);
+    limited
+        .read_to_string(&mut text)
+        .map_err(|e| format!("Read {} response as text failed: {e}", asset.name))?;
+    if text.len() as u64 > MAX_PUBLISHER_KEY_ASSET_BYTES {
+        return Err(format!(
+            "{} response exceeded publisher key size limit",
+            asset.name
+        ));
+    }
+
+    let public_key = normalize_public_key_pin(&text)?;
+    let fingerprint_sha256 = trusted_key_fingerprint(&public_key)
+        .ok_or_else(|| "publisher key fingerprint failed".to_string())?;
+    Ok(ImportedPublisherKeyPin {
+        public_key,
+        fingerprint_sha256,
+        asset_name: asset.name.clone(),
+    })
 }
 
 pub(crate) fn not_applicable_source_trust(
@@ -299,6 +378,10 @@ fn hex_encode_upper(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
+    use std::time::Duration;
 
     const RFC8032_EMPTY_PUBLIC_KEY: &str =
         "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a";
@@ -306,6 +389,26 @@ mod tests {
         "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e06522490155",
         "5fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b"
     );
+
+    fn serve_text_once(body: String, status: &'static str) -> (String, thread::JoinHandle<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 2048];
+            let n = stream.read(&mut buf).unwrap();
+            let request = String::from_utf8_lossy(&buf[..n]).to_string();
+            let header = format!(
+                "HTTP/1.1 {status}\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            stream.write_all(header.as_bytes()).unwrap();
+            stream.write_all(body.as_bytes()).unwrap();
+            request
+        });
+
+        (format!("http://{addr}"), handle)
+    }
 
     #[test]
     fn source_trust_verifies_good_and_bad_ed25519_signature() {
@@ -340,6 +443,57 @@ mod tests {
         assert_eq!(public_key, expected_public_key);
         assert_eq!(public_key.len(), 64);
         assert!(trusted_key_fingerprint(&public_key).is_some());
+    }
+
+    #[test]
+    fn publisher_key_asset_import_fetches_normalizes_and_fingerprints_release_key() {
+        let private_key = "1111111111111111111111111111111111111111111111111111111111111111";
+        let public_key = public_key_from_private_seed(private_key).unwrap();
+        let body = format!("ed25519:{}\r\n", public_key.to_lowercase());
+        let (base_url, server) = serve_text_once(body.clone(), "200 OK");
+        let asset = ReleaseAsset {
+            name: PUBLISHER_KEY_ASSET_NAME.to_string(),
+            size: body.len() as u64,
+            browser_download_url: format!("{base_url}/{PUBLISHER_KEY_ASSET_NAME}"),
+            content_type: Some("text/plain".to_string()),
+        };
+        let client = Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+
+        assert_eq!(
+            publisher_key_asset(std::slice::from_ref(&asset)),
+            Some(&asset)
+        );
+        let imported = import_publisher_key_pin_from_release_asset(&client, &asset).unwrap();
+        let request = server.join().unwrap();
+
+        assert!(request.starts_with("GET /publisher-key.ed25519.pub HTTP/1.1"));
+        assert_eq!(imported.public_key, public_key);
+        assert_eq!(
+            imported.fingerprint_sha256,
+            trusted_key_fingerprint(&public_key).unwrap()
+        );
+        assert_eq!(imported.asset_name, PUBLISHER_KEY_ASSET_NAME);
+    }
+
+    #[test]
+    fn publisher_key_asset_import_rejects_oversized_release_key_asset() {
+        let client = Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+        let asset = ReleaseAsset {
+            name: PUBLISHER_KEY_ASSET_NAME.to_string(),
+            size: MAX_PUBLISHER_KEY_ASSET_BYTES + 1,
+            browser_download_url: "http://127.0.0.1:9/publisher-key.ed25519.pub".to_string(),
+            content_type: Some("text/plain".to_string()),
+        };
+
+        let err = import_publisher_key_pin_from_release_asset(&client, &asset).unwrap_err();
+
+        assert!(err.contains("too large for a publisher key asset"));
     }
 
     #[test]

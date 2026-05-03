@@ -210,8 +210,11 @@ uploads detached source signatures as `SHA256SUMS.txt.sig` and
 `release-provenance.json.sig`. Users can download `publisher-key.ed25519.pub`,
 compare its SHA256 fingerprint against the release provenance or an owner
 channel, then paste/import the 64-hex public key into the GUI and enable
-**Require signed checksum/provenance source**. The GUI stores only the public
-key pin/fingerprint, never the private signing seed.
+**Require signed checksum/provenance source**. When a resolved release contains
+`publisher-key.ed25519.pub`, the release asset panel can also fetch that asset
+and pin the normalized Ed25519 public key directly; backend verification and
+policy still decide the final trust verdict after download. The GUI stores only
+the public key pin/fingerprint, never the private signing seed.
 
 Local signing readiness can be checked without publishing a release:
 

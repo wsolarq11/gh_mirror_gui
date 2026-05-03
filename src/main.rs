@@ -32,7 +32,7 @@ use releases::{
 };
 use reqwest::blocking::Client;
 use rfd::FileDialog;
-use source_trust::{normalize_public_key_pin, trusted_key_fingerprint};
+use source_trust::{normalize_public_key_pin, trusted_key_fingerprint, ImportedPublisherKeyPin};
 use staged_release::run_staged_release_download_selftest;
 use std::env;
 #[cfg(test)]
@@ -303,6 +303,22 @@ fn import_publisher_key_pin_from_path(path: &Path) -> Result<String, String> {
     normalize_public_key_pin(&text)
 }
 
+fn apply_imported_publisher_key_pin(
+    trust_policy: &mut TrustPolicyConfig,
+    imported: ImportedPublisherKeyPin,
+) -> String {
+    trust_policy.source_trust.trusted_publisher_key = imported.public_key;
+    let short_fingerprint = imported
+        .fingerprint_sha256
+        .chars()
+        .take(12)
+        .collect::<String>();
+    format!(
+        "Imported Ed25519 publisher key from {} · fingerprint {}…",
+        imported.asset_name, short_fingerprint
+    )
+}
+
 fn status_color(status: &str) -> egui::Color32 {
     if status.contains('❌') {
         egui::Color32::from_rgb(220, 70, 70)
@@ -322,6 +338,7 @@ const SPEED_TEST_TIMEOUT_SECS: u64 = 5;
 /// Known mirror sites.  First entry must be "Direct (no mirror)"
 const MIRRORS: &[(&str, &str)] = &[("Direct (no mirror)", "")];
 type ReleaseLookupMessage = (String, Result<ResolvedRelease, String>);
+type PublisherKeyImportMessage = (String, Result<ImportedPublisherKeyPin, String>);
 type DownloadResultMessage = Result<DownloadCompletion, String>;
 
 struct DownloadCompletion {
@@ -389,6 +406,9 @@ struct GhMirrorGui {
     release_lookup_thread: Option<thread::JoinHandle<()>>,
     release_lookup_rx: Option<mpsc::Receiver<ReleaseLookupMessage>>,
     release_lookup_input: Option<String>,
+    publisher_key_import_thread: Option<thread::JoinHandle<()>>,
+    publisher_key_import_rx: Option<mpsc::Receiver<PublisherKeyImportMessage>>,
+    publisher_key_import_asset_url: Option<String>,
     // Persisted state
     download_complete_notified: bool,
     last_download_path: Option<PathBuf>,
@@ -473,6 +493,9 @@ impl GhMirrorGui {
             release_lookup_thread: None,
             release_lookup_rx: None,
             release_lookup_input: None,
+            publisher_key_import_thread: None,
+            publisher_key_import_rx: None,
+            publisher_key_import_asset_url: None,
             download_complete_notified: false,
             last_download_path: None,
             last_verification: None,
@@ -510,6 +533,9 @@ impl GhMirrorGui {
         self.selected_release_asset = None;
         self.release_status.clear();
         self.release_lookup_input = None;
+        self.publisher_key_import_thread = None;
+        self.publisher_key_import_rx = None;
+        self.publisher_key_import_asset_url = None;
     }
 
     fn start_release_lookup(&mut self) {
@@ -581,6 +607,42 @@ impl GhMirrorGui {
         } else {
             false
         }
+    }
+
+    fn start_import_publisher_key_from_selected_release(&mut self) {
+        if self.publisher_key_import_thread.is_some() {
+            self.status = "Publisher key import is already running...".to_string();
+            return;
+        }
+
+        let Some(asset) = self
+            .release
+            .as_ref()
+            .and_then(|release| source_trust::publisher_key_asset(&release.assets))
+            .cloned()
+        else {
+            self.status =
+                "No publisher-key.ed25519.pub asset was found in this release".to_string();
+            return;
+        };
+
+        let proxy = self.proxy.clone();
+        let allow_invalid_certs = self.allow_invalid_certs;
+        let asset_url = asset.browser_download_url.clone();
+        let asset_name = asset.name.clone();
+        let (tx, rx) = mpsc::channel::<PublisherKeyImportMessage>();
+        self.publisher_key_import_asset_url = Some(asset_url.clone());
+        self.publisher_key_import_rx = Some(rx);
+        self.publisher_key_import_thread = Some(thread::spawn(move || {
+            let result = match build_client(&proxy, 30, allow_invalid_certs) {
+                Ok(client) => {
+                    source_trust::import_publisher_key_pin_from_release_asset(&client, &asset)
+                }
+                Err(e) => Err(format!("Publisher key import client error: {e}")),
+            };
+            let _ = tx.send((asset_url, result));
+        }));
+        self.status = format!("Importing Ed25519 publisher key from {asset_name}...");
     }
 
     fn start_download(&mut self) {
@@ -858,6 +920,29 @@ impl eframe::App for GhMirrorGui {
             }
         }
 
+        // Process selected-release publisher key import result.
+        if let Some(rx) = &self.publisher_key_import_rx {
+            if let Ok((asset_url, result)) = rx.try_recv() {
+                let is_current =
+                    self.publisher_key_import_asset_url.as_deref() == Some(asset_url.as_str());
+                self.publisher_key_import_thread = None;
+                self.publisher_key_import_rx = None;
+                self.publisher_key_import_asset_url = None;
+
+                if is_current {
+                    match result {
+                        Ok(imported) => {
+                            self.status =
+                                apply_imported_publisher_key_pin(&mut self.trust_policy, imported);
+                        }
+                        Err(e) => {
+                            self.status = format!("❌ Publisher key import failed: {e}");
+                        }
+                    }
+                }
+            }
+        }
+
         // Process download progress
         let progress_rx = self.progress_rx.take();
         if let Some(rx) = progress_rx {
@@ -1012,6 +1097,29 @@ impl eframe::App for GhMirrorGui {
                         "Release: {}/{} @ {}{}",
                         release.owner, release.repo, release.tag_name, release_name
                     ));
+
+                    if let Some(publisher_key_asset) =
+                        source_trust::publisher_key_asset(&release.assets)
+                    {
+                        ui.horizontal(|ui| {
+                            ui.label(format!("Publisher key: {}", publisher_key_asset.name));
+                            let importing = self.publisher_key_import_thread.is_some();
+                            if ui
+                                .add_enabled(
+                                    !importing,
+                                    egui::Button::new("Pin publisher key from release"),
+                                )
+                                .clicked()
+                            {
+                                self.start_import_publisher_key_from_selected_release();
+                            }
+                            if importing {
+                                ui.label("⏳ Importing...");
+                            }
+                        });
+                    } else {
+                        ui.small("No publisher-key.ed25519.pub asset detected for one-click pinning.");
+                    }
 
                     if release.assets.is_empty() {
                         ui.label("This release has no downloadable assets.");
@@ -2098,6 +2206,25 @@ mod tests {
         assert!(trusted_key_fingerprint(&imported_pin).is_some());
 
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn publisher_key_import_result_updates_trust_policy_pin_and_status() {
+        let private_key = "1111111111111111111111111111111111111111111111111111111111111111";
+        let public_key = source_trust::public_key_from_private_seed(private_key).unwrap();
+        let fingerprint = trusted_key_fingerprint(&public_key).unwrap();
+        let imported = ImportedPublisherKeyPin {
+            public_key: public_key.clone(),
+            fingerprint_sha256: fingerprint.clone(),
+            asset_name: "publisher-key.ed25519.pub".to_string(),
+        };
+        let mut policy = TrustPolicyConfig::default();
+
+        let status = apply_imported_publisher_key_pin(&mut policy, imported);
+
+        assert_eq!(policy.source_trust.trusted_publisher_key, public_key);
+        assert!(status.contains("publisher-key.ed25519.pub"));
+        assert!(status.contains(&fingerprint[..12]));
     }
 
     #[test]

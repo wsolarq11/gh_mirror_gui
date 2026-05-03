@@ -1239,7 +1239,7 @@ $Receipt.checks.trust_policy_contract = [ordered]@{
         key_material = 'history/evidence store pinned key SHA256 fingerprint, not raw public key'
     }
     history_evidence_schema = 'policy.schema_version=2 + policy.source_trust.schema_version=1 + source_trust.schema_version=1 + file_disposition.schema_version=1 REQUIRED_FOR_VERIFIED_MISMATCH_UNKNOWN_DOWNLOAD_REPORTS'
-    gui_decision_points = 'SavedState persistence + Trust policy UI + Source trust pin/import/normalize/display + Trust Center backend verdict snapshot + recorded policy-at-decision + Open Evidence exact path + open_location_button_label_for_report'
+    gui_decision_points = 'SavedState persistence + Trust policy UI + Source trust pin/import/normalize/display + selected-release publisher-key.ed25519.pub fetch/pin + Trust Center backend verdict snapshot + recorded policy-at-decision + Open Evidence exact path + open_location_button_label_for_report'
     covered_by = Assert-CommandLogContains `
         -CommandName 'cargo-test-all-targets' `
         -RequiredPatterns @(
@@ -1251,6 +1251,7 @@ $Receipt.checks.trust_policy_contract = [ordered]@{
             'gui_open_location_decision_blocks_untrusted_verified_source',
             'saved_state_persists_trust_policy_and_history_path',
             'publisher_key_import_accepts_release_public_key_asset',
+            'publisher_key_import_result_updates_trust_policy_pin_and_status',
             'trust_center_snapshot_displays_backend_verdict_and_publisher_pin',
             'trust_center_snapshot_uses_recorded_policy_snapshot_for_last_download',
             'history_path_setting_uses_default_when_blank_and_custom_when_set',
@@ -1263,6 +1264,8 @@ $Receipt.checks.trust_policy_contract = [ordered]@{
             'source_trust_verifies_good_and_bad_ed25519_signature',
             'source_trust_signs_detached_signature_that_verifier_accepts',
             'source_trust_derives_release_public_key_from_private_seed',
+            'publisher_key_asset_import_fetches_normalizes_and_fingerprints_release_key',
+            'publisher_key_asset_import_rejects_oversized_release_key_asset',
             'source_trust_missing_signature_blocks_only_when_required',
             'source_trust_no_key_blocks_required_policy',
             'source_trust_snapshot_records_key_fingerprint_not_raw_key',
