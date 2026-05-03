@@ -8,6 +8,8 @@ use reqwest::blocking::Client;
 use std::path::PathBuf;
 
 const MAX_VERIFICATION_ASSET_BYTES: usize = 5 * 1024 * 1024;
+const VERIFICATION_ASSET_MAX_RETRIES: u32 = 2;
+const VERIFICATION_ASSET_RETRY_DELAY_MS: u64 = 100;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct VerificationAsset {
@@ -406,28 +408,64 @@ fn provenance_asset_rank(name: &str) -> Option<u8> {
 }
 
 fn fetch_text_asset(client: &Client, url: &str) -> Result<(String, Vec<u8>), String> {
-    let response = client
-        .get(url)
-        .header("User-Agent", "gh_mirror_gui-verifier")
-        .send()
-        .map_err(|e| format!("verification asset request failed: {e}"))?;
-    let status = response.status();
-    if !status.is_success() {
-        return Err(format!("HTTP {}", status.as_u16()));
+    let mut last_retryable_error = None;
+    for attempt in 0..=VERIFICATION_ASSET_MAX_RETRIES {
+        if attempt > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(
+                VERIFICATION_ASSET_RETRY_DELAY_MS,
+            ));
+        }
+
+        let response = match client
+            .get(url)
+            .header("User-Agent", "gh_mirror_gui-verifier")
+            .send()
+        {
+            Ok(response) => response,
+            Err(e) => {
+                last_retryable_error = Some(format!("verification asset request failed: {e}"));
+                continue;
+            }
+        };
+
+        let status = response.status();
+        if !status.is_success() {
+            let error = format!("HTTP {}", status.as_u16());
+            if is_retryable_verification_asset_status(status) {
+                last_retryable_error = Some(error);
+                continue;
+            }
+            return Err(error);
+        }
+
+        let bytes = match response.bytes() {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                last_retryable_error = Some(format!("verification asset body read failed: {e}"));
+                continue;
+            }
+        };
+        if bytes.len() > MAX_VERIFICATION_ASSET_BYTES {
+            return Err(format!(
+                "verification asset is too large: {} bytes",
+                bytes.len()
+            ));
+        }
+        let bytes = bytes.to_vec();
+        let text = String::from_utf8(bytes.clone())
+            .map_err(|e| format!("verification asset was not UTF-8: {e}"))?;
+        return Ok((text, bytes));
     }
-    let bytes = response
-        .bytes()
-        .map_err(|e| format!("verification asset body read failed: {e}"))?;
-    if bytes.len() > MAX_VERIFICATION_ASSET_BYTES {
-        return Err(format!(
-            "verification asset is too large: {} bytes",
-            bytes.len()
-        ));
-    }
-    let bytes = bytes.to_vec();
-    let text = String::from_utf8(bytes.clone())
-        .map_err(|e| format!("verification asset was not UTF-8: {e}"))?;
-    Ok((text, bytes))
+
+    Err(format!(
+        "verification asset fetch failed after {} attempts: {}",
+        VERIFICATION_ASSET_MAX_RETRIES + 1,
+        last_retryable_error.unwrap_or_else(|| "unknown transient error".to_string())
+    ))
+}
+
+fn is_retryable_verification_asset_status(status: reqwest::StatusCode) -> bool {
+    status.is_server_error() || status.as_u16() == 429
 }
 
 fn fetch_signature_text(
@@ -680,6 +718,40 @@ mod tests {
             stream.write_all(header.as_bytes()).unwrap();
             stream.write_all(body.as_bytes()).unwrap();
             request
+        });
+
+        (format!("http://{addr}/SHA256SUMS.txt"), handle)
+    }
+
+    fn serve_transient_status_then_text(
+        transient_status: &'static str,
+        body: String,
+    ) -> (String, thread::JoinHandle<Vec<String>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = thread::spawn(move || {
+            let mut requests = Vec::new();
+            for attempt in 0..2 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut buf = [0u8; 4096];
+                let n = stream.read(&mut buf).unwrap();
+                requests.push(String::from_utf8_lossy(&buf[..n]).to_string());
+
+                if attempt == 0 {
+                    let response = format!(
+                        "HTTP/1.1 {transient_status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    );
+                    stream.write_all(response.as_bytes()).unwrap();
+                } else {
+                    let header = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    stream.write_all(header.as_bytes()).unwrap();
+                    stream.write_all(body.as_bytes()).unwrap();
+                }
+            }
+            requests
         });
 
         (format!("http://{addr}/SHA256SUMS.txt"), handle)
@@ -949,6 +1021,48 @@ mod tests {
         let request = server.join().unwrap();
 
         assert!(request.starts_with("GET /SHA256SUMS.txt HTTP/1.1"));
+        assert_eq!(report.status, VerificationStatus::Verified);
+        assert_eq!(report.expected_sha256, Some(expected));
+        assert_eq!(report.source, Some("SHA256SUMS.txt".to_string()));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn verification_asset_fetch_retries_transient_server_failure() {
+        let path = unique_test_path("retry-verification-source.exe");
+        fs::write(&path, b"verified after retry").unwrap();
+        let expected = sha256_file(&path).unwrap();
+        let (checksum_url, server) =
+            serve_transient_status_then_text("502 Bad Gateway", format!("{expected}  app.exe\n"));
+        let plan = DownloadVerificationPlan {
+            asset_name: "app.exe".to_string(),
+            checksum_asset: Some(VerificationAsset {
+                name: "SHA256SUMS.txt".to_string(),
+                browser_download_url: checksum_url,
+            }),
+            checksum_signature_asset: None,
+            provenance_asset: None,
+            provenance_signature_asset: None,
+        };
+        let client = Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+
+        let report = verify_downloaded_file(
+            &client,
+            &path,
+            "app.exe",
+            Some(&plan),
+            &SourceTrustPolicyConfig::default(),
+        )
+        .unwrap();
+        let requests = server.join().unwrap();
+
+        assert_eq!(requests.len(), 2);
+        assert!(requests
+            .iter()
+            .all(|request| request.starts_with("GET /SHA256SUMS.txt HTTP/1.1")));
         assert_eq!(report.status, VerificationStatus::Verified);
         assert_eq!(report.expected_sha256, Some(expected));
         assert_eq!(report.source, Some("SHA256SUMS.txt".to_string()));

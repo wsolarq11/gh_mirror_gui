@@ -1252,6 +1252,7 @@ $Receipt.checks.trust_policy_contract = [ordered]@{
         missing_signature_required = 'VERIFIED hash + MISSING_SIGNATURE required source -> BLOCK'
         missing_signature_optional = 'VERIFIED hash + UNSIGNED optional source -> allowed with source authenticity evidence'
         key_material = 'history/evidence store pinned key SHA256 fingerprint, not raw public key'
+        verification_source_fetch = 'checksum/provenance and signature asset reads retry transient request/server failures before producing UNKNOWN or untrusted-source evidence'
     }
     history_evidence_schema = 'policy.schema_version=2 + policy.source_trust.schema_version=1 + source_trust.schema_version=1 + file_disposition.schema_version=1 REQUIRED_FOR_VERIFIED_MISMATCH_UNKNOWN_DOWNLOAD_REPORTS'
     gui_decision_points = 'SavedState persistence + Trust policy UI + Source trust pin/import/normalize/display/source label + selected-release publisher-key.ed25519.pub fetch/pin + Trust Center backend verdict snapshot + downloaded asset/hash context + recorded policy-at-decision + pinned publisher key source + backend source-trust detail + Open Evidence exact path/access status + open_location_button_label_for_report'
@@ -1290,6 +1291,7 @@ $Receipt.checks.trust_policy_contract = [ordered]@{
             'source_trust_snapshot_records_key_fingerprint_not_raw_key',
             'parses_release_provenance_with_utf8_bom',
             'detects_checksum_and_provenance_assets_for_selected_release_asset',
+            'verification_asset_fetch_retries_transient_server_failure',
             'verifies_downloaded_file_with_good_signed_checksum_source',
             'blocks_bad_signature_even_when_hash_matches',
             'required_source_trust_blocks_missing_signature'
