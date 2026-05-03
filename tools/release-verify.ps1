@@ -1035,7 +1035,7 @@ $Receipt.checks.trust_policy_contract = [ordered]@{
         key_material = 'history/evidence store pinned key SHA256 fingerprint, not raw public key'
     }
     history_evidence_schema = 'policy.schema_version=2 + policy.source_trust.schema_version=1 + source_trust.schema_version=1 + file_disposition.schema_version=1 REQUIRED_FOR_VERIFIED_MISMATCH_UNKNOWN_DOWNLOAD_REPORTS'
-    gui_decision_points = 'SavedState persistence + Trust policy UI + Source trust pin/import/normalize/display + Open Evidence exact path + open_location_button_label_for_report'
+    gui_decision_points = 'SavedState persistence + Trust policy UI + Source trust pin/import/normalize/display + Trust Center backend verdict snapshot + Open Evidence exact path + open_location_button_label_for_report'
     covered_by = Assert-CommandLogContains `
         -CommandName 'cargo-test-all-targets' `
         -RequiredPatterns @(
@@ -1046,6 +1046,8 @@ $Receipt.checks.trust_policy_contract = [ordered]@{
             'gui_open_location_decision_respects_trust_policy',
             'gui_open_location_decision_blocks_untrusted_verified_source',
             'saved_state_persists_trust_policy_and_history_path',
+            'publisher_key_import_accepts_release_public_key_asset',
+            'trust_center_snapshot_displays_backend_verdict_and_publisher_pin',
             'history_path_setting_uses_default_when_blank_and_custom_when_set',
             'completion_status_makes_mismatch_blocking_and_unknown_risky',
             'completion_status_blocks_untrusted_signed_source',

@@ -161,6 +161,121 @@ fn source_trust_status_summary(report: &VerificationReport) -> String {
         .unwrap_or_else(|| "NOT_APPLICABLE".to_string())
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TrustCenterSnapshot {
+    hash_status: String,
+    source_authenticity: String,
+    source_asset: String,
+    signature_asset: String,
+    publisher_key_fingerprint: String,
+    policy_verdict: String,
+    evidence_path: String,
+    file_disposition: String,
+    final_path: String,
+}
+
+fn trust_center_snapshot(
+    report: &VerificationReport,
+    evidence_path: Option<&Path>,
+    disposition: &AppliedFileDisposition,
+    policy: &TrustPolicyConfig,
+) -> TrustCenterSnapshot {
+    let source_trust = report.source_trust.as_ref();
+    let policy_snapshot = policy.snapshot();
+    let publisher_key_fingerprint = source_trust
+        .and_then(|trust| trust.trusted_publisher_key_fingerprint_sha256.as_deref())
+        .or(policy_snapshot
+            .source_trust
+            .trusted_publisher_key_fingerprint_sha256
+            .as_deref())
+        .unwrap_or("not pinned")
+        .to_string();
+
+    TrustCenterSnapshot {
+        hash_status: report.status.as_str().to_string(),
+        source_authenticity: source_trust
+            .map(|trust| trust.status_label().to_string())
+            .unwrap_or_else(|| "NOT_APPLICABLE".to_string()),
+        source_asset: report
+            .source
+            .as_deref()
+            .or_else(|| source_trust.and_then(|trust| trust.source_asset_name.as_deref()))
+            .unwrap_or("none")
+            .to_string(),
+        signature_asset: source_trust
+            .and_then(|trust| trust.signature_asset_name.as_deref())
+            .unwrap_or("none")
+            .to_string(),
+        publisher_key_fingerprint,
+        policy_verdict: report.effective_trust_decision().as_str().to_string(),
+        evidence_path: evidence_path
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "not recorded".to_string()),
+        file_disposition: format!(
+            "{} ({})",
+            disposition.action.as_str(),
+            file_disposition_summary(disposition)
+        ),
+        final_path: disposition
+            .final_path
+            .as_ref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "none".to_string()),
+    }
+}
+
+fn render_trust_center_snapshot(ui: &mut egui::Ui, snapshot: &TrustCenterSnapshot) {
+    ui.group(|ui| {
+        ui.label(egui::RichText::new("Trust Center").strong());
+        egui::Grid::new("trust_center_last_download")
+            .num_columns(2)
+            .striped(true)
+            .show(ui, |ui| {
+                ui.label("Hash status");
+                ui.label(&snapshot.hash_status);
+                ui.end_row();
+
+                ui.label("Source authenticity");
+                ui.label(&snapshot.source_authenticity);
+                ui.end_row();
+
+                ui.label("Verification source");
+                ui.label(&snapshot.source_asset);
+                ui.end_row();
+
+                ui.label("Signature asset");
+                ui.label(&snapshot.signature_asset);
+                ui.end_row();
+
+                ui.label("Publisher key fingerprint");
+                ui.label(&snapshot.publisher_key_fingerprint);
+                ui.end_row();
+
+                ui.label("Policy verdict");
+                ui.label(&snapshot.policy_verdict);
+                ui.end_row();
+
+                ui.label("Evidence path");
+                ui.label(&snapshot.evidence_path);
+                ui.end_row();
+
+                ui.label("File disposition");
+                ui.label(&snapshot.file_disposition);
+                ui.end_row();
+
+                ui.label("Final path");
+                ui.label(&snapshot.final_path);
+                ui.end_row();
+            });
+    });
+}
+
+fn import_publisher_key_pin_from_path(path: &Path) -> Result<String, String> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| format!("Read publisher public key {}: {e}", path.display()))?;
+    normalize_public_key_pin(&text)
+}
+
 fn status_color(status: &str) -> egui::Color32 {
     if status.contains('❌') {
         egui::Color32::from_rgb(220, 70, 70)
@@ -1077,10 +1192,7 @@ impl eframe::App for GhMirrorGui {
                             .add_filter("Public key", &["pub", "txt"])
                             .pick_file()
                         {
-                            match std::fs::read_to_string(&path)
-                                .map_err(|e| e.to_string())
-                                .and_then(|text| normalize_public_key_pin(&text))
-                            {
+                            match import_publisher_key_pin_from_path(&path) {
                                 Ok(pin) => {
                                     self.trust_policy.source_trust.trusted_publisher_key = pin;
                                     self.status = format!(
@@ -1232,6 +1344,13 @@ impl eframe::App for GhMirrorGui {
                 ));
                 if let Some(disposition) = &self.last_file_disposition {
                     ui.small(file_disposition_summary(disposition));
+                    let snapshot = trust_center_snapshot(
+                        &report,
+                        self.last_verification_evidence_path.as_deref(),
+                        disposition,
+                        &self.trust_policy,
+                    );
+                    render_trust_center_snapshot(ui, &snapshot);
                 }
             }
 
@@ -1927,6 +2046,74 @@ mod tests {
             "D75A980182B10AB7D54BFED3C964073A0EE172F3DAA62325AF021A68F707511A"
         );
         assert_eq!(state.history_path, r"C:\Evidence\bench-history.jsonl");
+    }
+
+    #[test]
+    fn publisher_key_import_accepts_release_public_key_asset() {
+        let private_key = "1111111111111111111111111111111111111111111111111111111111111111";
+        let public_key = source_trust::public_key_from_private_seed(private_key).unwrap();
+        let path = unique_test_path("publisher-key.ed25519.pub");
+        fs::write(&path, format!("ed25519:{public_key}\r\n")).unwrap();
+
+        let imported_pin = import_publisher_key_pin_from_path(&path).unwrap();
+
+        assert_eq!(imported_pin, public_key);
+        assert!(trusted_key_fingerprint(&imported_pin).is_some());
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn trust_center_snapshot_displays_backend_verdict_and_publisher_pin() {
+        let private_key = "1111111111111111111111111111111111111111111111111111111111111111";
+        let public_key = source_trust::public_key_from_private_seed(private_key).unwrap();
+        let fingerprint = trusted_key_fingerprint(&public_key).unwrap();
+        let hash = "A9BDB5AE91B153ED8E04513CA9322B4445A91D3BE8DD2695A8F1C206C9937CCC";
+        let report = VerificationReport {
+            status: VerificationStatus::Verified,
+            asset_name: "gh_mirror_gui.exe".to_string(),
+            file_sha256: hash.to_string(),
+            expected_sha256: Some(hash.to_string()),
+            source: Some("release-provenance.json".to_string()),
+            source_trust: Some(source_trust::SourceTrustEvidence {
+                schema_version: 1,
+                status: source_trust::SourceAuthenticityStatus::TrustedSignature,
+                decision: source_trust::SourceTrustDecision::Trusted,
+                required: true,
+                source_asset_name: Some("release-provenance.json".to_string()),
+                signature_asset_name: Some("release-provenance.json.sig".to_string()),
+                trusted_publisher_key_fingerprint_sha256: Some(fingerprint.clone()),
+                detail:
+                    "release-provenance.json signature verified with pinned Ed25519 publisher key"
+                        .to_string(),
+            }),
+            detail: "SHA256 matched release-provenance.json".to_string(),
+        };
+        let policy = TrustPolicyConfig {
+            source_trust: source_trust::SourceTrustPolicyConfig {
+                require_trusted_source: true,
+                trusted_publisher_key: public_key,
+            },
+            ..TrustPolicyConfig::default()
+        };
+        let disposition = AppliedFileDisposition {
+            action: FileDispositionAction::Keep,
+            original_path: PathBuf::from("gh_mirror_gui.exe"),
+            final_path: Some(PathBuf::from(r"C:\Downloads\gh_mirror_gui.exe")),
+        };
+        let evidence_path = PathBuf::from(r"C:\Evidence\download.json");
+
+        let snapshot = trust_center_snapshot(&report, Some(&evidence_path), &disposition, &policy);
+
+        assert_eq!(snapshot.hash_status, "VERIFIED");
+        assert_eq!(snapshot.source_authenticity, "TRUSTED_SIGNATURE");
+        assert_eq!(snapshot.source_asset, "release-provenance.json");
+        assert_eq!(snapshot.signature_asset, "release-provenance.json.sig");
+        assert_eq!(snapshot.publisher_key_fingerprint, fingerprint);
+        assert_eq!(snapshot.policy_verdict, "TRUSTED");
+        assert_eq!(snapshot.evidence_path, r"C:\Evidence\download.json");
+        assert_eq!(snapshot.file_disposition, "KEEP (file kept)");
+        assert_eq!(snapshot.final_path, r"C:\Downloads\gh_mirror_gui.exe");
     }
 
     #[test]

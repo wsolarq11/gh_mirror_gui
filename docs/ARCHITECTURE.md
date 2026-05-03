@@ -39,6 +39,8 @@ The UI may:
 - display verdicts
 - import/normalize publisher key pins
 - open evidence or folders selected by policy
+- render the Trust Center from backend/core verification reports, source-trust
+  evidence, policy snapshots, and file-disposition results
 
 The UI must not:
 
