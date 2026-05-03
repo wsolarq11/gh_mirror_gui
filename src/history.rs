@@ -1,4 +1,5 @@
 use crate::download::{sha256_file, DownloadProbe, SelectedDownloadStrategy};
+use crate::source_trust::SourceTrustEvidence;
 use crate::trust_policy::{FileDispositionRecord, PlannedFileDisposition, TrustPolicyConfig};
 use crate::verification::VerificationReport;
 use directories::ProjectDirs;
@@ -29,6 +30,8 @@ pub(crate) struct BenchHistoryEntry {
     pub(crate) verification_file_sha256: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) verification_source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) verification_source_trust: Option<SourceTrustEvidence>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) expected_sha256: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -133,6 +136,7 @@ struct VerificationEvidenceRecord {
     file_sha256: String,
     expected_sha256: Option<String>,
     source: Option<String>,
+    source_trust: Option<SourceTrustEvidence>,
     detail: String,
     policy: Option<crate::trust_policy::TrustPolicySnapshot>,
     file_disposition: Option<FileDispositionRecord>,
@@ -230,10 +234,11 @@ fn write_verification_evidence(
         recorded_at_epoch_secs,
         asset_name: report.asset_name.clone(),
         status: report.status.as_str().to_string(),
-        trust_decision: report.status.trust_decision().as_str().to_string(),
+        trust_decision: report.effective_trust_decision().as_str().to_string(),
         file_sha256: report.file_sha256.clone(),
         expected_sha256: report.expected_sha256.clone(),
         source: report.source.clone(),
+        source_trust: report.source_trust.clone(),
         detail: report.detail.clone(),
         policy: policy.map(TrustPolicyConfig::snapshot),
         file_disposition: file_disposition.map(PlannedFileDisposition::record),
@@ -298,11 +303,18 @@ pub(crate) fn append_download_history(
         avg_mib_s,
         sha256,
         verification_status: verification.map(|context| context.report.status.as_str().to_string()),
-        verification_trust_decision: verification
-            .map(|context| context.report.status.trust_decision().as_str().to_string()),
+        verification_trust_decision: verification.map(|context| {
+            context
+                .report
+                .effective_trust_decision()
+                .as_str()
+                .to_string()
+        }),
         verification_asset_name: verification.map(|context| context.report.asset_name.clone()),
         verification_file_sha256: verification.map(|context| context.report.file_sha256.clone()),
         verification_source: verification.and_then(|context| context.report.source.clone()),
+        verification_source_trust: verification
+            .and_then(|context| context.report.source_trust.clone()),
         expected_sha256: verification.and_then(|context| context.report.expected_sha256.clone()),
         verification_detail: verification.map(|context| context.report.detail.clone()),
         verification_evidence_path: verification_evidence_path
@@ -323,6 +335,7 @@ pub(crate) fn append_download_history(
 mod tests {
     use super::*;
     use crate::download::SelectedDownloadStrategy;
+    use crate::source_trust::{SourceAuthenticityStatus, SourceTrustDecision, SourceTrustEvidence};
     use crate::trust_policy::{plan_file_disposition, TrustPolicyConfig};
     use crate::verification::{VerificationReport, VerificationStatus};
 
@@ -361,6 +374,16 @@ mod tests {
             file_sha256: sha256_file(&output).unwrap(),
             expected_sha256: Some(sha256_file(&output).unwrap()),
             source: Some("SHA256SUMS.txt".to_string()),
+            source_trust: Some(SourceTrustEvidence {
+                schema_version: 1,
+                status: SourceAuthenticityStatus::TrustedSignature,
+                decision: SourceTrustDecision::Trusted,
+                required: true,
+                source_asset_name: Some("SHA256SUMS.txt".to_string()),
+                signature_asset_name: Some("SHA256SUMS.txt.sig".to_string()),
+                trusted_publisher_key_fingerprint_sha256: Some("ABCDEF".to_string()),
+                detail: "signature verified".to_string(),
+            }),
             detail: "SHA256 matched SHA256SUMS.txt".to_string(),
         };
         let policy = TrustPolicyConfig::default();
@@ -395,6 +418,13 @@ mod tests {
             Some(report.file_sha256.as_str())
         );
         assert_eq!(entry.verification_source.as_deref(), Some("SHA256SUMS.txt"));
+        assert_eq!(
+            entry
+                .verification_source_trust
+                .as_ref()
+                .map(|trust| trust.status.as_str()),
+            Some("TRUSTED_SIGNATURE")
+        );
         assert_eq!(entry.expected_sha256, report.expected_sha256);
         assert_eq!(
             entry.verification_evidence_path.as_deref(),
@@ -405,7 +435,7 @@ mod tests {
                 .verification_policy
                 .as_ref()
                 .map(|policy| policy.schema_version),
-            Some(1)
+            Some(2)
         );
         assert_eq!(
             entry
@@ -421,7 +451,11 @@ mod tests {
         assert_eq!(evidence["trust_decision"], "TRUSTED");
         assert_eq!(evidence["asset_name"], "app.exe");
         assert_eq!(evidence["file_sha256"], report.file_sha256);
-        assert_eq!(evidence["policy"]["schema_version"], 1);
+        assert_eq!(evidence["source_trust"]["schema_version"], 1);
+        assert_eq!(evidence["source_trust"]["status"], "TRUSTED_SIGNATURE");
+        assert_eq!(evidence["source_trust"]["decision"], "TRUSTED");
+        assert_eq!(evidence["policy"]["schema_version"], 2);
+        assert_eq!(evidence["policy"]["source_trust"]["schema_version"], 1);
         assert_eq!(evidence["policy"]["mismatch_file_policy"], "QUARANTINE");
         assert_eq!(evidence["file_disposition"]["schema_version"], 1);
         assert_eq!(evidence["file_disposition"]["action"], "KEEP");
@@ -467,6 +501,7 @@ mod tests {
                 } else {
                     None
                 },
+                source_trust: None,
                 detail: format!("trust decision {expected_decision}"),
             };
             let policy = TrustPolicyConfig::default();
@@ -497,7 +532,7 @@ mod tests {
             let evidence: serde_json::Value = serde_json::from_str(&evidence).unwrap();
             assert_eq!(evidence["trust_decision"], expected_decision);
             assert_eq!(evidence["status"], report.status.as_str());
-            assert_eq!(evidence["policy"]["schema_version"], 1);
+            assert_eq!(evidence["policy"]["schema_version"], 2);
             assert_eq!(evidence["file_disposition"]["schema_version"], 1);
             assert_eq!(
                 evidence["file_disposition"]["action"],
@@ -512,5 +547,88 @@ mod tests {
             let _ = fs::remove_file(history);
             let _ = fs::remove_file(evidence_path);
         }
+    }
+
+    #[test]
+    fn history_evidence_records_source_trust_schema() {
+        let output = unique_test_path("source-trust-app.exe");
+        let history = unique_test_path("source-trust-bench-history.jsonl");
+        fs::write(&output, b"history source trust payload").unwrap();
+        let probe = DownloadProbe {
+            total: fs::metadata(&output).unwrap().len(),
+            range_supported: false,
+            etag: None,
+            last_modified: None,
+        };
+        let strategy = SelectedDownloadStrategy {
+            variant: "single".to_string(),
+            config: None,
+            history_matches: 0,
+        };
+        let report = VerificationReport {
+            status: VerificationStatus::Verified,
+            asset_name: "app.exe".to_string(),
+            file_sha256: sha256_file(&output).unwrap(),
+            expected_sha256: Some(sha256_file(&output).unwrap()),
+            source: Some("release-provenance.json".to_string()),
+            source_trust: Some(SourceTrustEvidence {
+                schema_version: 1,
+                status: SourceAuthenticityStatus::BadSignature,
+                decision: SourceTrustDecision::Block,
+                required: false,
+                source_asset_name: Some("release-provenance.json".to_string()),
+                signature_asset_name: Some("release-provenance.json.sig".to_string()),
+                trusted_publisher_key_fingerprint_sha256: Some("ABCDEF".to_string()),
+                detail: "bad signature".to_string(),
+            }),
+            detail: "SHA256 matched release-provenance.json".to_string(),
+        };
+        let policy = TrustPolicyConfig::default();
+        let disposition = plan_file_disposition(&output, &VerificationStatus::Mismatch, &policy);
+
+        let evidence_path = append_download_history(
+            &Some(history.clone()),
+            "https://example.test/app.exe",
+            &output,
+            &probe,
+            &strategy,
+            Duration::from_millis(10),
+            Some(VerificationHistoryContext {
+                report: &report,
+                policy: &policy,
+                file_disposition: &disposition,
+            }),
+        )
+        .unwrap()
+        .unwrap();
+        let line = fs::read_to_string(&history).unwrap();
+        let entry = serde_json::from_str::<BenchHistoryEntry>(line.trim()).unwrap();
+        let evidence = fs::read_to_string(&evidence_path).unwrap();
+        let evidence: serde_json::Value = serde_json::from_str(&evidence).unwrap();
+
+        assert_eq!(entry.verification_status.as_deref(), Some("VERIFIED"));
+        assert_eq!(entry.verification_trust_decision.as_deref(), Some("BLOCK"));
+        assert_eq!(
+            entry
+                .verification_source_trust
+                .as_ref()
+                .map(|trust| trust.decision.as_str()),
+            Some("BLOCK")
+        );
+        assert_eq!(evidence["status"], "VERIFIED");
+        assert_eq!(evidence["trust_decision"], "BLOCK");
+        assert_eq!(evidence["source_trust"]["status"], "BAD_SIGNATURE");
+        assert_eq!(
+            evidence["source_trust"]["source_asset_name"],
+            "release-provenance.json"
+        );
+        assert_eq!(
+            evidence["source_trust"]["signature_asset_name"],
+            "release-provenance.json.sig"
+        );
+
+        let _ = fs::remove_file(output);
+        let _ = fs::remove_file(history);
+        let _ = fs::remove_file(evidence_path);
     }
 }

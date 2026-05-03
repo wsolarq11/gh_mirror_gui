@@ -262,6 +262,7 @@ fn append_bench_history(path: &Option<PathBuf>, result: &BenchResult) -> Result<
         verification_asset_name: None,
         verification_file_sha256: None,
         verification_source: None,
+        verification_source_trust: None,
         expected_sha256: None,
         verification_detail: None,
         verification_evidence_path: None,

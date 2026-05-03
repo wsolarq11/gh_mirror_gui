@@ -2,6 +2,7 @@ mod bench;
 mod download;
 mod history;
 mod releases;
+mod source_trust;
 mod trust_policy;
 mod verification;
 
@@ -30,6 +31,7 @@ use releases::{
 };
 use reqwest::blocking::Client;
 use rfd::FileDialog;
+use source_trust::{normalize_public_key_pin, trusted_key_fingerprint};
 use std::env;
 #[cfg(test)]
 use std::fs;
@@ -42,8 +44,9 @@ use std::time::{Duration, Instant};
 #[cfg(test)]
 use trust_policy::FileDispositionAction;
 use trust_policy::{
-    apply_file_disposition, file_disposition_summary, open_location_button_label,
-    plan_file_disposition, AppliedFileDisposition, MismatchFilePolicy, TrustPolicyConfig,
+    apply_file_disposition, file_disposition_summary, open_location_button_label_for_report,
+    plan_file_disposition_for_report, AppliedFileDisposition, MismatchFilePolicy,
+    TrustPolicyConfig,
 };
 use verification::{
     verification_plan_for_selected_asset, verification_source_summary, verify_downloaded_file,
@@ -71,14 +74,23 @@ fn format_download_completion_status(
 ) -> String {
     let short_hash = report.file_sha256.chars().take(12).collect::<String>();
     let disposition_summary = file_disposition_summary(disposition);
-    match report.status {
-        VerificationStatus::Verified => format!(
-            "✅ Download complete · VERIFIED SHA256={} via {} · {}",
+    let source_trust = source_trust_status_summary(report);
+    match (report.status.clone(), report.effective_trust_decision()) {
+        (VerificationStatus::Verified, verification::VerificationTrustDecision::Block) => format!(
+            "❌ Verification BLOCKED · SHA256 matched {} but source authenticity is {} · {} · {}",
+            report.source.as_deref().unwrap_or("verification asset"),
+            source_trust,
+            disposition_summary,
+            "retry or open evidence before trusting this file"
+        ),
+        (VerificationStatus::Verified, _) => format!(
+            "✅ Download complete · VERIFIED SHA256={} via {} · source {} · {}",
             short_hash,
             report.source.as_deref().unwrap_or("verification asset"),
+            source_trust,
             disposition_summary
         ),
-        VerificationStatus::Mismatch => format!(
+        (VerificationStatus::Mismatch, _) => format!(
             "❌ Verification BLOCKED · MISMATCH SHA256={} expected {} via {} · {} · retry or open evidence before trusting this file",
             short_hash,
             report
@@ -89,7 +101,7 @@ fn format_download_completion_status(
             report.source.as_deref().unwrap_or("verification asset"),
             disposition_summary
         ),
-        VerificationStatus::Unknown => format!(
+        (VerificationStatus::Unknown, _) => format!(
             "⚠ Verification UNKNOWN risk · SHA256={} · {} · {}",
             short_hash, report.detail, disposition_summary
         ),
@@ -97,11 +109,45 @@ fn format_download_completion_status(
 }
 
 fn format_download_notification_status(report: &VerificationReport) -> String {
-    match report.status {
-        VerificationStatus::Verified => "Download complete (VERIFIED)".to_string(),
-        VerificationStatus::Mismatch => "Download blocked (MISMATCH)".to_string(),
-        VerificationStatus::Unknown => "Download saved with UNKNOWN verification risk".to_string(),
+    match (report.status.clone(), report.effective_trust_decision()) {
+        (VerificationStatus::Verified, verification::VerificationTrustDecision::Block) => {
+            "Download blocked (UNTRUSTED SOURCE)".to_string()
+        }
+        (VerificationStatus::Verified, _) => "Download complete (VERIFIED)".to_string(),
+        (VerificationStatus::Mismatch, _) => "Download blocked (MISMATCH)".to_string(),
+        (VerificationStatus::Unknown, _) => {
+            "Download saved with UNKNOWN verification risk".to_string()
+        }
     }
+}
+
+fn source_trust_status_summary(report: &VerificationReport) -> String {
+    report
+        .source_trust
+        .as_ref()
+        .map(|trust| {
+            let signature = trust
+                .signature_asset_name
+                .as_deref()
+                .map(|asset| format!(" via {asset}"))
+                .unwrap_or_default();
+            let pin = trust
+                .trusted_publisher_key_fingerprint_sha256
+                .as_deref()
+                .map(|fingerprint| {
+                    let short = fingerprint.chars().take(12).collect::<String>();
+                    format!(" key={short}")
+                })
+                .unwrap_or_default();
+            format!(
+                "{} decision={}{}{}",
+                trust.status_label(),
+                trust.decision_label(),
+                signature,
+                pin
+            )
+        })
+        .unwrap_or_else(|| "NOT_APPLICABLE".to_string())
 }
 
 fn status_color(status: &str) -> egui::Color32 {
@@ -145,6 +191,10 @@ struct SavedState {
     trust_unknown_allow_open: bool,
     #[serde(default)]
     trust_mismatch_file_policy: MismatchFilePolicy,
+    #[serde(default)]
+    source_trust_require_signed: bool,
+    #[serde(default)]
+    source_trust_publisher_key: String,
     #[serde(default)]
     history_path: String,
 }
@@ -220,6 +270,10 @@ impl GhMirrorGui {
                         unknown_keep_file: state.trust_unknown_keep_file,
                         unknown_allow_open: state.trust_unknown_allow_open,
                         mismatch_file_policy: state.trust_mismatch_file_policy,
+                        source_trust: source_trust::SourceTrustPolicyConfig {
+                            require_trusted_source: state.source_trust_require_signed,
+                            trusted_publisher_key: state.source_trust_publisher_key,
+                        },
                     };
                     history_path = state.history_path;
                 }
@@ -478,6 +532,7 @@ impl GhMirrorGui {
                         &save_path,
                         &asset_name,
                         verification_plan.as_ref(),
+                        &trust_policy.source_trust,
                     ) {
                         Ok(report) => report,
                         Err(e) => {
@@ -489,7 +544,7 @@ impl GhMirrorGui {
                         }
                     };
                     let disposition_plan =
-                        plan_file_disposition(&save_path, &verification.status, &trust_policy);
+                        plan_file_disposition_for_report(&save_path, &verification, &trust_policy);
                     let evidence_path = match append_download_history(
                         &Some(history_path.clone()),
                         &effective_url,
@@ -563,6 +618,12 @@ impl eframe::App for GhMirrorGui {
             trust_unknown_keep_file: self.trust_policy.unknown_keep_file,
             trust_unknown_allow_open: self.trust_policy.unknown_allow_open,
             trust_mismatch_file_policy: self.trust_policy.mismatch_file_policy,
+            source_trust_require_signed: self.trust_policy.source_trust.require_trusted_source,
+            source_trust_publisher_key: self
+                .trust_policy
+                .source_trust
+                .trusted_publisher_key
+                .clone(),
             history_path: self.history_path.clone(),
         };
         if let Ok(json) = serde_json::to_string(&state) {
@@ -987,6 +1048,71 @@ impl eframe::App for GhMirrorGui {
                             );
                         });
                 });
+                ui.separator();
+                ui.label(egui::RichText::new("Verification source trust").strong());
+                ui.checkbox(
+                    &mut self.trust_policy.source_trust.require_trusted_source,
+                    "Require signed checksum/provenance source",
+                );
+                ui.horizontal(|ui| {
+                    ui.label("Pinned Ed25519 publisher key:");
+                    ui.text_edit_singleline(
+                        &mut self.trust_policy.source_trust.trusted_publisher_key,
+                    );
+                });
+                ui.horizontal(|ui| {
+                    if ui.button("Import public key").clicked() {
+                        if let Some(path) = FileDialog::new()
+                            .add_filter("Public key", &["pub", "txt"])
+                            .pick_file()
+                        {
+                            match std::fs::read_to_string(&path)
+                                .map_err(|e| e.to_string())
+                                .and_then(|text| normalize_public_key_pin(&text))
+                            {
+                                Ok(pin) => {
+                                    self.trust_policy.source_trust.trusted_publisher_key = pin;
+                                    self.status = format!(
+                                        "Imported Ed25519 publisher key from {}",
+                                        path.display()
+                                    );
+                                }
+                                Err(e) => {
+                                    self.status =
+                                        format!("❌ Public key import failed: {e}");
+                                }
+                            }
+                        }
+                    }
+                    if ui.button("Normalize key").clicked() {
+                        match normalize_public_key_pin(
+                            &self.trust_policy.source_trust.trusted_publisher_key,
+                        ) {
+                            Ok(pin) => {
+                                self.trust_policy.source_trust.trusted_publisher_key = pin;
+                                self.status = "Normalized Ed25519 publisher key".to_string();
+                            }
+                            Err(e) => {
+                                self.status = format!("❌ Publisher key is invalid: {e}");
+                            }
+                        }
+                    }
+                    if ui.button("Clear key").clicked() {
+                        self.trust_policy.source_trust.trusted_publisher_key.clear();
+                    }
+                });
+                if let Some(fingerprint) =
+                    trusted_key_fingerprint(&self.trust_policy.source_trust.trusted_publisher_key)
+                {
+                    ui.small(format!("Pinned key SHA256 fingerprint: {fingerprint}"));
+                } else if self.trust_policy.source_trust.require_trusted_source {
+                    ui.colored_label(
+                        egui::Color32::from_rgb(220, 70, 70),
+                        "Required policy needs a pinned Ed25519 public key and .sig source assets.",
+                    );
+                } else {
+                    ui.small("No key pinned: hash verification still works, but source authenticity is not checked.");
+                }
                 ui.horizontal(|ui| {
                     ui.label("History/evidence path:");
                     ui.text_edit_singleline(&mut self.history_path);
@@ -1027,8 +1153,22 @@ impl eframe::App for GhMirrorGui {
 
             if let Some(report) = self.last_verification.clone() {
                 ui.horizontal(|ui| {
-                    match report.status {
-                        VerificationStatus::Mismatch => {
+                    match (report.status.clone(), report.effective_trust_decision()) {
+                        (
+                            VerificationStatus::Verified,
+                            verification::VerificationTrustDecision::Block,
+                        ) => {
+                            ui.colored_label(
+                                egui::Color32::from_rgb(220, 70, 70),
+                                "Blocked: checksum matched, but verification source signature is not trusted.",
+                            );
+                            if self.download_thread.is_none()
+                                && ui.button("🔁 Retry Download").clicked()
+                            {
+                                self.start_download();
+                            }
+                        }
+                        (VerificationStatus::Mismatch, _) => {
                             ui.colored_label(
                                 egui::Color32::from_rgb(220, 70, 70),
                                 "Blocked: downloaded file does not match trusted checksum.",
@@ -1039,16 +1179,16 @@ impl eframe::App for GhMirrorGui {
                                 self.start_download();
                             }
                         }
-                        VerificationStatus::Unknown => {
+                        (VerificationStatus::Unknown, _) => {
                             ui.colored_label(
                                 egui::Color32::from_rgb(220, 160, 0),
                                 "Risk: no matching checksum/provenance could verify this file.",
                             );
                         }
-                        VerificationStatus::Verified => {
+                        (VerificationStatus::Verified, _) => {
                             ui.colored_label(
                                 egui::Color32::from_rgb(0, 180, 0),
-                                "Trusted: checksum/provenance verification passed.",
+                                "Trusted: checksum/provenance hash and source policy passed.",
                             );
                         }
                     }
@@ -1061,8 +1201,8 @@ impl eframe::App for GhMirrorGui {
                     if let (Some(download_path), Some(disposition)) =
                         (&self.last_download_path, &self.last_file_disposition)
                     {
-                        if let Some(label) = open_location_button_label(
-                            &report.status,
+                        if let Some(label) = open_location_button_label_for_report(
+                            &report,
                             disposition,
                             &self.trust_policy,
                         ) {
@@ -1075,6 +1215,10 @@ impl eframe::App for GhMirrorGui {
                         }
                     }
                 });
+                ui.small(format!(
+                    "Source authenticity: {}",
+                    source_trust_status_summary(&report)
+                ));
                 if let Some(disposition) = &self.last_file_disposition {
                     ui.small(file_disposition_summary(disposition));
                 }
@@ -1163,8 +1307,59 @@ fn run_speed_test(
     best_idx
 }
 
+fn run_sign_verification_source(args: &[String]) -> Result<(), String> {
+    let mut source = None;
+    let mut out = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--source" => {
+                i += 1;
+                source = args.get(i).map(PathBuf::from);
+            }
+            "--out" => {
+                i += 1;
+                out = args.get(i).map(PathBuf::from);
+            }
+            other => {
+                return Err(format!(
+                    "unknown --sign-verification-source option: {other}"
+                ))
+            }
+        }
+        i += 1;
+    }
+
+    let source = source.ok_or_else(|| "--source is required".to_string())?;
+    let out = out.ok_or_else(|| "--out is required".to_string())?;
+    let private_key = env::var("GH_MIRROR_GUI_ED25519_PRIVATE_KEY_HEX")
+        .map_err(|_| "GH_MIRROR_GUI_ED25519_PRIVATE_KEY_HEX is required".to_string())?;
+    let source_bytes =
+        std::fs::read(&source).map_err(|e| format!("Read source asset error: {e}"))?;
+    let signature = source_trust::sign_ed25519_detached(&source_bytes, &private_key)?;
+    if let Some(parent) = out.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("Create signature dir error: {e}"))?;
+    }
+    std::fs::write(&out, format!("{signature}\n"))
+        .map_err(|e| format!("Write signature asset error: {e}"))?;
+    println!(
+        "signed verification source {} -> {}",
+        source.display(),
+        out.display()
+    );
+    Ok(())
+}
+
 fn main() -> Result<(), eframe::Error> {
     let args = env::args().skip(1).collect::<Vec<_>>();
+    if args.first().map(|s| s.as_str()) == Some("--sign-verification-source") {
+        if let Err(e) = run_sign_verification_source(&args[1..]) {
+            eprintln!("sign verification source failed: {e}");
+            std::process::exit(2);
+        }
+        return Ok(());
+    }
+
     if args.first().map(|s| s.as_str()) == Some("--bench-download") {
         if let Err(e) = run_bench_download(&args[1..]) {
             eprintln!("benchmark failed: {e}");
@@ -1384,19 +1579,26 @@ mod tests {
             state.trust_mismatch_file_policy,
             MismatchFilePolicy::Quarantine
         );
+        assert!(!state.source_trust_require_signed);
+        assert!(state.source_trust_publisher_key.is_empty());
         assert!(state.history_path.is_empty());
     }
 
     #[test]
     fn saved_state_persists_trust_policy_and_history_path() {
         let state: SavedState = serde_json::from_str(
-            r#"{"selected_mirror":0,"save_dir":"C:\\Downloads","proxy":"","allow_invalid_certs":false,"trust_unknown_keep_file":false,"trust_unknown_allow_open":false,"trust_mismatch_file_policy":"DELETE","history_path":"C:\\Evidence\\bench-history.jsonl"}"#,
+            r#"{"selected_mirror":0,"save_dir":"C:\\Downloads","proxy":"","allow_invalid_certs":false,"trust_unknown_keep_file":false,"trust_unknown_allow_open":false,"trust_mismatch_file_policy":"DELETE","source_trust_require_signed":true,"source_trust_publisher_key":"D75A980182B10AB7D54BFED3C964073A0EE172F3DAA62325AF021A68F707511A","history_path":"C:\\Evidence\\bench-history.jsonl"}"#,
         )
         .unwrap();
 
         assert!(!state.trust_unknown_keep_file);
         assert!(!state.trust_unknown_allow_open);
         assert_eq!(state.trust_mismatch_file_policy, MismatchFilePolicy::Delete);
+        assert!(state.source_trust_require_signed);
+        assert_eq!(
+            state.source_trust_publisher_key,
+            "D75A980182B10AB7D54BFED3C964073A0EE172F3DAA62325AF021A68F707511A"
+        );
         assert_eq!(state.history_path, r"C:\Evidence\bench-history.jsonl");
     }
 
@@ -1431,6 +1633,7 @@ mod tests {
             file_sha256: hash.to_string(),
             expected_sha256: Some(hash.to_string()),
             source: Some("SHA256SUMS.txt".to_string()),
+            source_trust: None,
             detail: "SHA256 matched SHA256SUMS.txt".to_string(),
         };
         let mismatch = VerificationReport {
@@ -1441,6 +1644,7 @@ mod tests {
                 "B9BDB5AE91B153ED8E04513CA9322B4445A91D3BE8DD2695A8F1C206C9937CCC".to_string(),
             ),
             source: Some("SHA256SUMS.txt".to_string()),
+            source_trust: None,
             detail: "SHA256 mismatch against SHA256SUMS.txt".to_string(),
         };
         let unknown = VerificationReport {
@@ -1449,6 +1653,7 @@ mod tests {
             file_sha256: hash.to_string(),
             expected_sha256: None,
             source: None,
+            source_trust: None,
             detail: "No checksum/provenance assets were detected".to_string(),
         };
         let kept = AppliedFileDisposition {
@@ -1478,6 +1683,44 @@ mod tests {
     }
 
     #[test]
+    fn completion_status_blocks_untrusted_signed_source() {
+        let hash = "A9BDB5AE91B153ED8E04513CA9322B4445A91D3BE8DD2695A8F1C206C9937CCC";
+        let report = VerificationReport {
+            status: VerificationStatus::Verified,
+            asset_name: "app.exe".to_string(),
+            file_sha256: hash.to_string(),
+            expected_sha256: Some(hash.to_string()),
+            source: Some("SHA256SUMS.txt".to_string()),
+            source_trust: Some(source_trust::SourceTrustEvidence {
+                schema_version: 1,
+                status: source_trust::SourceAuthenticityStatus::BadSignature,
+                decision: source_trust::SourceTrustDecision::Block,
+                required: false,
+                source_asset_name: Some("SHA256SUMS.txt".to_string()),
+                signature_asset_name: Some("SHA256SUMS.txt.sig".to_string()),
+                trusted_publisher_key_fingerprint_sha256: Some("ABCDEF".to_string()),
+                detail: "bad signature".to_string(),
+            }),
+            detail: "SHA256 matched SHA256SUMS.txt".to_string(),
+        };
+        let quarantined = AppliedFileDisposition {
+            action: FileDispositionAction::Quarantine,
+            original_path: PathBuf::from("app.exe"),
+            final_path: Some(PathBuf::from(".gh_mirror_gui-quarantine/app.exe")),
+        };
+
+        let status = format_download_completion_status(&report, &quarantined);
+
+        assert!(status.contains("Verification BLOCKED"));
+        assert!(status.contains("source authenticity"));
+        assert!(status.contains("BAD_SIGNATURE"));
+        assert_eq!(
+            format_download_notification_status(&report),
+            "Download blocked (UNTRUSTED SOURCE)"
+        );
+    }
+
+    #[test]
     fn history_backed_strategy_prefers_best_matching_full_download() {
         let probe = DownloadProbe {
             total: 32 * 1024 * 1024,
@@ -1502,6 +1745,7 @@ mod tests {
                 verification_asset_name: None,
                 verification_file_sha256: None,
                 verification_source: None,
+                verification_source_trust: None,
                 expected_sha256: None,
                 verification_detail: None,
                 verification_evidence_path: None,
@@ -1527,6 +1771,7 @@ mod tests {
                 verification_asset_name: None,
                 verification_file_sha256: None,
                 verification_source: None,
+                verification_source_trust: None,
                 expected_sha256: None,
                 verification_detail: None,
                 verification_evidence_path: None,

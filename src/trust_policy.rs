@@ -1,6 +1,8 @@
-use crate::verification::VerificationStatus;
 #[cfg(test)]
-use crate::verification::VerificationTrustDecision;
+use crate::source_trust::{SourceAuthenticityStatus, SourceTrustDecision, SourceTrustEvidence};
+use crate::source_trust::{SourceTrustPolicyConfig, SourceTrustPolicySnapshot};
+use crate::verification::VerificationStatus;
+use crate::verification::{VerificationReport, VerificationTrustDecision};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -26,6 +28,7 @@ pub(crate) struct TrustPolicyConfig {
     pub(crate) unknown_keep_file: bool,
     pub(crate) unknown_allow_open: bool,
     pub(crate) mismatch_file_policy: MismatchFilePolicy,
+    pub(crate) source_trust: SourceTrustPolicyConfig,
 }
 
 impl Default for TrustPolicyConfig {
@@ -34,6 +37,7 @@ impl Default for TrustPolicyConfig {
             unknown_keep_file: true,
             unknown_allow_open: false,
             mismatch_file_policy: MismatchFilePolicy::Quarantine,
+            source_trust: SourceTrustPolicyConfig::default(),
         }
     }
 }
@@ -41,10 +45,11 @@ impl Default for TrustPolicyConfig {
 impl TrustPolicyConfig {
     pub(crate) fn snapshot(&self) -> TrustPolicySnapshot {
         TrustPolicySnapshot {
-            schema_version: 1,
+            schema_version: 2,
             unknown_keep_file: self.unknown_keep_file,
             unknown_allow_open: self.unknown_allow_open,
             mismatch_file_policy: self.mismatch_file_policy.as_str().to_string(),
+            source_trust: self.source_trust.snapshot(),
         }
     }
 }
@@ -55,6 +60,8 @@ pub(crate) struct TrustPolicySnapshot {
     pub(crate) unknown_keep_file: bool,
     pub(crate) unknown_allow_open: bool,
     pub(crate) mismatch_file_policy: String,
+    #[serde(default)]
+    pub(crate) source_trust: SourceTrustPolicySnapshot,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -116,6 +123,11 @@ pub(crate) fn trust_decision_for_status(status: &VerificationStatus) -> Verifica
     status.trust_decision()
 }
 
+#[cfg(test)]
+pub(crate) fn trust_decision_for_report(report: &VerificationReport) -> VerificationTrustDecision {
+    report.effective_trust_decision()
+}
+
 pub(crate) fn plan_file_disposition(
     path: &Path,
     status: &VerificationStatus,
@@ -149,6 +161,31 @@ pub(crate) fn plan_file_disposition(
                 original_path,
                 final_path: None,
             },
+        },
+    }
+}
+
+pub(crate) fn plan_file_disposition_for_report(
+    path: &Path,
+    report: &VerificationReport,
+    policy: &TrustPolicyConfig,
+) -> PlannedFileDisposition {
+    match report.effective_trust_decision() {
+        VerificationTrustDecision::Trusted => PlannedFileDisposition {
+            action: FileDispositionAction::Keep,
+            original_path: path.to_path_buf(),
+            final_path: Some(path.to_path_buf()),
+        },
+        VerificationTrustDecision::Risk => {
+            plan_file_disposition(path, &VerificationStatus::Unknown, policy)
+        }
+        VerificationTrustDecision::Block => match report.status {
+            VerificationStatus::Unknown => {
+                plan_file_disposition(path, &VerificationStatus::Unknown, policy)
+            }
+            VerificationStatus::Verified | VerificationStatus::Mismatch => {
+                plan_file_disposition(path, &VerificationStatus::Mismatch, policy)
+            }
         },
     }
 }
@@ -199,6 +236,7 @@ pub(crate) fn apply_file_disposition(
     }
 }
 
+#[cfg(test)]
 pub(crate) fn open_location_button_label(
     status: &VerificationStatus,
     disposition: &AppliedFileDisposition,
@@ -218,6 +256,37 @@ pub(crate) fn open_location_button_label(
                 && disposition.final_path.is_some() =>
         {
             Some("📦 Open Quarantine")
+        }
+        _ => None,
+    }
+}
+
+pub(crate) fn open_location_button_label_for_report(
+    report: &VerificationReport,
+    disposition: &AppliedFileDisposition,
+    policy: &TrustPolicyConfig,
+) -> Option<&'static str> {
+    match report.effective_trust_decision() {
+        VerificationTrustDecision::Trusted if disposition.final_path.is_some() => {
+            Some("📂 Open Folder")
+        }
+        VerificationTrustDecision::Risk
+            if report.status == VerificationStatus::Unknown
+                && policy.unknown_keep_file
+                && policy.unknown_allow_open
+                && disposition.final_path.is_some() =>
+        {
+            Some("📂 Open Folder")
+        }
+        VerificationTrustDecision::Block
+            if disposition.action == FileDispositionAction::Quarantine
+                && disposition.final_path.is_some() =>
+        {
+            if report.status == VerificationStatus::Verified {
+                Some("📦 Open Untrusted Source")
+            } else {
+                Some("📦 Open Quarantine")
+            }
         }
         _ => None,
     }
@@ -293,6 +362,10 @@ mod tests {
         assert!(policy.unknown_keep_file);
         assert!(!policy.unknown_allow_open);
         assert_eq!(policy.mismatch_file_policy, MismatchFilePolicy::Quarantine);
+        assert!(!policy.source_trust.require_trusted_source);
+        assert!(policy.source_trust.trusted_publisher_key.is_empty());
+        assert_eq!(policy.snapshot().schema_version, 2);
+        assert_eq!(policy.snapshot().source_trust.schema_version, 1);
         assert_eq!(
             trust_decision_for_status(&VerificationStatus::Verified),
             VerificationTrustDecision::Trusted
@@ -349,6 +422,51 @@ mod tests {
             },
         );
         assert_eq!(unknown_delete.action, FileDispositionAction::Delete);
+    }
+
+    #[test]
+    fn source_trust_required_policy_quarantines_hash_verified_untrusted_source() {
+        let path = PathBuf::from(r"C:\downloads\app.exe");
+        let policy = TrustPolicyConfig {
+            source_trust: SourceTrustPolicyConfig {
+                require_trusted_source: true,
+                trusted_publisher_key: String::new(),
+            },
+            ..TrustPolicyConfig::default()
+        };
+        let report = VerificationReport {
+            status: VerificationStatus::Verified,
+            asset_name: "app.exe".to_string(),
+            file_sha256: "A9BDB5AE91B153ED8E04513CA9322B4445A91D3BE8DD2695A8F1C206C9937CCC"
+                .to_string(),
+            expected_sha256: Some(
+                "A9BDB5AE91B153ED8E04513CA9322B4445A91D3BE8DD2695A8F1C206C9937CCC".to_string(),
+            ),
+            source: Some("SHA256SUMS.txt".to_string()),
+            source_trust: Some(SourceTrustEvidence {
+                schema_version: 1,
+                status: SourceAuthenticityStatus::MissingSignature,
+                decision: SourceTrustDecision::Block,
+                required: true,
+                source_asset_name: Some("SHA256SUMS.txt".to_string()),
+                signature_asset_name: None,
+                trusted_publisher_key_fingerprint_sha256: None,
+                detail: "missing signature".to_string(),
+            }),
+            detail: "SHA256 matched SHA256SUMS.txt".to_string(),
+        };
+
+        let decision = trust_decision_for_report(&report);
+        let disposition = plan_file_disposition_for_report(&path, &report, &policy);
+
+        assert_eq!(decision, VerificationTrustDecision::Block);
+        assert_eq!(disposition.action, FileDispositionAction::Quarantine);
+        assert!(disposition
+            .final_path
+            .as_ref()
+            .unwrap()
+            .to_string_lossy()
+            .contains(".gh_mirror_gui-quarantine"));
     }
 
     #[test]
@@ -451,6 +569,46 @@ mod tests {
                 }
             ),
             None
+        );
+    }
+
+    #[test]
+    fn gui_open_location_decision_blocks_untrusted_verified_source() {
+        let path = PathBuf::from("app.exe");
+        let quarantined = AppliedFileDisposition {
+            action: FileDispositionAction::Quarantine,
+            original_path: path.clone(),
+            final_path: Some(PathBuf::from(".gh_mirror_gui-quarantine/app.exe")),
+        };
+        let report = VerificationReport {
+            status: VerificationStatus::Verified,
+            asset_name: "app.exe".to_string(),
+            file_sha256: "A9BDB5AE91B153ED8E04513CA9322B4445A91D3BE8DD2695A8F1C206C9937CCC"
+                .to_string(),
+            expected_sha256: Some(
+                "A9BDB5AE91B153ED8E04513CA9322B4445A91D3BE8DD2695A8F1C206C9937CCC".to_string(),
+            ),
+            source: Some("SHA256SUMS.txt".to_string()),
+            source_trust: Some(SourceTrustEvidence {
+                schema_version: 1,
+                status: SourceAuthenticityStatus::BadSignature,
+                decision: SourceTrustDecision::Block,
+                required: false,
+                source_asset_name: Some("SHA256SUMS.txt".to_string()),
+                signature_asset_name: Some("SHA256SUMS.txt.sig".to_string()),
+                trusted_publisher_key_fingerprint_sha256: Some("fingerprint".to_string()),
+                detail: "bad signature".to_string(),
+            }),
+            detail: "SHA256 matched SHA256SUMS.txt".to_string(),
+        };
+
+        assert_eq!(
+            open_location_button_label_for_report(
+                &report,
+                &quarantined,
+                &TrustPolicyConfig::default()
+            ),
+            Some("📦 Open Untrusted Source")
         );
     }
 }

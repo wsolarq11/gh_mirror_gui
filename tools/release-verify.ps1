@@ -488,27 +488,50 @@ $Receipt.checks.trust_policy_contract = [ordered]@{
         unknown_keep_file = $true
         unknown_allow_open = $false
         mismatch_file_policy = 'QUARANTINE'
+        source_trust_require_signed = $false
     }
     file_disposition = [ordered]@{
         verified = 'KEEP'
         mismatch = 'QUARANTINE_OR_DELETE_BY_POLICY'
         unknown = 'KEEP_OR_DELETE_BY_POLICY'
+        verified_hash_untrusted_source = 'QUARANTINE_OR_DELETE_BY_POLICY'
     }
-    history_evidence_schema = 'policy.schema_version=1 + file_disposition.schema_version=1 REQUIRED_FOR_VERIFIED_MISMATCH_UNKNOWN_DOWNLOAD_REPORTS'
-    gui_decision_points = 'SavedState persistence + Trust policy UI + Open Evidence exact path + open_location_button_label'
+    source_trust = [ordered]@{
+        signature_format = 'ed25519-detached-hex'
+        good_signature = 'VERIFIED hash + TRUSTED_SIGNATURE source -> TRUSTED'
+        bad_signature = 'VERIFIED hash + BAD_SIGNATURE source -> BLOCK'
+        missing_signature_required = 'VERIFIED hash + MISSING_SIGNATURE required source -> BLOCK'
+        missing_signature_optional = 'VERIFIED hash + UNSIGNED optional source -> allowed with source authenticity evidence'
+        key_material = 'history/evidence store pinned key SHA256 fingerprint, not raw public key'
+    }
+    history_evidence_schema = 'policy.schema_version=2 + policy.source_trust.schema_version=1 + source_trust.schema_version=1 + file_disposition.schema_version=1 REQUIRED_FOR_VERIFIED_MISMATCH_UNKNOWN_DOWNLOAD_REPORTS'
+    gui_decision_points = 'SavedState persistence + Trust policy UI + Source trust pin/import/normalize/display + Open Evidence exact path + open_location_button_label_for_report'
     covered_by = Assert-CommandLogContains `
         -CommandName 'cargo-test-all-targets' `
         -RequiredPatterns @(
             'trust_policy_defaults_are_conservative_but_download_compatible',
             'file_disposition_plans_cover_verified_mismatch_and_unknown_policy',
+            'source_trust_required_policy_quarantines_hash_verified_untrusted_source',
             'applies_quarantine_and_delete_file_dispositions',
             'gui_open_location_decision_respects_trust_policy',
+            'gui_open_location_decision_blocks_untrusted_verified_source',
             'saved_state_persists_trust_policy_and_history_path',
             'history_path_setting_uses_default_when_blank_and_custom_when_set',
             'completion_status_makes_mismatch_blocking_and_unknown_risky',
+            'completion_status_blocks_untrusted_signed_source',
             'append_download_history_records_reviewable_verification_evidence',
             'append_download_history_records_block_and_risk_evidence_decisions',
-            'reports_verified_mismatch_and_unknown_states'
+            'history_evidence_records_source_trust_schema',
+            'reports_verified_mismatch_and_unknown_states',
+            'source_trust_verifies_good_and_bad_ed25519_signature',
+            'source_trust_signs_detached_signature_that_verifier_accepts',
+            'source_trust_missing_signature_blocks_only_when_required',
+            'source_trust_no_key_blocks_required_policy',
+            'source_trust_snapshot_records_key_fingerprint_not_raw_key',
+            'detects_checksum_and_provenance_assets_for_selected_release_asset',
+            'verifies_downloaded_file_with_good_signed_checksum_source',
+            'blocks_bad_signature_even_when_hash_matches',
+            'required_source_trust_blocks_missing_signature'
         )
 }
 Invoke-LoggedNative -Name 'cargo-clippy-all-targets' -Exe 'cargo' -Arguments @('clippy', '--all-targets', '--locked', '--', '-D', 'warnings')

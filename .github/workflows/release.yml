@@ -82,6 +82,8 @@ jobs:
 
       - name: Stage release assets
         shell: pwsh
+        env:
+          GH_MIRROR_GUI_ED25519_PRIVATE_KEY_HEX: ${{ secrets.RELEASE_ED25519_PRIVATE_KEY_HEX }}
         run: |
           $gitHead = git rev-parse HEAD
           $gitDescribe = git describe --tags --always --dirty
@@ -143,6 +145,31 @@ jobs:
           }
 
           $provenance | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $dist "release-provenance.json") -Encoding UTF8
+
+          if (![string]::IsNullOrWhiteSpace($env:GH_MIRROR_GUI_ED25519_PRIVATE_KEY_HEX)) {
+            & $assetExe --sign-verification-source `
+              --source (Join-Path $dist "SHA256SUMS.txt") `
+              --out (Join-Path $dist "SHA256SUMS.txt.sig")
+            if ($LASTEXITCODE -ne 0) { throw "SHA256SUMS.txt signing failed" }
+
+            $provenanceSigned = Get-Content -LiteralPath (Join-Path $dist "release-provenance.json") -Raw | ConvertFrom-Json
+            $provenanceSigned | Add-Member -NotePropertyName source_trust -NotePropertyValue ([ordered]@{
+              schema_version = 1
+              signature_format = "ed25519-detached-hex"
+              signed_assets = @(
+                "SHA256SUMS.txt.sig",
+                "release-provenance.json.sig"
+              )
+            }) -Force
+            $provenanceSigned | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $dist "release-provenance.json") -Encoding UTF8
+            & $assetExe --sign-verification-source `
+              --source (Join-Path $dist "release-provenance.json") `
+              --out (Join-Path $dist "release-provenance.json.sig")
+            if ($LASTEXITCODE -ne 0) { throw "release-provenance.json re-signing failed" }
+          } else {
+            Write-Host "RELEASE_ED25519_PRIVATE_KEY_HEX not configured; detached source signatures were not generated."
+          }
+
           Get-ChildItem -LiteralPath $dist | Format-Table Name,Length
 
       - name: Upload release build artifact
@@ -159,10 +186,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh --version
-          gh release create $env:RELEASE_TAG `
-            dist\gh_mirror_gui.exe `
-            dist\SHA256SUMS.txt `
-            dist\release-provenance.json `
+          $assets = @(
+            "dist\gh_mirror_gui.exe",
+            "dist\SHA256SUMS.txt",
+            "dist\release-provenance.json"
+          )
+          $assets += @(Get-ChildItem -LiteralPath dist -Filter "*.sig" | ForEach-Object { $_.FullName })
+          gh release create $env:RELEASE_TAG @assets `
             --repo $env:GITHUB_REPOSITORY `
             --title $env:RELEASE_TAG `
             --notes-file RELEASE_NOTES.md `
