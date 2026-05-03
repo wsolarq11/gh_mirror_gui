@@ -1207,6 +1207,37 @@ $Receipt.checks.route_guardrails = [ordered]@{
             'Evidence ledger',
             'Release verification front door'
         )
+    architecture_convergence = [ordered]@{
+        ok = $true
+        contract = 'experiments must converge into one Windows UI + one core/backend trust chain + one release-verify receipt gate; no long-term dual tracks'
+        agents = Assert-FileContains `
+            -RelativePath 'AGENTS.md' `
+            -RequiredPatterns @(
+                'Windows UI',
+                '`core/backend/API/evidence/policy`',
+                'Do **not** keep long-term dual tracks',
+                'Experiments must converge back into the single main chain or be removed'
+            )
+        roadmap = Assert-FileContains `
+            -RelativePath 'docs\ROADMAP.md' `
+            -RequiredPatterns @(
+                'Not a second release pipeline beside `tools\release-verify.ps1`',
+                '`tools\release-verify.ps1` as the single delivery front door',
+                'UI stops making final trust decisions',
+                'Do not expand scope here until the GitHub Release trust path and Artifact Trust Broker contracts are stable',
+                'Avoid work that creates a second long-term path'
+            )
+        architecture = Assert-FileContains `
+            -RelativePath 'docs\ARCHITECTURE.md' `
+            -RequiredPatterns @(
+                'one Windows UI',
+                'trusted local acquisition backend with a thin UI shell',
+                'UI must not',
+                'invent final trust verdicts',
+                'Do not daemonize before the core contract is clean',
+                '`tools\release-verify.ps1` is the delivery judge'
+            )
+    }
 }
 $Receipt.checks.release_workflow_artifact_contract = Assert-ReleaseWorkflowArtifactContract
 Invoke-LoggedNative -Name 'cargo-fmt-check' -Exe 'cargo' -Arguments @('fmt', '--check')
