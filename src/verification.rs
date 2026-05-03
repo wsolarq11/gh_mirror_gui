@@ -25,12 +25,37 @@ pub(crate) enum VerificationStatus {
     Unknown,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) enum VerificationTrustDecision {
+    Trusted,
+    Block,
+    Risk,
+}
+
 impl VerificationStatus {
     pub(crate) fn as_str(&self) -> &'static str {
         match self {
             Self::Verified => "VERIFIED",
             Self::Mismatch => "MISMATCH",
             Self::Unknown => "UNKNOWN",
+        }
+    }
+
+    pub(crate) fn trust_decision(&self) -> VerificationTrustDecision {
+        match self {
+            Self::Verified => VerificationTrustDecision::Trusted,
+            Self::Mismatch => VerificationTrustDecision::Block,
+            Self::Unknown => VerificationTrustDecision::Risk,
+        }
+    }
+}
+
+impl VerificationTrustDecision {
+    pub(crate) fn as_str(&self) -> &'static str {
+        match self {
+            Self::Trusted => "TRUSTED",
+            Self::Block => "BLOCK",
+            Self::Risk => "RISK",
         }
     }
 }
@@ -602,6 +627,10 @@ mod tests {
         );
         assert_eq!(verified.status, VerificationStatus::Verified);
         assert_eq!(verified.status.as_str(), "VERIFIED");
+        assert_eq!(
+            verified.status.trust_decision(),
+            VerificationTrustDecision::Trusted
+        );
 
         let mismatch = report_from_expected(
             "app.exe",
@@ -610,9 +639,17 @@ mod tests {
             "SHA256SUMS.txt".to_string(),
         );
         assert_eq!(mismatch.status, VerificationStatus::Mismatch);
+        assert_eq!(
+            mismatch.status.trust_decision(),
+            VerificationTrustDecision::Block
+        );
 
         let unknown = unknown_report("app.exe", hash.to_string(), "no source".to_string());
         assert_eq!(unknown.status, VerificationStatus::Unknown);
+        assert_eq!(
+            unknown.status.trust_decision(),
+            VerificationTrustDecision::Risk
+        );
     }
 
     #[test]

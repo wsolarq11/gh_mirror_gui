@@ -66,7 +66,7 @@ fn format_download_completion_status(report: &VerificationReport) -> String {
             report.source.as_deref().unwrap_or("verification asset")
         ),
         VerificationStatus::Mismatch => format!(
-            "❌ Download complete · MISMATCH SHA256={} expected {} via {}",
+            "❌ Verification BLOCKED · MISMATCH SHA256={} expected {} via {} · retry or open evidence before trusting this file",
             short_hash,
             report
                 .expected_sha256
@@ -76,9 +76,17 @@ fn format_download_completion_status(report: &VerificationReport) -> String {
             report.source.as_deref().unwrap_or("verification asset")
         ),
         VerificationStatus::Unknown => format!(
-            "⚠ Download complete · UNKNOWN verification · SHA256={} · {}",
+            "⚠ Download saved · verification UNKNOWN risk · SHA256={} · {}",
             short_hash, report.detail
         ),
+    }
+}
+
+fn format_download_notification_status(report: &VerificationReport) -> String {
+    match report.status {
+        VerificationStatus::Verified => "Download complete (VERIFIED)".to_string(),
+        VerificationStatus::Mismatch => "Download blocked (MISMATCH)".to_string(),
+        VerificationStatus::Unknown => "Download saved with UNKNOWN verification risk".to_string(),
     }
 }
 
@@ -106,6 +114,7 @@ type DownloadResultMessage = Result<DownloadCompletion, String>;
 struct DownloadCompletion {
     path: PathBuf,
     verification: VerificationReport,
+    evidence_path: Option<PathBuf>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -149,6 +158,9 @@ struct GhMirrorGui {
     release_lookup_input: Option<String>,
     // Persisted state
     download_complete_notified: bool,
+    last_download_path: Option<PathBuf>,
+    last_verification: Option<VerificationReport>,
+    last_verification_evidence_path: Option<PathBuf>,
 }
 
 impl GhMirrorGui {
@@ -213,6 +225,9 @@ impl GhMirrorGui {
             release_lookup_rx: None,
             release_lookup_input: None,
             download_complete_notified: false,
+            last_download_path: None,
+            last_verification: None,
+            last_verification_evidence_path: None,
         }
     }
 
@@ -350,6 +365,9 @@ impl GhMirrorGui {
             .unwrap_or_else(|| String::from("download"));
 
         self.download_complete_notified = false;
+        self.last_download_path = None;
+        self.last_verification = None;
+        self.last_verification_evidence_path = None;
         let control = DownloadControl::new();
         let ctrl = control.clone();
         let effective_url = build_effective_url(&self.mirror_urls[self.selected_mirror], &self.url);
@@ -423,7 +441,7 @@ impl GhMirrorGui {
                             return;
                         }
                     };
-                    if let Err(e) = append_download_history(
+                    let evidence_path = match append_download_history(
                         &Some(history_path),
                         &effective_url,
                         &save_path,
@@ -432,12 +450,17 @@ impl GhMirrorGui {
                         download_start.elapsed(),
                         Some(&verification),
                     ) {
-                        log_error(&format!("append_download_history error: {}", e));
-                    }
+                        Ok(evidence_path) => evidence_path,
+                        Err(e) => {
+                            log_error(&format!("append_download_history error: {}", e));
+                            None
+                        }
+                    };
                     let _ = progress_tx.send((total, total, 0.0, 0.0));
                     let _ = result_tx.send(Ok(DownloadCompletion {
                         path: save_path,
                         verification,
+                        evidence_path,
                     }));
                 }
                 Err(e) => {
@@ -586,19 +609,20 @@ impl eframe::App for GhMirrorGui {
             match rx.try_recv() {
                 Ok(Ok(completion)) => {
                     self.status = format_download_completion_status(&completion.verification);
+                    self.last_download_path = Some(completion.path.clone());
+                    self.last_verification = Some(completion.verification.clone());
+                    self.last_verification_evidence_path = completion.evidence_path.clone();
                     self.download_thread = None;
                     self.control = None;
                     self.progress_rx = None;
                     if !self.download_complete_notified {
                         self.download_complete_notified = true;
                         let save_path_str = completion.path.to_string_lossy().to_string();
-                        let status = completion.verification.status.as_str().to_string();
+                        let status = format_download_notification_status(&completion.verification);
                         thread::spawn(move || {
                             let _ = Notification::new()
                                 .summary("gh_mirror_gui")
-                                .body(&format!(
-                                    "Download complete ({status})\nSaved to: {save_path_str}"
-                                ))
+                                .body(&format!("{status}\nSaved to: {save_path_str}"))
                                 .show();
                         });
                     }
@@ -875,14 +899,51 @@ impl eframe::App for GhMirrorGui {
                         self.status = String::from("Cancelled");
                     }
                 }
-                // Open downloaded file folder
-                if self.status.contains("Download complete")
-                    && ui.button("📂 Open Folder").clicked()
-                    && self.save_dir.exists()
-                {
-                    let _ = open::that(&self.save_dir);
-                }
             });
+
+            if let Some(report) = self.last_verification.clone() {
+                ui.horizontal(|ui| {
+                    match report.status {
+                        VerificationStatus::Mismatch => {
+                            ui.colored_label(
+                                egui::Color32::from_rgb(220, 70, 70),
+                                "Blocked: downloaded file does not match trusted checksum.",
+                            );
+                            if self.download_thread.is_none()
+                                && ui.button("🔁 Retry Download").clicked()
+                            {
+                                self.start_download();
+                            }
+                        }
+                        VerificationStatus::Unknown => {
+                            ui.colored_label(
+                                egui::Color32::from_rgb(220, 160, 0),
+                                "Risk: no matching checksum/provenance could verify this file.",
+                            );
+                        }
+                        VerificationStatus::Verified => {
+                            ui.colored_label(
+                                egui::Color32::from_rgb(0, 180, 0),
+                                "Trusted: checksum/provenance verification passed.",
+                            );
+                        }
+                    }
+
+                    if let Some(evidence_path) = &self.last_verification_evidence_path {
+                        if ui.button("📄 Open Evidence").clicked() && evidence_path.exists() {
+                            let _ = open::that(evidence_path);
+                        }
+                    }
+                    if let Some(download_path) = &self.last_download_path {
+                        if ui.button("📂 Open Folder").clicked() {
+                            let folder = download_path.parent().unwrap_or(&self.save_dir);
+                            if folder.exists() {
+                                let _ = open::that(folder);
+                            }
+                        }
+                    }
+                });
+            }
 
             // Progress bar and info — always visible during download
             if self.download_thread.is_some() || self.progress > 0.0 || !self.speed_text.is_empty()
@@ -1189,6 +1250,50 @@ mod tests {
     }
 
     #[test]
+    fn completion_status_makes_mismatch_blocking_and_unknown_risky() {
+        let hash = "A9BDB5AE91B153ED8E04513CA9322B4445A91D3BE8DD2695A8F1C206C9937CCC";
+        let verified = VerificationReport {
+            status: VerificationStatus::Verified,
+            asset_name: "app.exe".to_string(),
+            file_sha256: hash.to_string(),
+            expected_sha256: Some(hash.to_string()),
+            source: Some("SHA256SUMS.txt".to_string()),
+            detail: "SHA256 matched SHA256SUMS.txt".to_string(),
+        };
+        let mismatch = VerificationReport {
+            status: VerificationStatus::Mismatch,
+            asset_name: "app.exe".to_string(),
+            file_sha256: hash.to_string(),
+            expected_sha256: Some(
+                "B9BDB5AE91B153ED8E04513CA9322B4445A91D3BE8DD2695A8F1C206C9937CCC".to_string(),
+            ),
+            source: Some("SHA256SUMS.txt".to_string()),
+            detail: "SHA256 mismatch against SHA256SUMS.txt".to_string(),
+        };
+        let unknown = VerificationReport {
+            status: VerificationStatus::Unknown,
+            asset_name: "app.exe".to_string(),
+            file_sha256: hash.to_string(),
+            expected_sha256: None,
+            source: None,
+            detail: "No checksum/provenance assets were detected".to_string(),
+        };
+
+        assert!(format_download_completion_status(&verified).contains("Download complete"));
+        let mismatch_status = format_download_completion_status(&mismatch);
+        assert!(mismatch_status.contains("Verification BLOCKED"));
+        assert!(!mismatch_status.contains("Download complete"));
+        assert!(mismatch_status.contains("retry or open evidence"));
+        let unknown_status = format_download_completion_status(&unknown);
+        assert!(unknown_status.contains("verification UNKNOWN risk"));
+        assert!(!unknown_status.contains("✅"));
+        assert_eq!(
+            format_download_notification_status(&mismatch),
+            "Download blocked (MISMATCH)"
+        );
+    }
+
+    #[test]
     fn history_backed_strategy_prefers_best_matching_full_download() {
         let probe = DownloadProbe {
             total: 32 * 1024 * 1024,
@@ -1209,9 +1314,13 @@ mod tests {
                 avg_mib_s: 20.0,
                 sha256: "hash".to_string(),
                 verification_status: None,
+                verification_trust_decision: None,
+                verification_asset_name: None,
+                verification_file_sha256: None,
                 verification_source: None,
                 expected_sha256: None,
                 verification_detail: None,
+                verification_evidence_path: None,
                 etag: probe.etag.clone(),
                 last_modified: probe.last_modified.clone(),
                 recorded_at_epoch_secs: 1,
@@ -1228,9 +1337,13 @@ mod tests {
                 avg_mib_s: 10.0,
                 sha256: "hash".to_string(),
                 verification_status: None,
+                verification_trust_decision: None,
+                verification_asset_name: None,
+                verification_file_sha256: None,
                 verification_source: None,
                 expected_sha256: None,
                 verification_detail: None,
+                verification_evidence_path: None,
                 etag: probe.etag.clone(),
                 last_modified: probe.last_modified.clone(),
                 recorded_at_epoch_secs: 1,

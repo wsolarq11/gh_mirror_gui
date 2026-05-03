@@ -44,6 +44,18 @@ If the same release contains checksum/provenance assets, the picker shows the
 detected verification sources and the final status includes the downloaded file
 SHA256 verification result.
 
+Verification status is operational:
+
+- `VERIFIED` is trusted and shows the matched checksum/provenance source.
+- `MISMATCH` is blocking: retry the download or open the evidence before
+  trusting the file.
+- `UNKNOWN` is a yellow risk state: the file was saved, but no matching
+  checksum/provenance could verify it.
+
+Each verified release download writes a reviewable JSON evidence record next to
+the local download history, and the GUI exposes **Open Evidence** after the
+download finishes.
+
 Supported discovery inputs:
 
 ```text
@@ -100,7 +112,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\release-verify.ps1
 
 Evidence is written under `target\delivery\<run_id>\`.
 The receipt records build provenance including the git commit, Rust toolchain,
-`Cargo.lock` hash, release binary hash, and verification command logs.
+`Cargo.lock` hash, release binary hash, verification command logs, and
+`checks.trust_policy_contract` for the `VERIFIED` / `MISMATCH` / `UNKNOWN`
+decision rules.
 
 ## Release automation
 

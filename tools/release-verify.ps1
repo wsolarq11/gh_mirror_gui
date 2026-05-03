@@ -152,6 +152,37 @@ function Get-FirstLineOrEmpty {
     return $Lines[0]
 }
 
+function Assert-CommandLogContains {
+    param(
+        [string]$CommandName,
+        [string[]]$RequiredPatterns
+    )
+
+    $command = @($Receipt.commands | Where-Object { $_.name -eq $CommandName } | Select-Object -Last 1)
+    if ($command.Count -eq 0) {
+        throw "required command log not found in receipt: $CommandName"
+    }
+    $logPath = [string]$command[0].log
+    if (!(Test-Path -LiteralPath $logPath)) {
+        throw "required command log file missing: $logPath"
+    }
+    $text = Get-Content -LiteralPath $logPath -Raw
+    $missing = @($RequiredPatterns | Where-Object {
+        $pattern = [regex]::Escape($_)
+        $text -notmatch $pattern
+    })
+    if ($missing.Count -gt 0) {
+        throw "$CommandName log missing required trust-policy evidence: $($missing -join ', ')"
+    }
+
+    return [ordered]@{
+        ok = $true
+        command = $CommandName
+        log = $logPath
+        required_patterns = $RequiredPatterns
+    }
+}
+
 function Invoke-GitHubLatestRelease {
     param([string]$Repo)
 
@@ -446,6 +477,21 @@ $Receipt.provenance = [ordered]@{
 Invoke-LoggedNative -Name 'git-status' -Exe 'git' -Arguments @('status', '--short', '--branch')
 Invoke-LoggedNative -Name 'cargo-fmt-check' -Exe 'cargo' -Arguments @('fmt', '--check')
 Invoke-LoggedNative -Name 'cargo-test-all-targets' -Exe 'cargo' -Arguments @('test', '--all-targets', '--locked')
+$Receipt.checks.trust_policy_contract = [ordered]@{
+    ok = $true
+    mismatch_decision = 'BLOCK'
+    unknown_decision = 'RISK'
+    verified_decision = 'TRUSTED'
+    history_evidence = 'REQUIRED_FOR_VERIFIED_MISMATCH_UNKNOWN_DOWNLOAD_REPORTS'
+    covered_by = Assert-CommandLogContains `
+        -CommandName 'cargo-test-all-targets' `
+        -RequiredPatterns @(
+            'completion_status_makes_mismatch_blocking_and_unknown_risky',
+            'append_download_history_records_reviewable_verification_evidence',
+            'append_download_history_records_block_and_risk_evidence_decisions',
+            'reports_verified_mismatch_and_unknown_states'
+        )
+}
 Invoke-LoggedNative -Name 'cargo-clippy-all-targets' -Exe 'cargo' -Arguments @('clippy', '--all-targets', '--locked', '--', '-D', 'warnings')
 Invoke-LoggedNative -Name 'cargo-build-release' -Exe 'cargo' -Arguments @('build', '--release', '--locked')
 

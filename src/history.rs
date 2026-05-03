@@ -3,7 +3,7 @@ use crate::verification::VerificationReport;
 use directories::ProjectDirs;
 use std::fs;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -21,11 +21,19 @@ pub(crate) struct BenchHistoryEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) verification_status: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) verification_trust_decision: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) verification_asset_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) verification_file_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) verification_source: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) expected_sha256: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) verification_detail: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) verification_evidence_path: Option<String>,
     pub(crate) etag: Option<String>,
     pub(crate) last_modified: Option<String>,
     pub(crate) recorded_at_epoch_secs: u64,
@@ -102,6 +110,121 @@ pub(crate) fn append_bench_history_entry(
     writeln!(file, "{line}").map_err(|e| format!("Write benchmark history error: {e}"))
 }
 
+#[derive(serde::Serialize)]
+struct VerificationEvidenceRecord {
+    schema_version: u32,
+    url: String,
+    output: String,
+    output_size: u64,
+    variant: String,
+    mode: String,
+    total_bytes: u64,
+    etag: Option<String>,
+    last_modified: Option<String>,
+    recorded_at_epoch_secs: u64,
+    asset_name: String,
+    status: String,
+    trust_decision: String,
+    file_sha256: String,
+    expected_sha256: Option<String>,
+    source: Option<String>,
+    detail: String,
+}
+
+struct VerificationEvidenceInput<'a> {
+    history_path: &'a Option<PathBuf>,
+    url: &'a str,
+    output: &'a Path,
+    file_bytes: u64,
+    probe: &'a DownloadProbe,
+    strategy: &'a SelectedDownloadStrategy,
+    recorded_at_epoch_secs: u64,
+    report: &'a VerificationReport,
+}
+
+fn sanitize_evidence_name(value: &str) -> String {
+    let sanitized = value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    let trimmed = sanitized.trim_matches('_');
+    if trimmed.is_empty() {
+        "download".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn write_verification_evidence(
+    input: VerificationEvidenceInput<'_>,
+) -> Result<Option<PathBuf>, String> {
+    let VerificationEvidenceInput {
+        history_path,
+        url,
+        output,
+        file_bytes,
+        probe,
+        strategy,
+        recorded_at_epoch_secs,
+        report,
+    } = input;
+    let Some(history_path) = history_path else {
+        return Ok(None);
+    };
+    let parent = history_path
+        .parent()
+        .map(|path| path.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."));
+    let evidence_dir = parent.join("verification-evidence");
+    fs::create_dir_all(&evidence_dir)
+        .map_err(|e| format!("Create verification evidence dir error: {e}"))?;
+    let evidence_nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let evidence_path = evidence_dir.join(format!(
+        "{}-{}-{}-{}.json",
+        recorded_at_epoch_secs,
+        evidence_nonce,
+        report.status.as_str().to_ascii_lowercase(),
+        sanitize_evidence_name(&report.asset_name)
+    ));
+    let record = VerificationEvidenceRecord {
+        schema_version: 1,
+        url: url.to_string(),
+        output: output.to_string_lossy().to_string(),
+        output_size: file_bytes,
+        variant: strategy.variant.clone(),
+        mode: if strategy.config.is_some() {
+            "adaptive".to_string()
+        } else {
+            "single".to_string()
+        },
+        total_bytes: probe.total,
+        etag: probe.etag.clone(),
+        last_modified: probe.last_modified.clone(),
+        recorded_at_epoch_secs,
+        asset_name: report.asset_name.clone(),
+        status: report.status.as_str().to_string(),
+        trust_decision: report.status.trust_decision().as_str().to_string(),
+        file_sha256: report.file_sha256.clone(),
+        expected_sha256: report.expected_sha256.clone(),
+        source: report.source.clone(),
+        detail: report.detail.clone(),
+    };
+    let json = serde_json::to_vec_pretty(&record)
+        .map_err(|e| format!("Encode verification evidence error: {e}"))?;
+    fs::write(&evidence_path, json)
+        .map_err(|e| format!("Write verification evidence error: {e}"))?;
+    Ok(Some(evidence_path))
+}
+
 pub(crate) fn append_download_history(
     path: &Option<PathBuf>,
     url: &str,
@@ -110,7 +233,7 @@ pub(crate) fn append_download_history(
     strategy: &SelectedDownloadStrategy,
     download_elapsed: Duration,
     verification: Option<&VerificationReport>,
-) -> Result<(), String> {
+) -> Result<Option<PathBuf>, String> {
     let file_bytes = fs::metadata(output)
         .map_err(|e| format!("History output stat error: {e}"))?
         .len();
@@ -122,6 +245,21 @@ pub(crate) fn append_download_history(
     };
     let sha256 = sha256_file(output)?;
     let _history_matches = strategy.history_matches;
+    let recorded_at_epoch_secs = unix_epoch_secs();
+    let verification_evidence_path = if let Some(report) = verification {
+        write_verification_evidence(VerificationEvidenceInput {
+            history_path: path,
+            url,
+            output: output.as_path(),
+            file_bytes,
+            probe,
+            strategy,
+            recorded_at_epoch_secs,
+            report,
+        })?
+    } else {
+        None
+    };
     let entry = BenchHistoryEntry {
         schema_version: 1,
         url: url.to_string(),
@@ -138,14 +276,22 @@ pub(crate) fn append_download_history(
         avg_mib_s,
         sha256,
         verification_status: verification.map(|report| report.status.as_str().to_string()),
+        verification_trust_decision: verification
+            .map(|report| report.status.trust_decision().as_str().to_string()),
+        verification_asset_name: verification.map(|report| report.asset_name.clone()),
+        verification_file_sha256: verification.map(|report| report.file_sha256.clone()),
         verification_source: verification.and_then(|report| report.source.clone()),
         expected_sha256: verification.and_then(|report| report.expected_sha256.clone()),
         verification_detail: verification.map(|report| report.detail.clone()),
+        verification_evidence_path: verification_evidence_path
+            .as_ref()
+            .map(|path| path.to_string_lossy().to_string()),
         etag: probe.etag.clone(),
         last_modified: probe.last_modified.clone(),
-        recorded_at_epoch_secs: unix_epoch_secs(),
+        recorded_at_epoch_secs,
     };
-    append_bench_history_entry(path, &entry)
+    append_bench_history_entry(path, &entry)?;
+    Ok(verification_evidence_path)
 }
 
 #[cfg(test)]
@@ -168,7 +314,7 @@ mod tests {
     }
 
     #[test]
-    fn append_download_history_records_verification_status() {
+    fn append_download_history_records_reviewable_verification_evidence() {
         let output = unique_test_path("app.exe");
         let history = unique_test_path("bench-history.jsonl");
         fs::write(&output, b"history payload").unwrap();
@@ -192,7 +338,7 @@ mod tests {
             detail: "SHA256 matched SHA256SUMS.txt".to_string(),
         };
 
-        append_download_history(
+        let evidence_path = append_download_history(
             &Some(history.clone()),
             "https://example.test/app.exe",
             &output,
@@ -202,13 +348,103 @@ mod tests {
             Some(&report),
         )
         .unwrap();
+        let evidence_path = evidence_path.unwrap();
         let line = fs::read_to_string(&history).unwrap();
         let entry = serde_json::from_str::<BenchHistoryEntry>(line.trim()).unwrap();
 
         assert_eq!(entry.verification_status.as_deref(), Some("VERIFIED"));
+        assert_eq!(
+            entry.verification_trust_decision.as_deref(),
+            Some("TRUSTED")
+        );
+        assert_eq!(entry.verification_asset_name.as_deref(), Some("app.exe"));
+        assert_eq!(
+            entry.verification_file_sha256.as_deref(),
+            Some(report.file_sha256.as_str())
+        );
         assert_eq!(entry.verification_source.as_deref(), Some("SHA256SUMS.txt"));
         assert_eq!(entry.expected_sha256, report.expected_sha256);
+        assert_eq!(
+            entry.verification_evidence_path.as_deref(),
+            Some(evidence_path.to_string_lossy().as_ref())
+        );
+
+        let evidence = fs::read_to_string(&evidence_path).unwrap();
+        let evidence: serde_json::Value = serde_json::from_str(&evidence).unwrap();
+        assert_eq!(evidence["status"], "VERIFIED");
+        assert_eq!(evidence["trust_decision"], "TRUSTED");
+        assert_eq!(evidence["asset_name"], "app.exe");
+        assert_eq!(evidence["file_sha256"], report.file_sha256);
         let _ = fs::remove_file(output);
         let _ = fs::remove_file(history);
+        let _ = fs::remove_file(evidence_path);
+    }
+
+    #[test]
+    fn append_download_history_records_block_and_risk_evidence_decisions() {
+        for (status, expected_decision) in [
+            (VerificationStatus::Mismatch, "BLOCK"),
+            (VerificationStatus::Unknown, "RISK"),
+        ] {
+            let output = unique_test_path(&format!("{}-app.exe", expected_decision));
+            let history = unique_test_path(&format!("{}-bench-history.jsonl", expected_decision));
+            fs::write(&output, format!("payload {expected_decision}")).unwrap();
+            let probe = DownloadProbe {
+                total: fs::metadata(&output).unwrap().len(),
+                range_supported: false,
+                etag: None,
+                last_modified: None,
+            };
+            let strategy = SelectedDownloadStrategy {
+                variant: "single".to_string(),
+                config: None,
+                history_matches: 0,
+            };
+            let report = VerificationReport {
+                status,
+                asset_name: "app.exe".to_string(),
+                file_sha256: sha256_file(&output).unwrap(),
+                expected_sha256: if expected_decision == "BLOCK" {
+                    Some(
+                        "B9BDB5AE91B153ED8E04513CA9322B4445A91D3BE8DD2695A8F1C206C9937CCC"
+                            .to_string(),
+                    )
+                } else {
+                    None
+                },
+                source: if expected_decision == "BLOCK" {
+                    Some("SHA256SUMS.txt".to_string())
+                } else {
+                    None
+                },
+                detail: format!("trust decision {expected_decision}"),
+            };
+
+            let evidence_path = append_download_history(
+                &Some(history.clone()),
+                "https://example.test/app.exe",
+                &output,
+                &probe,
+                &strategy,
+                Duration::from_millis(10),
+                Some(&report),
+            )
+            .unwrap()
+            .unwrap();
+            let line = fs::read_to_string(&history).unwrap();
+            let entry = serde_json::from_str::<BenchHistoryEntry>(line.trim()).unwrap();
+            assert_eq!(
+                entry.verification_trust_decision.as_deref(),
+                Some(expected_decision)
+            );
+            let evidence = fs::read_to_string(&evidence_path).unwrap();
+            let evidence: serde_json::Value = serde_json::from_str(&evidence).unwrap();
+            assert_eq!(evidence["trust_decision"], expected_decision);
+            assert_eq!(evidence["status"], report.status.as_str());
+
+            let _ = fs::remove_file(output);
+            let _ = fs::remove_file(history);
+            let _ = fs::remove_file(evidence_path);
+        }
     }
 }
