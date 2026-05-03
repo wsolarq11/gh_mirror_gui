@@ -369,10 +369,34 @@ function Invoke-ReleaseSigningDoctor {
 function Set-RepositorySecret {
     param([string]$PrivateKeyHex)
 
-    $setResult = $PrivateKeyHex | gh secret set $SecretName --repo $Repo 2>&1
-    $exitCode = if ($null -eq $LASTEXITCODE) { 0 } else { [int]$LASTEXITCODE }
+    # Use native stdin redirection instead of a PowerShell pipeline. This avoids
+    # shell encoding surprises while keeping the seed out of arguments, logs,
+    # receipts, files, and stdout.
+    $psi = [System.Diagnostics.ProcessStartInfo]::new()
+    $psi.FileName = 'gh'
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardInput = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.Arguments = "secret set $SecretName --repo $Repo"
+
+    $process = [System.Diagnostics.Process]::new()
+    $process.StartInfo = $psi
+    if (!$process.Start()) {
+        throw 'failed to start gh secret set'
+    }
+    $process.StandardInput.WriteLine($PrivateKeyHex)
+    $process.StandardInput.Close()
+    $stdout = $process.StandardOutput.ReadToEnd()
+    $stderr = $process.StandardError.ReadToEnd()
+    $process.WaitForExit()
+    $exitCode = [int]$process.ExitCode
+
     $setLog = Join-Path $OutDir 'gh-secret-set.log'
-    $setLines = @($setResult | ForEach-Object { $_.ToString() })
+    $setLines = @(
+        if (![string]::IsNullOrWhiteSpace($stdout)) { $stdout.TrimEnd() }
+        if (![string]::IsNullOrWhiteSpace($stderr)) { $stderr.TrimEnd() }
+    )
     if ($setLines.Count -eq 0) {
         '' | Set-Content -LiteralPath $setLog -Encoding UTF8
     }
@@ -382,7 +406,7 @@ function Set-RepositorySecret {
     $script:Receipt.artifacts.github_secret_set_log = $setLog
 
     if ($exitCode -ne 0) {
-        throw "gh secret set failed: $(@($setResult | ForEach-Object { $_.ToString() }) -join "`n")"
+        throw "gh secret set failed: $($setLines -join "`n")"
     }
 
     $script:Receipt.mutations += [ordered]@{

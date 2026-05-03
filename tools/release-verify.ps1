@@ -448,7 +448,9 @@ function Assert-ReleaseSigningBootstrapContract {
         'release-signing bootstrap writes no private seed to receipt/logs/stdout',
         'no_publish = $true',
         'private_key_material = ''not_recorded''',
-        'gh secret set $SecretName --repo $Repo',
+        'RedirectStandardInput = $true',
+        '$psi.Arguments = "secret set $SecretName --repo $Repo"',
+        '$process.StandardInput.WriteLine($PrivateKeyHex)',
         '--release-signing-doctor',
         'release-verify.ps1',
         '-SkipBenchmarkMatrix',
@@ -462,6 +464,7 @@ function Assert-ReleaseSigningBootstrapContract {
         'gh release delete',
         'git tag -a',
         'git push origin',
+        '$PrivateKeyHex | gh secret set',
         '$PrivateKeyHex | Set-Content',
         '$PrivateKeyHex | Add-Content',
         'Write-Host $PrivateKeyHex'
