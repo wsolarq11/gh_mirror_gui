@@ -1,17 +1,16 @@
-# gh_mirror_gui v0.1.0 Release Notes
+# gh_mirror_gui v0.1.1 Release Notes
 
 ## Highlights
 
-- Fixed fresh download creation for `.part` files by opening with write access.
-- Added an adaptive segmented downloader for large GitHub release assets.
-- Added safe resume metadata for segmented downloads.
-- Added a headless benchmark mode for reproducible speed verification.
-- Added a one-command release verification front door at `tools\release-verify.ps1`.
-- Restored safe TLS defaults with OS-native certificate trust: invalid certificates are rejected unless explicitly enabled for controlled debugging.
+- Added GitHub release discovery in the GUI: paste `owner/repo`, a GitHub repository URL, `/releases`, `/releases/latest`, or `/releases/tag/<tag>` to resolve release assets.
+- Added an asset picker so users can choose a release asset before handing it to the existing adaptive downloader.
+- Preserved direct release asset URL downloads for the original low-friction path.
+- Kept the downloader internals split into testable modules for download strategy, benchmark mode, and history-backed selection.
+- Kept safe TLS defaults: invalid certificates remain rejected unless explicitly enabled for controlled debugging.
 
 ## Verification
 
-Release verification command:
+Release verification command used before tagging:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\release-verify.ps1 -SkipBenchmarkMatrix
@@ -21,7 +20,7 @@ The release assets include:
 
 - `gh_mirror_gui.exe`
 - `SHA256SUMS.txt`
-- `receipt.json`
+- `release-provenance.json`
 
 Verify the executable hash with:
 
@@ -32,4 +31,4 @@ Get-Content .\SHA256SUMS.txt
 
 ## Notes
 
-The unsafe TLS compatibility option is intentionally opt-in and should only be used with trusted debugging proxies or controlled environments.
+This release is the first user-facing vertical slice after v0.1.0: GitHub Release discovery and asset selection now sit in front of the existing Windows-first downloader.
