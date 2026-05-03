@@ -1,6 +1,7 @@
 mod bench;
 mod download;
 mod history;
+mod releases;
 
 #[cfg(test)]
 use bench::parse_bench_config;
@@ -20,6 +21,10 @@ use eframe::Storage;
 use history::BenchHistoryEntry;
 use history::{append_download_history, default_history_path, load_bench_history};
 use notify_rust::Notification;
+use releases::{
+    asset_picker_label, is_github_release_asset_download_url, parse_release_query,
+    resolve_release_assets, ResolvedRelease,
+};
 use reqwest::blocking::Client;
 use rfd::FileDialog;
 use std::env;
@@ -55,6 +60,7 @@ const SPEED_TEST_TIMEOUT_SECS: u64 = 5;
 
 /// Known mirror sites.  First entry must be "Direct (no mirror)"
 const MIRRORS: &[(&str, &str)] = &[("Direct (no mirror)", "")];
+type ReleaseLookupMessage = (String, Result<ResolvedRelease, String>);
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct SavedState {
@@ -87,6 +93,13 @@ struct GhMirrorGui {
     speed_test_progress_rx: Option<mpsc::Receiver<(usize, Option<Duration>)>>,
     speed_test_results: Vec<Option<Duration>>,
     speed_test_completed: usize, // how many mirrors have been tested
+    // GitHub release discovery
+    release_status: String,
+    release: Option<ResolvedRelease>,
+    selected_release_asset: Option<usize>,
+    release_lookup_thread: Option<thread::JoinHandle<()>>,
+    release_lookup_rx: Option<mpsc::Receiver<ReleaseLookupMessage>>,
+    release_lookup_input: Option<String>,
     // Persisted state
     download_complete_notified: bool,
 }
@@ -145,6 +158,12 @@ impl GhMirrorGui {
             speed_test_progress_rx: Some(progress_rx),
             speed_test_results: vec![None; MIRRORS.len()],
             speed_test_completed: 0,
+            release_status: String::new(),
+            release: None,
+            selected_release_asset: None,
+            release_lookup_thread: None,
+            release_lookup_rx: None,
+            release_lookup_input: None,
             download_complete_notified: false,
         }
     }
@@ -168,6 +187,78 @@ impl GhMirrorGui {
         self.speed_test_completed = 0;
     }
 
+    fn clear_release_lookup_result(&mut self) {
+        self.release = None;
+        self.selected_release_asset = None;
+        self.release_status.clear();
+        self.release_lookup_input = None;
+    }
+
+    fn start_release_lookup(&mut self) {
+        if self.release_lookup_thread.is_some() {
+            self.release_lookup_thread = None;
+            self.release_lookup_rx = None;
+            self.release_lookup_input = None;
+        }
+
+        let input = self.url.trim().to_string();
+        let query = match parse_release_query(&input) {
+            Ok(query) => query,
+            Err(e) => {
+                self.release = None;
+                self.selected_release_asset = None;
+                self.release_status = format!("❌ {e}");
+                self.status = self.release_status.clone();
+                return;
+            }
+        };
+
+        let proxy = self.proxy.clone();
+        let allow_invalid_certs = self.allow_invalid_certs;
+        let (tx, rx) = mpsc::channel::<ReleaseLookupMessage>();
+        let status = format!(
+            "Resolving {} {} assets...",
+            query.repo_slug(),
+            query.selector_label()
+        );
+        self.release_status = status.clone();
+        self.status = status;
+        self.release = None;
+        self.selected_release_asset = None;
+        self.release_lookup_input = Some(input.clone());
+        self.release_lookup_rx = Some(rx);
+        self.release_lookup_thread = Some(thread::spawn(move || {
+            let result = match build_client(&proxy, 30, allow_invalid_certs) {
+                Ok(client) => resolve_release_assets(&client, &query),
+                Err(e) => Err(format!("Release resolver client error: {e}")),
+            };
+            let _ = tx.send((input, result));
+        }));
+    }
+
+    fn input_requires_release_asset_choice(&self) -> bool {
+        parse_release_query(&self.url).is_ok() && !is_github_release_asset_download_url(&self.url)
+    }
+
+    fn apply_selected_release_asset(&mut self) -> bool {
+        let selected = self
+            .release
+            .as_ref()
+            .and_then(|release| {
+                self.selected_release_asset
+                    .and_then(|idx| release.assets.get(idx))
+            })
+            .map(|asset| (asset.name.clone(), asset.browser_download_url.clone()));
+
+        if let Some((name, url)) = selected {
+            self.url = url;
+            self.status = format!("Selected release asset: {name}");
+            true
+        } else {
+            false
+        }
+    }
+
     fn start_download(&mut self) {
         if self.url.trim().is_empty() {
             self.status = String::from("Please enter a URL first");
@@ -176,6 +267,21 @@ impl GhMirrorGui {
         if self.download_thread.is_some() {
             self.status = String::from("Download already in progress");
             return;
+        }
+        if self.input_requires_release_asset_choice() {
+            if self.release_lookup_thread.is_some() {
+                self.status = String::from("Release asset lookup is still running...");
+                return;
+            }
+            if self.release.is_none() {
+                self.start_release_lookup();
+                self.status = String::from("Resolving release assets before download...");
+                return;
+            }
+            if !self.apply_selected_release_asset() {
+                self.status = String::from("Choose a release asset first");
+                return;
+            }
         }
 
         let save_path = match self.choose_save_path() {
@@ -316,6 +422,45 @@ impl eframe::App for GhMirrorGui {
             }
         }
 
+        // Process GitHub release discovery result
+        if let Some(rx) = &self.release_lookup_rx {
+            if let Ok((input, result)) = rx.try_recv() {
+                let is_current = self.release_lookup_input.as_deref() == Some(input.as_str());
+                self.release_lookup_thread = None;
+                self.release_lookup_rx = None;
+                self.release_lookup_input = None;
+
+                if is_current {
+                    match result {
+                        Ok(release) => {
+                            let asset_count = release.assets.len();
+                            self.selected_release_asset =
+                                if asset_count > 0 { Some(0) } else { None };
+                            self.release_status = if asset_count > 0 {
+                                format!(
+                                    "✅ {} assets found for {}/{}@{}",
+                                    asset_count, release.owner, release.repo, release.tag_name
+                                )
+                            } else {
+                                format!(
+                                    "⚠ No assets found for {}/{}@{}",
+                                    release.owner, release.repo, release.tag_name
+                                )
+                            };
+                            self.status = self.release_status.clone();
+                            self.release = Some(release);
+                        }
+                        Err(e) => {
+                            self.release = None;
+                            self.selected_release_asset = None;
+                            self.release_status = format!("❌ {e}");
+                            self.status = self.release_status.clone();
+                        }
+                    }
+                }
+            }
+        }
+
         // Process download progress
         let progress_rx = self.progress_rx.take();
         if let Some(rx) = progress_rx {
@@ -373,18 +518,107 @@ impl eframe::App for GhMirrorGui {
             // URL input
             ui.horizontal(|ui| {
                 ui.label("URL:");
-                ui.text_edit_singleline(&mut self.url);
+                let url_response = ui.text_edit_singleline(&mut self.url);
+                if url_response.changed() {
+                    self.clear_release_lookup_result();
+                }
+                if url_response.lost_focus()
+                    && ui.input(|i| i.key_pressed(egui::Key::Enter))
+                    && parse_release_query(&self.url).is_ok()
+                {
+                    self.start_release_lookup();
+                }
                 if ui.button("📋 Paste").clicked() {
                     if let Ok(mut clipboard) = arboard::Clipboard::new() {
                         if let Ok(text) = clipboard.get_text() {
                             self.url = text;
+                            self.clear_release_lookup_result();
+                            if parse_release_query(&self.url).is_ok() {
+                                self.start_release_lookup();
+                            }
                         }
                     }
                 }
                 if ui.button("🗑 Clear").clicked() {
                     self.url.clear();
+                    self.clear_release_lookup_result();
                 }
             });
+
+            // GitHub release discovery and asset picker
+            ui.horizontal(|ui| {
+                if ui.button("🔎 Find release assets").clicked() {
+                    self.start_release_lookup();
+                }
+                if self.release_lookup_thread.is_some() {
+                    ui.label("⏳ Resolving release assets...");
+                } else if !self.release_status.is_empty() {
+                    ui.label(egui::RichText::new(&self.release_status).strong());
+                }
+            });
+
+            if let Some(release) = self.release.clone() {
+                ui.group(|ui| {
+                    let release_name = release
+                        .name
+                        .as_ref()
+                        .filter(|name| !name.trim().is_empty())
+                        .map(|name| format!(" - {name}"))
+                        .unwrap_or_default();
+                    ui.label(format!(
+                        "Release: {}/{} @ {}{}",
+                        release.owner, release.repo, release.tag_name, release_name
+                    ));
+
+                    if release.assets.is_empty() {
+                        ui.label("This release has no downloadable assets.");
+                    } else {
+                        if self
+                            .selected_release_asset
+                            .map(|idx| idx >= release.assets.len())
+                            .unwrap_or(true)
+                        {
+                            self.selected_release_asset = Some(0);
+                        }
+                        let selected_idx = self.selected_release_asset.unwrap_or(0);
+                        let selected_text = asset_picker_label(&release.assets[selected_idx]);
+
+                        ui.horizontal(|ui| {
+                            ui.label("Asset:");
+                            egui::ComboBox::from_id_salt("release_asset_select")
+                                .selected_text(selected_text)
+                                .show_ui(ui, |ui| {
+                                    for (idx, asset) in release.assets.iter().enumerate() {
+                                        if ui
+                                            .selectable_label(
+                                                self.selected_release_asset == Some(idx),
+                                                asset_picker_label(asset),
+                                            )
+                                            .clicked()
+                                        {
+                                            self.selected_release_asset = Some(idx);
+                                        }
+                                    }
+                                });
+                            if ui.button("Use selected asset").clicked() {
+                                self.apply_selected_release_asset();
+                            }
+                            if ui.button("Open release").clicked() {
+                                let _ = open::that(&release.html_url);
+                            }
+                        });
+
+                        if let Some(asset) = release.assets.get(selected_idx) {
+                            let content_type = asset
+                                .content_type
+                                .as_deref()
+                                .unwrap_or("unknown content type");
+                            ui.label(format!("{} · {}", asset_picker_label(asset), content_type));
+                            ui.monospace(&asset.browser_download_url);
+                        }
+                    }
+                });
+            }
 
             // Mirror selector + speed test
             ui.horizontal(|ui| {

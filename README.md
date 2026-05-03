@@ -4,7 +4,9 @@ A small Windows desktop GUI for downloading GitHub release assets with progress,
 
 ## Features
 
-- Direct GitHub release asset downloads.
+- GitHub release discovery: paste `owner/repo`, a GitHub repo URL, `/releases`,
+  `/releases/latest`, or `/releases/tag/<tag>` and choose an asset in the GUI.
+- Direct GitHub release asset downloads still work.
 - Adaptive strategy selection: single stream or concurrent HTTP `Range` segments based on live sampling and local history.
 - Safe resume via `.part` files and metadata validation for URL, total size, `ETag`, and `Last-Modified`.
 - Progress, speed, elapsed time, cancellation, and pause/resume controls.
@@ -28,7 +30,21 @@ The hash from `Get-FileHash` should match the `gh_mirror_gui.exe` line in `SHA25
 .\gh_mirror_gui.exe
 ```
 
-Paste a GitHub release asset URL, choose a save directory, optionally set a proxy, then click **Download**.
+Paste a GitHub repository or release URL, then click **Find release assets** (or
+use **Paste** to resolve automatically when the clipboard contains a supported
+GitHub release URL). Choose an asset from the picker, click **Use selected
+asset**, choose a save directory, optionally set a proxy, then click
+**Download**.
+
+Supported discovery inputs:
+
+```text
+owner/repo
+https://github.com/owner/repo
+https://github.com/owner/repo/releases
+https://github.com/owner/repo/releases/latest
+https://github.com/owner/repo/releases/tag/v1.2.3
+```
 
 ## Proxy and TLS
 
