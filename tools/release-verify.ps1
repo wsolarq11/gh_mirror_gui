@@ -1239,7 +1239,7 @@ $Receipt.checks.trust_policy_contract = [ordered]@{
         key_material = 'history/evidence store pinned key SHA256 fingerprint, not raw public key'
     }
     history_evidence_schema = 'policy.schema_version=2 + policy.source_trust.schema_version=1 + source_trust.schema_version=1 + file_disposition.schema_version=1 REQUIRED_FOR_VERIFIED_MISMATCH_UNKNOWN_DOWNLOAD_REPORTS'
-    gui_decision_points = 'SavedState persistence + Trust policy UI + Source trust pin/import/normalize/display + selected-release publisher-key.ed25519.pub fetch/pin + Trust Center backend verdict snapshot + recorded policy-at-decision + Open Evidence exact path + open_location_button_label_for_report'
+    gui_decision_points = 'SavedState persistence + Trust policy UI + Source trust pin/import/normalize/display/source label + selected-release publisher-key.ed25519.pub fetch/pin + Trust Center backend verdict snapshot + recorded policy-at-decision + pinned publisher key source + Open Evidence exact path + open_location_button_label_for_report'
     covered_by = Assert-CommandLogContains `
         -CommandName 'cargo-test-all-targets' `
         -RequiredPatterns @(
@@ -1254,6 +1254,7 @@ $Receipt.checks.trust_policy_contract = [ordered]@{
             'publisher_key_import_result_updates_trust_policy_pin_and_status',
             'trust_center_snapshot_displays_backend_verdict_and_publisher_pin',
             'trust_center_snapshot_uses_recorded_policy_snapshot_for_last_download',
+            'trust_center_snapshot_marks_publisher_key_source_unrecorded_when_missing',
             'history_path_setting_uses_default_when_blank_and_custom_when_set',
             'completion_status_makes_mismatch_blocking_and_unknown_risky',
             'completion_status_blocks_untrusted_signed_source',

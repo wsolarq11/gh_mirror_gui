@@ -168,6 +168,7 @@ struct TrustCenterSnapshot {
     source_asset: String,
     signature_asset: String,
     publisher_key_fingerprint: String,
+    publisher_key_source: String,
     policy_verdict: String,
     policy_at_decision: String,
     evidence_path: String,
@@ -202,6 +203,7 @@ fn trust_center_snapshot(
     evidence_path: Option<&Path>,
     disposition: &AppliedFileDisposition,
     policy_snapshot: &TrustPolicySnapshot,
+    publisher_key_source: Option<&str>,
 ) -> TrustCenterSnapshot {
     let source_trust = report.source_trust.as_ref();
     let publisher_key_fingerprint = source_trust
@@ -212,6 +214,10 @@ fn trust_center_snapshot(
             .as_deref())
         .unwrap_or("not pinned")
         .to_string();
+    let publisher_key_source = publisher_key_source_label_for_fingerprint(
+        &publisher_key_fingerprint,
+        publisher_key_source,
+    );
 
     TrustCenterSnapshot {
         hash_status: report.status.as_str().to_string(),
@@ -229,6 +235,7 @@ fn trust_center_snapshot(
             .unwrap_or("none")
             .to_string(),
         publisher_key_fingerprint,
+        publisher_key_source,
         policy_verdict: report.effective_trust_decision().as_str().to_string(),
         policy_at_decision: format_trust_policy_snapshot(policy_snapshot),
         evidence_path: evidence_path
@@ -274,6 +281,10 @@ fn render_trust_center_snapshot(ui: &mut egui::Ui, snapshot: &TrustCenterSnapsho
                 ui.label(&snapshot.publisher_key_fingerprint);
                 ui.end_row();
 
+                ui.label("Publisher key source");
+                ui.label(&snapshot.publisher_key_source);
+                ui.end_row();
+
                 ui.label("Policy verdict");
                 ui.label(&snapshot.policy_verdict);
                 ui.end_row();
@@ -297,6 +308,31 @@ fn render_trust_center_snapshot(ui: &mut egui::Ui, snapshot: &TrustCenterSnapsho
     });
 }
 
+fn publisher_key_source_label_for_fingerprint(
+    publisher_key_fingerprint: &str,
+    publisher_key_source: Option<&str>,
+) -> String {
+    if publisher_key_fingerprint == "not pinned" {
+        return "not pinned".to_string();
+    }
+    publisher_key_source
+        .map(str::trim)
+        .filter(|source| !source.is_empty())
+        .unwrap_or("not recorded")
+        .to_string()
+}
+
+fn publisher_key_source_label_for_policy(
+    trust_policy: &TrustPolicyConfig,
+    publisher_key_source: &str,
+) -> String {
+    if !trust_policy.source_trust.has_trusted_key() {
+        "not pinned".to_string()
+    } else {
+        publisher_key_source_label_for_fingerprint("pinned", Some(publisher_key_source))
+    }
+}
+
 fn import_publisher_key_pin_from_path(path: &Path) -> Result<String, String> {
     let text = std::fs::read_to_string(path)
         .map_err(|e| format!("Read publisher public key {}: {e}", path.display()))?;
@@ -305,9 +341,13 @@ fn import_publisher_key_pin_from_path(path: &Path) -> Result<String, String> {
 
 fn apply_imported_publisher_key_pin(
     trust_policy: &mut TrustPolicyConfig,
+    publisher_key_source: &mut String,
     imported: ImportedPublisherKeyPin,
+    source_label: impl Into<String>,
 ) -> String {
     trust_policy.source_trust.trusted_publisher_key = imported.public_key;
+    let source_label = source_label.into();
+    *publisher_key_source = source_label.clone();
     let short_fingerprint = imported
         .fingerprint_sha256
         .chars()
@@ -315,7 +355,7 @@ fn apply_imported_publisher_key_pin(
         .collect::<String>();
     format!(
         "Imported Ed25519 publisher key from {} · fingerprint {}…",
-        imported.asset_name, short_fingerprint
+        source_label, short_fingerprint
     )
 }
 
@@ -346,6 +386,7 @@ struct DownloadCompletion {
     verification: VerificationReport,
     evidence_path: Option<PathBuf>,
     policy_snapshot: TrustPolicySnapshot,
+    publisher_key_source_at_decision: String,
     file_disposition: AppliedFileDisposition,
 }
 
@@ -367,6 +408,8 @@ struct SavedState {
     #[serde(default)]
     source_trust_publisher_key: String,
     #[serde(default)]
+    source_trust_publisher_key_source: String,
+    #[serde(default)]
     history_path: String,
 }
 
@@ -380,6 +423,7 @@ struct GhMirrorGui {
     proxy: String,
     allow_invalid_certs: bool,
     trust_policy: TrustPolicyConfig,
+    publisher_key_source: String,
     history_path: String,
     status: String,
     progress: f32,
@@ -409,12 +453,14 @@ struct GhMirrorGui {
     publisher_key_import_thread: Option<thread::JoinHandle<()>>,
     publisher_key_import_rx: Option<mpsc::Receiver<PublisherKeyImportMessage>>,
     publisher_key_import_asset_url: Option<String>,
+    publisher_key_import_source_label: Option<String>,
     // Persisted state
     download_complete_notified: bool,
     last_download_path: Option<PathBuf>,
     last_verification: Option<VerificationReport>,
     last_verification_evidence_path: Option<PathBuf>,
     last_trust_policy_snapshot: Option<TrustPolicySnapshot>,
+    last_publisher_key_source_at_decision: Option<String>,
     last_file_disposition: Option<AppliedFileDisposition>,
 }
 
@@ -431,6 +477,7 @@ impl GhMirrorGui {
         let mut proxy = String::new();
         let mut allow_invalid_certs = false;
         let mut trust_policy = TrustPolicyConfig::default();
+        let mut publisher_key_source = String::new();
         let mut history_path = String::new();
         if let Some(storage) = storage {
             if let Some(json) = storage.get_string("app_settings") {
@@ -450,6 +497,7 @@ impl GhMirrorGui {
                             trusted_publisher_key: state.source_trust_publisher_key,
                         },
                     };
+                    publisher_key_source = state.source_trust_publisher_key_source;
                     history_path = state.history_path;
                 }
             }
@@ -469,6 +517,7 @@ impl GhMirrorGui {
             proxy,
             allow_invalid_certs,
             trust_policy,
+            publisher_key_source,
             history_path,
             status: String::from("Ready"),
             progress: 0.0,
@@ -496,11 +545,13 @@ impl GhMirrorGui {
             publisher_key_import_thread: None,
             publisher_key_import_rx: None,
             publisher_key_import_asset_url: None,
+            publisher_key_import_source_label: None,
             download_complete_notified: false,
             last_download_path: None,
             last_verification: None,
             last_verification_evidence_path: None,
             last_trust_policy_snapshot: None,
+            last_publisher_key_source_at_decision: None,
             last_file_disposition: None,
         }
     }
@@ -536,6 +587,7 @@ impl GhMirrorGui {
         self.publisher_key_import_thread = None;
         self.publisher_key_import_rx = None;
         self.publisher_key_import_asset_url = None;
+        self.publisher_key_import_source_label = None;
     }
 
     fn start_release_lookup(&mut self) {
@@ -615,12 +667,17 @@ impl GhMirrorGui {
             return;
         }
 
-        let Some(asset) = self
-            .release
-            .as_ref()
-            .and_then(|release| source_trust::publisher_key_asset(&release.assets))
-            .cloned()
-        else {
+        let Some((asset, source_label)) = self.release.as_ref().and_then(|release| {
+            source_trust::publisher_key_asset(&release.assets)
+                .cloned()
+                .map(|asset| {
+                    let source_label = format!(
+                        "GitHub Release {}/{}@{} asset {}",
+                        release.owner, release.repo, release.tag_name, asset.name
+                    );
+                    (asset, source_label)
+                })
+        }) else {
             self.status =
                 "No publisher-key.ed25519.pub asset was found in this release".to_string();
             return;
@@ -632,6 +689,7 @@ impl GhMirrorGui {
         let asset_name = asset.name.clone();
         let (tx, rx) = mpsc::channel::<PublisherKeyImportMessage>();
         self.publisher_key_import_asset_url = Some(asset_url.clone());
+        self.publisher_key_import_source_label = Some(source_label);
         self.publisher_key_import_rx = Some(rx);
         self.publisher_key_import_thread = Some(thread::spawn(move || {
             let result = match build_client(&proxy, 30, allow_invalid_certs) {
@@ -686,6 +744,7 @@ impl GhMirrorGui {
         self.last_verification = None;
         self.last_verification_evidence_path = None;
         self.last_trust_policy_snapshot = None;
+        self.last_publisher_key_source_at_decision = None;
         self.last_file_disposition = None;
         let control = DownloadControl::new();
         let ctrl = control.clone();
@@ -693,6 +752,8 @@ impl GhMirrorGui {
         let proxy = self.proxy.clone();
         let allow_invalid_certs = self.allow_invalid_certs;
         let trust_policy = self.trust_policy.clone();
+        let publisher_key_source_at_decision =
+            publisher_key_source_label_for_policy(&trust_policy, &self.publisher_key_source);
         let history_path = self.effective_history_path();
         let (progress_tx, progress_rx) = mpsc::channel();
         let (result_tx, result_rx) = mpsc::channel::<DownloadResultMessage>();
@@ -799,6 +860,7 @@ impl GhMirrorGui {
                         verification,
                         evidence_path,
                         policy_snapshot: trust_policy.snapshot(),
+                        publisher_key_source_at_decision,
                         file_disposition,
                     }));
                 }
@@ -844,6 +906,7 @@ impl eframe::App for GhMirrorGui {
                 .source_trust
                 .trusted_publisher_key
                 .clone(),
+            source_trust_publisher_key_source: self.publisher_key_source.clone(),
             history_path: self.history_path.clone(),
         };
         if let Ok(json) = serde_json::to_string(&state) {
@@ -928,12 +991,20 @@ impl eframe::App for GhMirrorGui {
                 self.publisher_key_import_thread = None;
                 self.publisher_key_import_rx = None;
                 self.publisher_key_import_asset_url = None;
+                let source_label = self
+                    .publisher_key_import_source_label
+                    .take()
+                    .unwrap_or_else(|| format!("GitHub Release asset {asset_url}"));
 
                 if is_current {
                     match result {
                         Ok(imported) => {
-                            self.status =
-                                apply_imported_publisher_key_pin(&mut self.trust_policy, imported);
+                            self.status = apply_imported_publisher_key_pin(
+                                &mut self.trust_policy,
+                                &mut self.publisher_key_source,
+                                imported,
+                                source_label,
+                            );
                         }
                         Err(e) => {
                             self.status = format!("❌ Publisher key import failed: {e}");
@@ -988,6 +1059,8 @@ impl eframe::App for GhMirrorGui {
                     self.last_verification = Some(completion.verification.clone());
                     self.last_verification_evidence_path = completion.evidence_path.clone();
                     self.last_trust_policy_snapshot = Some(completion.policy_snapshot.clone());
+                    self.last_publisher_key_source_at_decision =
+                        Some(completion.publisher_key_source_at_decision.clone());
                     self.last_file_disposition = Some(completion.file_disposition.clone());
                     self.download_thread = None;
                     self.control = None;
@@ -1323,9 +1396,20 @@ impl eframe::App for GhMirrorGui {
                 );
                 ui.horizontal(|ui| {
                     ui.label("Pinned Ed25519 publisher key:");
-                    ui.text_edit_singleline(
+                    let publisher_key_before =
+                        self.trust_policy.source_trust.trusted_publisher_key.clone();
+                    let changed = ui
+                        .text_edit_singleline(
                         &mut self.trust_policy.source_trust.trusted_publisher_key,
-                    );
+                        )
+                        .changed();
+                    if changed
+                        && self.trust_policy.source_trust.trusted_publisher_key
+                            != publisher_key_before
+                    {
+                        self.publisher_key_source =
+                            "manual/pasted key in Trust policy UI".to_string();
+                    }
                 });
                 ui.horizontal(|ui| {
                     if ui.button("Import public key").clicked() {
@@ -1336,9 +1420,17 @@ impl eframe::App for GhMirrorGui {
                             match import_publisher_key_pin_from_path(&path) {
                                 Ok(pin) => {
                                     self.trust_policy.source_trust.trusted_publisher_key = pin;
+                                    self.publisher_key_source =
+                                        format!("local file {}", path.display());
+                                    let fingerprint = trusted_key_fingerprint(
+                                        &self.trust_policy.source_trust.trusted_publisher_key,
+                                    )
+                                    .unwrap_or_else(|| "unknown".to_string());
+                                    let short_fingerprint =
+                                        fingerprint.chars().take(12).collect::<String>();
                                     self.status = format!(
-                                        "Imported Ed25519 publisher key from {}",
-                                        path.display()
+                                        "Imported Ed25519 publisher key from {} · fingerprint {}…",
+                                        self.publisher_key_source, short_fingerprint
                                     );
                                 }
                                 Err(e) => {
@@ -1354,6 +1446,10 @@ impl eframe::App for GhMirrorGui {
                         ) {
                             Ok(pin) => {
                                 self.trust_policy.source_trust.trusted_publisher_key = pin;
+                                if self.publisher_key_source.trim().is_empty() {
+                                    self.publisher_key_source =
+                                        "manual/pasted key normalized locally".to_string();
+                                }
                                 self.status = "Normalized Ed25519 publisher key".to_string();
                             }
                             Err(e) => {
@@ -1363,12 +1459,20 @@ impl eframe::App for GhMirrorGui {
                     }
                     if ui.button("Clear key").clicked() {
                         self.trust_policy.source_trust.trusted_publisher_key.clear();
+                        self.publisher_key_source.clear();
                     }
                 });
                 if let Some(fingerprint) =
                     trusted_key_fingerprint(&self.trust_policy.source_trust.trusted_publisher_key)
                 {
                     ui.small(format!("Pinned key SHA256 fingerprint: {fingerprint}"));
+                    ui.small(format!(
+                        "Pinned key source: {}",
+                        publisher_key_source_label_for_policy(
+                            &self.trust_policy,
+                            &self.publisher_key_source
+                        )
+                    ));
                 } else if self.trust_policy.source_trust.require_trusted_source {
                     ui.colored_label(
                         egui::Color32::from_rgb(220, 70, 70),
@@ -1494,6 +1598,7 @@ impl eframe::App for GhMirrorGui {
                         self.last_verification_evidence_path.as_deref(),
                         disposition,
                         &policy_snapshot,
+                        self.last_publisher_key_source_at_decision.as_deref(),
                     );
                     render_trust_center_snapshot(ui, &snapshot);
                 }
@@ -2172,13 +2277,14 @@ mod tests {
         );
         assert!(!state.source_trust_require_signed);
         assert!(state.source_trust_publisher_key.is_empty());
+        assert!(state.source_trust_publisher_key_source.is_empty());
         assert!(state.history_path.is_empty());
     }
 
     #[test]
     fn saved_state_persists_trust_policy_and_history_path() {
         let state: SavedState = serde_json::from_str(
-            r#"{"selected_mirror":0,"save_dir":"C:\\Downloads","proxy":"","allow_invalid_certs":false,"trust_unknown_keep_file":false,"trust_unknown_allow_open":false,"trust_mismatch_file_policy":"DELETE","source_trust_require_signed":true,"source_trust_publisher_key":"D75A980182B10AB7D54BFED3C964073A0EE172F3DAA62325AF021A68F707511A","history_path":"C:\\Evidence\\bench-history.jsonl"}"#,
+            r#"{"selected_mirror":0,"save_dir":"C:\\Downloads","proxy":"","allow_invalid_certs":false,"trust_unknown_keep_file":false,"trust_unknown_allow_open":false,"trust_mismatch_file_policy":"DELETE","source_trust_require_signed":true,"source_trust_publisher_key":"D75A980182B10AB7D54BFED3C964073A0EE172F3DAA62325AF021A68F707511A","source_trust_publisher_key_source":"GitHub Release wsolarq11/gh_mirror_gui@v0.1.2 asset publisher-key.ed25519.pub","history_path":"C:\\Evidence\\bench-history.jsonl"}"#,
         )
         .unwrap();
 
@@ -2189,6 +2295,10 @@ mod tests {
         assert_eq!(
             state.source_trust_publisher_key,
             "D75A980182B10AB7D54BFED3C964073A0EE172F3DAA62325AF021A68F707511A"
+        );
+        assert_eq!(
+            state.source_trust_publisher_key_source,
+            "GitHub Release wsolarq11/gh_mirror_gui@v0.1.2 asset publisher-key.ed25519.pub"
         );
         assert_eq!(state.history_path, r"C:\Evidence\bench-history.jsonl");
     }
@@ -2219,12 +2329,22 @@ mod tests {
             asset_name: "publisher-key.ed25519.pub".to_string(),
         };
         let mut policy = TrustPolicyConfig::default();
+        let mut publisher_key_source = String::new();
 
-        let status = apply_imported_publisher_key_pin(&mut policy, imported);
+        let status = apply_imported_publisher_key_pin(
+            &mut policy,
+            &mut publisher_key_source,
+            imported,
+            "GitHub Release wsolarq11/gh_mirror_gui@v0.1.2 asset publisher-key.ed25519.pub",
+        );
 
         assert_eq!(policy.source_trust.trusted_publisher_key, public_key);
         assert!(status.contains("publisher-key.ed25519.pub"));
         assert!(status.contains(&fingerprint[..12]));
+        assert_eq!(
+            publisher_key_source,
+            "GitHub Release wsolarq11/gh_mirror_gui@v0.1.2 asset publisher-key.ed25519.pub"
+        );
     }
 
     #[test]
@@ -2272,6 +2392,7 @@ mod tests {
             Some(&evidence_path),
             &disposition,
             &policy.snapshot(),
+            Some("GitHub Release wsolarq11/gh_mirror_gui@v0.1.2 asset publisher-key.ed25519.pub"),
         );
 
         assert_eq!(snapshot.hash_status, "VERIFIED");
@@ -2279,6 +2400,10 @@ mod tests {
         assert_eq!(snapshot.source_asset, "release-provenance.json");
         assert_eq!(snapshot.signature_asset, "release-provenance.json.sig");
         assert_eq!(snapshot.publisher_key_fingerprint, fingerprint);
+        assert_eq!(
+            snapshot.publisher_key_source,
+            "GitHub Release wsolarq11/gh_mirror_gui@v0.1.2 asset publisher-key.ed25519.pub"
+        );
         assert_eq!(snapshot.policy_verdict, "TRUSTED");
         assert!(snapshot
             .policy_at_decision
@@ -2329,7 +2454,13 @@ mod tests {
             final_path: Some(PathBuf::from(r"C:\Downloads\gh_mirror_gui.exe")),
         };
 
-        let snapshot = trust_center_snapshot(&report, None, &disposition, &recorded_policy);
+        let snapshot = trust_center_snapshot(
+            &report,
+            None,
+            &disposition,
+            &recorded_policy,
+            Some("local file C:\\Keys\\publisher-key.ed25519.pub"),
+        );
 
         assert_eq!(snapshot.publisher_key_fingerprint, recorded_fingerprint);
         assert!(snapshot
@@ -2341,7 +2472,47 @@ mod tests {
         assert!(snapshot.policy_at_decision.contains("MISMATCH=DELETE"));
         assert!(snapshot.policy_at_decision.contains(&recorded_fingerprint));
         assert!(!snapshot.policy_at_decision.contains(&current_fingerprint));
+        assert_eq!(
+            snapshot.publisher_key_source,
+            "local file C:\\Keys\\publisher-key.ed25519.pub"
+        );
         assert_eq!(snapshot.evidence_path, "not recorded");
+    }
+
+    #[test]
+    fn trust_center_snapshot_marks_publisher_key_source_unrecorded_when_missing() {
+        let recorded_key = source_trust::public_key_from_private_seed(
+            "1111111111111111111111111111111111111111111111111111111111111111",
+        )
+        .unwrap();
+        let recorded_policy = TrustPolicyConfig {
+            source_trust: source_trust::SourceTrustPolicyConfig {
+                require_trusted_source: true,
+                trusted_publisher_key: recorded_key,
+            },
+            ..TrustPolicyConfig::default()
+        }
+        .snapshot();
+        let report = VerificationReport {
+            status: VerificationStatus::Unknown,
+            asset_name: "gh_mirror_gui.exe".to_string(),
+            file_sha256: "A9BDB5AE91B153ED8E04513CA9322B4445A91D3BE8DD2695A8F1C206C9937CCC"
+                .to_string(),
+            expected_sha256: None,
+            source: None,
+            source_trust: None,
+            detail: "No verification asset found".to_string(),
+        };
+        let disposition = AppliedFileDisposition {
+            action: FileDispositionAction::Keep,
+            original_path: PathBuf::from("gh_mirror_gui.exe"),
+            final_path: Some(PathBuf::from(r"C:\Downloads\gh_mirror_gui.exe")),
+        };
+
+        let snapshot = trust_center_snapshot(&report, None, &disposition, &recorded_policy, None);
+
+        assert_ne!(snapshot.publisher_key_fingerprint, "not pinned");
+        assert_eq!(snapshot.publisher_key_source, "not recorded");
     }
 
     #[test]
