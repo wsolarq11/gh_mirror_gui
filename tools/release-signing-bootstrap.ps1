@@ -369,36 +369,36 @@ function Invoke-ReleaseSigningDoctor {
 function Set-RepositorySecret {
     param([string]$PrivateKeyHex)
 
-    # Use native stdin redirection instead of a PowerShell pipeline. This avoids
-    # shell encoding surprises while keeping the seed out of arguments, logs,
-    # receipts, files, and stdout.
-    $psi = [System.Diagnostics.ProcessStartInfo]::new()
-    $psi.FileName = 'gh'
-    $psi.UseShellExecute = $false
-    $psi.RedirectStandardInput = $true
-    $psi.RedirectStandardOutput = $true
-    $psi.RedirectStandardError = $true
-    $psi.Arguments = "secret set $SecretName --repo $Repo"
-
-    $process = [System.Diagnostics.Process]::new()
-    $process.StartInfo = $psi
-    if (!$process.Start()) {
-        throw 'failed to start gh secret set'
+    function Protect-SecretOutput {
+        param([string]$Text)
+        if ($null -eq $Text) {
+            return ''
+        }
+        return (($Text.Replace($PrivateKeyHex, '<redacted-secret-seed>')) `
+                -replace '[0-9A-Fa-f]{64}', '<redacted-64-hex>')
     }
-    $stdinBytes = [System.Text.Encoding]::ASCII.GetBytes("$PrivateKeyHex`n")
-    $process.StandardInput.BaseStream.Write($stdinBytes, 0, $stdinBytes.Length)
-    $process.StandardInput.BaseStream.Flush()
-    $process.StandardInput.Close()
-    $stdout = $process.StandardOutput.ReadToEnd()
-    $stderr = $process.StandardError.ReadToEnd()
-    $process.WaitForExit()
-    $exitCode = [int]$process.ExitCode
+
+    # Use cmd.exe to feed gh's dotenv reader with ASCII text. PowerShell native
+    # pipelines and redirected StreamWriter stdin can add encoding artifacts on
+    # Windows; the process environment variable keeps the seed out of command
+    # arguments, repo files, receipts, logs, and stdout.
+    $secretStdinEnv = 'GH_MIRROR_GUI_SECRET_STDIN'
+    $oldSecretStdin = [Environment]::GetEnvironmentVariable($secretStdinEnv, 'Process')
+    try {
+        [Environment]::SetEnvironmentVariable(
+            $secretStdinEnv,
+            "$SecretName=$PrivateKeyHex",
+            'Process'
+        )
+        $setResult = & cmd.exe /D /C "echo(%$secretStdinEnv%| gh secret set -f - --repo $Repo" 2>&1
+        $exitCode = if ($null -eq $LASTEXITCODE) { 0 } else { [int]$LASTEXITCODE }
+    }
+    finally {
+        [Environment]::SetEnvironmentVariable($secretStdinEnv, $oldSecretStdin, 'Process')
+    }
 
     $setLog = Join-Path $OutDir 'gh-secret-set.log'
-    $setLines = @(
-        if (![string]::IsNullOrWhiteSpace($stdout)) { $stdout.TrimEnd() }
-        if (![string]::IsNullOrWhiteSpace($stderr)) { $stderr.TrimEnd() }
-    )
+    $setLines = @($setResult | ForEach-Object { Protect-SecretOutput -Text $_.ToString() })
     if ($setLines.Count -eq 0) {
         '' | Set-Content -LiteralPath $setLog -Encoding UTF8
     }
