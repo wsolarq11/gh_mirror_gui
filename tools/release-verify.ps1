@@ -210,6 +210,209 @@ function Assert-FileContains {
     }
 }
 
+function Get-WorkflowStepBlock {
+    param(
+        [string[]]$Lines,
+        [string]$StepName,
+        [string]$RelativePath
+    )
+
+    $start = -1
+    $stepPattern = "^\s*-\s+name:\s+$([regex]::Escape($StepName))\s*$"
+    for ($i = 0; $i -lt $Lines.Count; $i++) {
+        if ($Lines[$i] -match $stepPattern) {
+            $start = $i
+            break
+        }
+    }
+    if ($start -lt 0) {
+        throw "$RelativePath missing required workflow step: $StepName"
+    }
+
+    $end = $Lines.Count - 1
+    for ($i = $start + 1; $i -lt $Lines.Count; $i++) {
+        if ($Lines[$i] -match '^\s*-\s+name:\s+') {
+            $end = $i - 1
+            break
+        }
+    }
+
+    $blockLines = @()
+    if ($end -ge $start) {
+        $blockLines = @($Lines[$start..$end])
+    }
+
+    return [ordered]@{
+        name = $StepName
+        start_line = $start + 1
+        end_line = $end + 1
+        text = ($blockLines -join "`n")
+    }
+}
+
+function Assert-TextContainsAll {
+    param(
+        [string]$Text,
+        [string]$Label,
+        [string[]]$RequiredPatterns
+    )
+
+    $missing = @($RequiredPatterns | Where-Object {
+        $pattern = [regex]::Escape($_)
+        $Text -notmatch $pattern
+    })
+    if ($missing.Count -gt 0) {
+        throw "$Label missing required artifact contract patterns: $($missing -join ', ')"
+    }
+
+    return $RequiredPatterns
+}
+
+function Assert-TextPatternOrder {
+    param(
+        [string]$Text,
+        [string]$Label,
+        [string[]]$RequiredPatterns
+    )
+
+    $lastIndex = -1
+    foreach ($pattern in $RequiredPatterns) {
+        $index = $Text.IndexOf($pattern, [System.StringComparison]::Ordinal)
+        if ($index -lt 0) {
+            throw "$Label missing required ordered artifact contract pattern: $pattern"
+        }
+        if ($index -le $lastIndex) {
+            throw "$Label artifact contract order mismatch at pattern: $pattern"
+        }
+        $lastIndex = $index
+    }
+
+    return $RequiredPatterns
+}
+
+function Assert-ReleaseWorkflowArtifactContract {
+    $relativePath = '.github\workflows\release.yml'
+    $path = Join-Path $RepoRoot $relativePath
+    if (!(Test-Path -LiteralPath $path)) {
+        throw "required release workflow missing: $relativePath"
+    }
+
+    $lines = @(Get-Content -LiteralPath $path)
+    $stageBlock = Get-WorkflowStepBlock -Lines $lines -StepName 'Stage release assets' -RelativePath $relativePath
+    $uploadArtifactBlock = Get-WorkflowStepBlock -Lines $lines -StepName 'Upload release build artifact' -RelativePath $relativePath
+    $createReleaseBlock = Get-WorkflowStepBlock -Lines $lines -StepName 'Create GitHub Release' -RelativePath $relativePath
+
+    $requiredStagedAssets = @(
+        'gh_mirror_gui.exe',
+        'SHA256SUMS.txt',
+        'SHA256SUMS.txt.sig',
+        'release-provenance.json',
+        'release-provenance.json.sig',
+        'publisher-key.ed25519.pub'
+    )
+    $explicitReleaseUploadAssets = @(
+        'dist\gh_mirror_gui.exe',
+        'dist\SHA256SUMS.txt',
+        'dist\release-provenance.json',
+        'dist\publisher-key.ed25519.pub'
+    )
+    $signatureAssets = @(
+        'SHA256SUMS.txt.sig',
+        'release-provenance.json.sig'
+    )
+
+    $stageRequiredPatterns = @(
+        'RELEASE_ED25519_PRIVATE_KEY_HEX repository secret is required; refusing unsigned release.',
+        '--release-signing-doctor',
+        '--public-key-out $publicKeyAsset',
+        'publisher-key.ed25519.pub',
+        'SHA256SUMS.txt.sig',
+        'release-provenance.json.sig',
+        '--sign-verification-source',
+        '--source (Join-Path $dist "SHA256SUMS.txt")',
+        '--out (Join-Path $dist "SHA256SUMS.txt.sig")',
+        '--source (Join-Path $dist "release-provenance.json")',
+        '--out (Join-Path $dist "release-provenance.json.sig")'
+    )
+    $stageCovered = Assert-TextContainsAll `
+        -Text ([string]$stageBlock.text) `
+        -Label "$relativePath step '$($stageBlock.name)'" `
+        -RequiredPatterns $stageRequiredPatterns
+    $stageOrder = Assert-TextPatternOrder `
+        -Text ([string]$stageBlock.text) `
+        -Label "$relativePath step '$($stageBlock.name)'" `
+        -RequiredPatterns @(
+            'RELEASE_ED25519_PRIVATE_KEY_HEX repository secret is required; refusing unsigned release.',
+            '--release-signing-doctor',
+            '$provenance | ConvertTo-Json -Depth 10',
+            '--source (Join-Path $dist "SHA256SUMS.txt")',
+            '--source (Join-Path $dist "release-provenance.json")'
+        )
+
+    $uploadArtifactCovered = Assert-TextContainsAll `
+        -Text ([string]$uploadArtifactBlock.text) `
+        -Label "$relativePath step '$($uploadArtifactBlock.name)'" `
+        -RequiredPatterns @(
+            'path: dist/*',
+            'if-no-files-found: error'
+        )
+
+    $createReleaseCovered = Assert-TextContainsAll `
+        -Text ([string]$createReleaseBlock.text) `
+        -Label "$relativePath step '$($createReleaseBlock.name)'" `
+        -RequiredPatterns (@(
+            'gh release create $env:RELEASE_TAG @assets',
+            '--verify-tag',
+            '$assets += @(Get-ChildItem -LiteralPath dist -Filter "*.sig"'
+        ) + $explicitReleaseUploadAssets)
+    $createReleaseOrder = Assert-TextPatternOrder `
+        -Text ([string]$createReleaseBlock.text) `
+        -Label "$relativePath step '$($createReleaseBlock.name)'" `
+        -RequiredPatterns @(
+            '$assets = @(',
+            '$assets += @(Get-ChildItem -LiteralPath dist -Filter "*.sig"',
+            'gh release create $env:RELEASE_TAG @assets',
+            '--verify-tag'
+        )
+
+    return [ordered]@{
+        ok = $true
+        path = $path
+        sha256 = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
+        fail_fast_checks = [ordered]@{
+            unsigned_release_refused_before_staging = $true
+            signing_doctor_required = $true
+            staged_signatures_generated_before_release_create = $true
+            upload_artifact_fails_on_missing_dist_assets = $true
+            create_release_uses_verify_tag = $true
+            create_release_uploads_explicit_non_signature_assets = $true
+            create_release_uploads_signature_assets_by_dist_sig_glob = $true
+        }
+        required_staged_assets = $requiredStagedAssets
+        explicit_release_upload_assets = $explicitReleaseUploadAssets
+        signature_assets = $signatureAssets
+        steps = [ordered]@{
+            stage_release_assets = [ordered]@{
+                start_line = [int]$stageBlock.start_line
+                end_line = [int]$stageBlock.end_line
+                required_patterns = $stageCovered
+                ordered_patterns = $stageOrder
+            }
+            upload_release_build_artifact = [ordered]@{
+                start_line = [int]$uploadArtifactBlock.start_line
+                end_line = [int]$uploadArtifactBlock.end_line
+                required_patterns = $uploadArtifactCovered
+            }
+            create_github_release = [ordered]@{
+                start_line = [int]$createReleaseBlock.start_line
+                end_line = [int]$createReleaseBlock.end_line
+                required_patterns = $createReleaseCovered
+                ordered_patterns = $createReleaseOrder
+            }
+        }
+    }
+}
+
 function Invoke-ReleaseSigningReadiness {
     param(
         [string]$Exe,
@@ -1005,6 +1208,7 @@ $Receipt.checks.route_guardrails = [ordered]@{
             'Release verification front door'
         )
 }
+$Receipt.checks.release_workflow_artifact_contract = Assert-ReleaseWorkflowArtifactContract
 Invoke-LoggedNative -Name 'cargo-fmt-check' -Exe 'cargo' -Arguments @('fmt', '--check')
 Invoke-LoggedNative -Name 'cargo-test-all-targets' -Exe 'cargo' -Arguments @('test', '--all-targets', '--locked')
 $Receipt.checks.trust_policy_contract = [ordered]@{

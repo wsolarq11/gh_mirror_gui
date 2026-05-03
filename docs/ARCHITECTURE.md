@@ -125,6 +125,10 @@ Evidence must remain reviewable and machine-readable:
 - trust-policy/source-trust gate coverage
 - release signing readiness, including public key export and next-release
   `.sig` asset contract
+- release workflow artifact contract checks that fail fast if the tag workflow
+  stops refusing unsigned releases, stops staging signed assets, or stops
+  uploading the required binary, checksum, provenance, publisher key, and
+  `.sig` assets
 - signed release staging dry-run, including `release-provenance.json` schema
   checks, detached signature verification for both signed source assets, and a
   headless app download selftest that re-downloads the staged binary, verifies
