@@ -123,9 +123,9 @@ the package version in `Cargo.toml`:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\release-verify.ps1 -SkipBenchmarkMatrix
-git tag -a v0.1.1 -m "Release v0.1.1"
+git tag -a v0.1.2 -m "Release v0.1.2"
 git push origin main
-git push origin v0.1.1
+git push origin v0.1.2
 ```
 
 The `Release` GitHub Actions workflow rebuilds the Windows release binary with

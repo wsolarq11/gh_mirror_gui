@@ -1,12 +1,12 @@
-# gh_mirror_gui v0.1.1 Release Notes
+# gh_mirror_gui v0.1.2 Release Notes
 
 ## Highlights
 
-- Added GitHub release discovery in the GUI: paste `owner/repo`, a GitHub repository URL, `/releases`, `/releases/latest`, or `/releases/tag/<tag>` to resolve release assets.
-- Added an asset picker so users can choose a release asset before handing it to the existing adaptive downloader.
-- Preserved direct release asset URL downloads for the original low-friction path.
-- Kept the downloader internals split into testable modules for download strategy, benchmark mode, and history-backed selection.
-- Kept safe TLS defaults: invalid certificates remain rejected unless explicitly enabled for controlled debugging.
+- Made release verification results actionable in the GUI: `VERIFIED` is trusted, `MISMATCH` is blocking, and `UNKNOWN` is a yellow risk state.
+- Added clear retry / open-evidence decision points for mismatched downloads instead of treating checksum failures as ordinary completed downloads.
+- Persisted reviewable verification evidence JSON with the local download history for `VERIFIED`, `MISMATCH`, and `UNKNOWN` release download reports.
+- Kept GitHub release discovery, asset picking, adaptive/resumable downloads, and safe TLS defaults on the same Windows-first main path.
+- Locked the trust-state contract into the reproducible release verifier receipt through `checks.trust_policy_contract`.
 
 ## Verification
 
@@ -31,4 +31,4 @@ Get-Content .\SHA256SUMS.txt
 
 ## Notes
 
-This release is the first user-facing vertical slice after v0.1.0: GitHub Release discovery and asset selection now sit in front of the existing Windows-first downloader.
+This release turns verification from a passive label into a user-actionable trust policy while preserving the v0.1.1 release discovery and asset selection flow.
