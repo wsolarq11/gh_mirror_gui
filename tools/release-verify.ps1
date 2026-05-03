@@ -1211,6 +1211,21 @@ $Receipt.checks.route_guardrails = [ordered]@{
 $Receipt.checks.release_workflow_artifact_contract = Assert-ReleaseWorkflowArtifactContract
 Invoke-LoggedNative -Name 'cargo-fmt-check' -Exe 'cargo' -Arguments @('fmt', '--check')
 Invoke-LoggedNative -Name 'cargo-test-all-targets' -Exe 'cargo' -Arguments @('test', '--all-targets', '--locked')
+$Receipt.checks.download_engine_contract = [ordered]@{
+    ok = $true
+    retry = 'transient request send failures are retried before a direct download fails'
+    resumable = 'single-download resume and ignored-range restart paths are covered'
+    segmented = 'segmented range writes and resume metadata cleanup are covered'
+    covered_by = Assert-CommandLogContains `
+        -CommandName 'cargo-test-all-targets' `
+        -RequiredPatterns @(
+            'download_single_retries_transient_request_send_failure',
+            'download_single_creates_new_temp_file_with_write_access',
+            'download_single_restarts_when_resume_range_is_ignored',
+            'download_single_resumes_existing_part_file_with_range_request',
+            'download_segmented_writes_all_ranges_and_removes_resume_meta'
+        )
+}
 $Receipt.checks.trust_policy_contract = [ordered]@{
     ok = $true
     decision_transitions = [ordered]@{

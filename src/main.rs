@@ -2242,6 +2242,29 @@ mod tests {
         (format!("http://{addr}/file.bin"), handle)
     }
 
+    fn serve_drop_then_once(body: Vec<u8>) -> (String, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = thread::spawn(move || {
+            let (mut dropped_stream, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 256];
+            let _ = dropped_stream.read(&mut buf);
+            drop(dropped_stream);
+
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 2048];
+            let _ = stream.read(&mut buf).unwrap();
+            let header = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            stream.write_all(header.as_bytes()).unwrap();
+            stream.write_all(&body).unwrap();
+        });
+
+        (format!("http://{addr}/file.bin"), handle)
+    }
+
     #[test]
     fn url_helpers_cover_direct_and_mirror_cases() {
         assert_eq!(
@@ -2837,6 +2860,33 @@ mod tests {
             .try_iter()
             .any(|(downloaded, total, _, _)| downloaded > 0 && total == body.len() as u64));
         assert!(!save_path.with_extension("bin.part").exists());
+        let _ = fs::remove_file(save_path);
+    }
+
+    #[test]
+    fn download_single_retries_transient_request_send_failure() {
+        let body = b"retry after dropped connection".to_vec();
+        let (url, server) = serve_drop_then_once(body.clone());
+        let save_path = unique_test_path("retry-send.bin");
+        let client = Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+        let ctrl = DownloadControl::new();
+        let (tx, _rx) = mpsc::channel();
+
+        download_single(
+            &client,
+            &url,
+            save_path.to_str().unwrap(),
+            body.len() as u64,
+            &ctrl,
+            &tx,
+        )
+        .unwrap();
+
+        server.join().unwrap();
+        assert_eq!(fs::read(&save_path).unwrap(), body);
         let _ = fs::remove_file(save_path);
     }
 

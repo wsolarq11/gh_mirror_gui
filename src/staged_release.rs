@@ -554,9 +554,10 @@ fn start_static_server(root: PathBuf) -> Result<StaticServer, String> {
         let deadline = Instant::now() + Duration::from_secs(60);
         loop {
             match listener.accept() {
-                Ok((stream, _)) => {
-                    requests.push(handle_static_request(stream, &root)?);
-                }
+                Ok((stream, _)) => match handle_static_request(stream, &root) {
+                    Ok(summary) => requests.push(summary),
+                    Err(e) => requests.push(format!("ERROR {e}")),
+                },
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                     if thread_stop.load(Ordering::Relaxed) {
                         break;

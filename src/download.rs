@@ -707,9 +707,15 @@ pub(crate) fn download_single(
             req_builder = req_builder.header("Range", format!("bytes={}-", downloaded));
         }
 
-        let mut resp = req_builder
-            .send()
-            .map_err(|e| format!("Download request failed: {}", e))?;
+        let mut resp = match req_builder.send() {
+            Ok(resp) => resp,
+            Err(e) => {
+                if attempt == MAX_RETRIES {
+                    return Err(format!("Download request failed: {e}"));
+                }
+                continue;
+            }
+        };
 
         let status = resp.status();
         if status == 416 {
