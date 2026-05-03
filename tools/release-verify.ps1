@@ -268,6 +268,24 @@ function Assert-TextContainsAll {
     return $RequiredPatterns
 }
 
+function Assert-TextDoesNotContain {
+    param(
+        [string]$Text,
+        [string]$Label,
+        [string[]]$ForbiddenPatterns
+    )
+
+    $present = @($ForbiddenPatterns | Where-Object {
+        $pattern = [regex]::Escape($_)
+        $Text -match $pattern
+    })
+    if ($present.Count -gt 0) {
+        throw "$Label contains forbidden mutation or secret-leak pattern: $($present -join ', ')"
+    }
+
+    return $ForbiddenPatterns
+}
+
 function Assert-TextPatternOrder {
     param(
         [string]$Text,
@@ -410,6 +428,60 @@ function Assert-ReleaseWorkflowArtifactContract {
                 ordered_patterns = $createReleaseOrder
             }
         }
+    }
+}
+
+function Assert-ReleaseSigningBootstrapContract {
+    $relativePath = 'tools\release-signing-bootstrap.ps1'
+    $path = Join-Path $RepoRoot $relativePath
+    if (!(Test-Path -LiteralPath $path)) {
+        throw "required release signing bootstrap helper missing: $relativePath"
+    }
+
+    $text = Get-Content -LiteralPath $path -Raw
+    $requiredPatterns = @(
+        "ValidateSet('Status', 'Bootstrap', 'Preflight')",
+        '[switch]$SetGitHubSecret',
+        '$SecretName = ''RELEASE_ED25519_PRIVATE_KEY_HEX''',
+        '$ProtectedTag = ''v0.1.2''',
+        '$ProtectedTagDeref = ''7482e7bdfa12c5ccb31e6365e8251e68006366c6''',
+        'release-signing bootstrap writes no private seed to receipt/logs/stdout',
+        'no_publish = $true',
+        'private_key_material = ''not_recorded''',
+        'gh secret set $SecretName --repo $Repo',
+        '--release-signing-doctor',
+        'release-verify.ps1',
+        '-SkipBenchmarkMatrix',
+        'secret_missing',
+        'target_tag_package_version_mismatch',
+        '$Action -eq ''Bootstrap'' -or $SetGitHubSecret'
+    )
+    $forbiddenPatterns = @(
+        'gh release create',
+        'gh release upload',
+        'gh release delete',
+        'git tag -a',
+        'git push origin',
+        '$PrivateKeyHex | Set-Content',
+        '$PrivateKeyHex | Add-Content',
+        'Write-Host $PrivateKeyHex'
+    )
+
+    return [ordered]@{
+        ok = $true
+        path = $path
+        sha256 = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
+        default_no_publish = $true
+        mutating_path_requires_set_github_secret = $true
+        release_verify_remains_delivery_judge = $true
+        required_patterns = Assert-TextContainsAll `
+            -Text $text `
+            -Label $relativePath `
+            -RequiredPatterns $requiredPatterns
+        forbidden_patterns_absent = Assert-TextDoesNotContain `
+            -Text $text `
+            -Label $relativePath `
+            -ForbiddenPatterns $forbiddenPatterns
     }
 }
 
@@ -1302,6 +1374,7 @@ $Receipt.checks.route_guardrails = [ordered]@{
     }
 }
 $Receipt.checks.release_workflow_artifact_contract = Assert-ReleaseWorkflowArtifactContract
+$Receipt.checks.release_signing_bootstrap_contract = Assert-ReleaseSigningBootstrapContract
 $Receipt.checks.trust_center_backend_contract = Assert-TrustCenterBackendContract
 Invoke-LoggedNative -Name 'cargo-fmt-check' -Exe 'cargo' -Arguments @('fmt', '--check')
 Invoke-LoggedNative -Name 'cargo-test-all-targets' -Exe 'cargo' -Arguments @('test', '--all-targets', '--locked')

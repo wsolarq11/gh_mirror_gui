@@ -45,6 +45,7 @@ Deliverables:
 
 - `RELEASE_ED25519_PRIVATE_KEY_HEX` is required before the next tag; the release workflow must fail closed instead of silently producing an unsigned release.
 - Release signing readiness doctor proves the configured Ed25519 seed can derive/export the publisher public key, sign source bytes, and verify the resulting detached signature before a release is published.
+- `tools\release-signing-bootstrap.ps1` records repo secret presence, protected `v0.1.2` immutability, planned next-tag readiness, and no-publish preflight receipts without printing or persisting private seed material.
 - Next version release uploads `SHA256SUMS.txt.sig`, `release-provenance.json.sig`, and `publisher-key.ed25519.pub`.
 - README explains how users pin/import the matching publisher public key.
 - Release verification receipt proves signed-source behavior without changing `v0.1.2`.

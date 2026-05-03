@@ -185,7 +185,8 @@ to end.
 ## Release automation
 
 Future trusted releases are created by pushing a version tag. The tag must match
-the package version in `Cargo.toml`:
+the package version in `Cargo.toml`. Do not run the tag commands until the
+no-publish bootstrap/preflight helper below reports no blockers:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\release-verify.ps1 -SkipBenchmarkMatrix
@@ -204,6 +205,33 @@ must be configured as a GitHub repository secret before pushing the next tag.
 The value is a 32-byte Ed25519 seed encoded as 64 hex characters. The release
 workflow refuses to create an unsigned release when that secret is missing or
 invalid.
+
+The safe bootstrap/preflight helper is no-publish by default: it never creates a
+tag or Release, records only secret presence metadata plus public key
+fingerprints, and delegates signed staging proof to `tools\release-verify.ps1`.
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\release-signing-bootstrap.ps1 `
+  -Action Preflight `
+  -TargetTag v0.1.3
+```
+
+If the signing root has been generated and stored by the owner, set the current
+process environment variable and explicitly opt in to the GitHub secret
+mutation. Do not pass the seed on the command line, and remove the process
+environment variable after the helper exits:
+
+```powershell
+$env:RELEASE_ED25519_PRIVATE_KEY_HEX = "<64-hex Ed25519 seed>"
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\release-signing-bootstrap.ps1 `
+  -Action Bootstrap `
+  -SetGitHubSecret
+Remove-Item Env:RELEASE_ED25519_PRIVATE_KEY_HEX
+```
+
+Bootstrap receipts are written under
+`target\release-signing-bootstrap\<run_id>\receipt.json`. The receipt records
+`private_key_material = "not_recorded"`.
 
 The workflow exports the matching public key as `publisher-key.ed25519.pub` and
 uploads detached source signatures as `SHA256SUMS.txt.sig` and

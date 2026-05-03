@@ -28,6 +28,7 @@ UI Shell
 - `src/history.rs`: benchmark history and verification evidence JSON.
 - `src/main.rs`: current egui UI plus temporary app orchestration. Keep this layer thinner over time.
 - `tools\release-verify.ps1`: single delivery front door and receipt producer.
+- `tools\release-signing-bootstrap.ps1`: no-publish helper for signing-secret status/bootstrap and next-tag preflight; it delegates delivery proof back to `tools\release-verify.ps1`.
 
 ## Boundary rules
 
@@ -126,6 +127,9 @@ Evidence must remain reviewable and machine-readable:
 - trust-policy/source-trust gate coverage
 - release signing readiness, including public key export and next-release
   `.sig` asset contract
+- release signing bootstrap contract: repo secret presence, protected `v0.1.2`
+  immutability, planned next-tag readiness, no release/tag mutation by default,
+  and no private seed material in receipts or logs
 - release workflow artifact contract checks that fail fast if the tag workflow
   stops refusing unsigned releases, stops staging signed assets, or stops
   uploading the required binary, checksum, provenance, publisher key, and
