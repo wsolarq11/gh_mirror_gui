@@ -163,7 +163,10 @@ fn source_trust_status_summary(report: &VerificationReport) -> String {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct TrustCenterSnapshot {
+    downloaded_asset: String,
     hash_status: String,
+    file_sha256: String,
+    expected_sha256: String,
     source_authenticity: String,
     source_trust_detail: String,
     source_asset: String,
@@ -222,7 +225,13 @@ fn trust_center_snapshot(
     );
 
     TrustCenterSnapshot {
+        downloaded_asset: report.asset_name.clone(),
         hash_status: report.status.as_str().to_string(),
+        file_sha256: report.file_sha256.clone(),
+        expected_sha256: report
+            .expected_sha256
+            .clone()
+            .unwrap_or_else(|| "not available".to_string()),
         source_authenticity: source_trust
             .map(|trust| trust.status_label().to_string())
             .unwrap_or_else(|| "NOT_APPLICABLE".to_string()),
@@ -267,8 +276,20 @@ fn render_trust_center_snapshot(ui: &mut egui::Ui, snapshot: &TrustCenterSnapsho
             .num_columns(2)
             .striped(true)
             .show(ui, |ui| {
+                ui.label("Downloaded asset");
+                ui.label(&snapshot.downloaded_asset);
+                ui.end_row();
+
                 ui.label("Hash status");
                 ui.label(&snapshot.hash_status);
+                ui.end_row();
+
+                ui.label("File SHA256");
+                ui.label(&snapshot.file_sha256);
+                ui.end_row();
+
+                ui.label("Expected SHA256");
+                ui.label(&snapshot.expected_sha256);
                 ui.end_row();
 
                 ui.label("Source authenticity");
@@ -2449,6 +2470,9 @@ mod tests {
         );
 
         assert_eq!(snapshot.hash_status, "VERIFIED");
+        assert_eq!(snapshot.downloaded_asset, "gh_mirror_gui.exe");
+        assert_eq!(snapshot.file_sha256, hash);
+        assert_eq!(snapshot.expected_sha256, hash);
         assert_eq!(snapshot.source_authenticity, "TRUSTED_SIGNATURE");
         assert_eq!(
             snapshot.source_trust_detail,
@@ -2663,6 +2687,39 @@ mod tests {
         assert_eq!(snapshot.evidence_access, "ready to open");
 
         let _ = fs::remove_file(evidence_path);
+    }
+
+    #[test]
+    fn trust_center_snapshot_includes_downloaded_asset_hash_context() {
+        let hash = "A9BDB5AE91B153ED8E04513CA9322B4445A91D3BE8DD2695A8F1C206C9937CCC";
+        let report = VerificationReport {
+            status: VerificationStatus::Unknown,
+            asset_name: "portable.zip".to_string(),
+            file_sha256: hash.to_string(),
+            expected_sha256: None,
+            source: None,
+            source_trust: None,
+            detail: "No verification asset found".to_string(),
+        };
+        let disposition = AppliedFileDisposition {
+            action: FileDispositionAction::Keep,
+            original_path: PathBuf::from("portable.zip"),
+            final_path: Some(PathBuf::from(r"C:\Downloads\portable.zip")),
+        };
+
+        let snapshot = trust_center_snapshot(
+            &report,
+            None,
+            &disposition,
+            &TrustPolicyConfig::default().snapshot(),
+            None,
+        );
+
+        assert_eq!(snapshot.downloaded_asset, "portable.zip");
+        assert_eq!(snapshot.file_sha256, hash);
+        assert_eq!(snapshot.expected_sha256, "not available");
+        assert_eq!(snapshot.hash_status, "UNKNOWN");
+        assert_eq!(snapshot.policy_verdict, "RISK");
     }
 
     #[test]
