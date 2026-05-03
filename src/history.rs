@@ -1,4 +1,5 @@
 use crate::download::{sha256_file, DownloadProbe, SelectedDownloadStrategy};
+use crate::verification::VerificationReport;
 use directories::ProjectDirs;
 use std::fs;
 use std::io::Write;
@@ -17,6 +18,14 @@ pub(crate) struct BenchHistoryEntry {
     pub(crate) download_ms: u128,
     pub(crate) avg_mib_s: f64,
     pub(crate) sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) verification_status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) verification_source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) expected_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) verification_detail: Option<String>,
     pub(crate) etag: Option<String>,
     pub(crate) last_modified: Option<String>,
     pub(crate) recorded_at_epoch_secs: u64,
@@ -100,6 +109,7 @@ pub(crate) fn append_download_history(
     probe: &DownloadProbe,
     strategy: &SelectedDownloadStrategy,
     download_elapsed: Duration,
+    verification: Option<&VerificationReport>,
 ) -> Result<(), String> {
     let file_bytes = fs::metadata(output)
         .map_err(|e| format!("History output stat error: {e}"))?
@@ -127,9 +137,78 @@ pub(crate) fn append_download_history(
         download_ms,
         avg_mib_s,
         sha256,
+        verification_status: verification.map(|report| report.status.as_str().to_string()),
+        verification_source: verification.and_then(|report| report.source.clone()),
+        expected_sha256: verification.and_then(|report| report.expected_sha256.clone()),
+        verification_detail: verification.map(|report| report.detail.clone()),
         etag: probe.etag.clone(),
         last_modified: probe.last_modified.clone(),
         recorded_at_epoch_secs: unix_epoch_secs(),
     };
     append_bench_history_entry(path, &entry)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::download::SelectedDownloadStrategy;
+    use crate::verification::{VerificationReport, VerificationStatus};
+
+    fn unique_test_path(name: &str) -> PathBuf {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "gh_mirror_gui_history_{}_{}_{}",
+            std::process::id(),
+            nonce,
+            name
+        ))
+    }
+
+    #[test]
+    fn append_download_history_records_verification_status() {
+        let output = unique_test_path("app.exe");
+        let history = unique_test_path("bench-history.jsonl");
+        fs::write(&output, b"history payload").unwrap();
+        let probe = DownloadProbe {
+            total: fs::metadata(&output).unwrap().len(),
+            range_supported: false,
+            etag: Some("\"etag\"".to_string()),
+            last_modified: None,
+        };
+        let strategy = SelectedDownloadStrategy {
+            variant: "single".to_string(),
+            config: None,
+            history_matches: 0,
+        };
+        let report = VerificationReport {
+            status: VerificationStatus::Verified,
+            asset_name: "app.exe".to_string(),
+            file_sha256: sha256_file(&output).unwrap(),
+            expected_sha256: Some(sha256_file(&output).unwrap()),
+            source: Some("SHA256SUMS.txt".to_string()),
+            detail: "SHA256 matched SHA256SUMS.txt".to_string(),
+        };
+
+        append_download_history(
+            &Some(history.clone()),
+            "https://example.test/app.exe",
+            &output,
+            &probe,
+            &strategy,
+            Duration::from_millis(10),
+            Some(&report),
+        )
+        .unwrap();
+        let line = fs::read_to_string(&history).unwrap();
+        let entry = serde_json::from_str::<BenchHistoryEntry>(line.trim()).unwrap();
+
+        assert_eq!(entry.verification_status.as_deref(), Some("VERIFIED"));
+        assert_eq!(entry.verification_source.as_deref(), Some("SHA256SUMS.txt"));
+        assert_eq!(entry.expected_sha256, report.expected_sha256);
+        let _ = fs::remove_file(output);
+        let _ = fs::remove_file(history);
+    }
 }

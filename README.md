@@ -6,6 +6,10 @@ A small Windows desktop GUI for downloading GitHub release assets with progress,
 
 - GitHub release discovery: paste `owner/repo`, a GitHub repo URL, `/releases`,
   `/releases/latest`, or `/releases/tag/<tag>` and choose an asset in the GUI.
+- Verification-aware release downloads: when a selected release also ships
+  `SHA256SUMS.txt`, checksum, or `release-provenance.json` assets, the GUI
+  computes the downloaded file SHA256 and reports `VERIFIED`, `MISMATCH`, or
+  `UNKNOWN`.
 - Direct GitHub release asset downloads still work.
 - Adaptive strategy selection: single stream or concurrent HTTP `Range` segments based on live sampling and local history.
 - Safe resume via `.part` files and metadata validation for URL, total size, `ETag`, and `Last-Modified`.
@@ -35,6 +39,10 @@ use **Paste** to resolve automatically when the clipboard contains a supported
 GitHub release URL). Choose an asset from the picker, click **Use selected
 asset**, choose a save directory, optionally set a proxy, then click
 **Download**.
+
+If the same release contains checksum/provenance assets, the picker shows the
+detected verification sources and the final status includes the downloaded file
+SHA256 verification result.
 
 Supported discovery inputs:
 

@@ -169,9 +169,13 @@ function Invoke-GitHubLatestRelease {
             html_url = $release.html_url
             body = $release.body
             assets = @($release.assets | ForEach-Object {
+                $digest = if ($_.PSObject.Properties.Name -contains 'digest') { $_.digest } else { $null }
+                $contentType = if ($_.PSObject.Properties.Name -contains 'content_type') { $_.content_type } else { $null }
                 [ordered]@{
                     name = $_.name
                     size = $_.size
+                    content_type = $contentType
+                    digest = $digest
                     browser_download_url = $_.browser_download_url
                 }
             })
@@ -188,6 +192,121 @@ function Invoke-GitHubLatestRelease {
             status_code = $status
             error = $_.Exception.Message
         }
+    }
+}
+
+function Get-ReleaseAssetByName {
+    param(
+        [object]$Release,
+        [string]$Name
+    )
+
+    $matches = @($Release.assets | Where-Object { $_.name -eq $Name })
+    if ($matches.Count -eq 0) {
+        return $null
+    }
+    return $matches[0]
+}
+
+function Save-ReleaseAsset {
+    param(
+        [object]$Asset,
+        [string]$OutFile
+    )
+
+    Invoke-WebRequest `
+        -Uri $Asset.browser_download_url `
+        -Headers @{ 'User-Agent' = 'gh_mirror_gui-release-verify' } `
+        -MaximumRedirection 10 `
+        -OutFile $OutFile `
+        -UseBasicParsing | Out-Null
+
+    return [ordered]@{
+        path = $OutFile
+        size = (Get-Item -LiteralPath $OutFile).Length
+        sha256 = (Get-FileHash -LiteralPath $OutFile -Algorithm SHA256).Hash
+    }
+}
+
+function Invoke-OriginReleaseVerificationSmoke {
+    param([object]$Release)
+
+    if (!$Release.found) {
+        throw "origin latest release lookup failed: $($Release.error)"
+    }
+
+    $binaryAsset = Get-ReleaseAssetByName -Release $Release -Name 'gh_mirror_gui.exe'
+    $checksumAsset = Get-ReleaseAssetByName -Release $Release -Name 'SHA256SUMS.txt'
+    $provenanceAsset = Get-ReleaseAssetByName -Release $Release -Name 'release-provenance.json'
+    if ($null -eq $binaryAsset) {
+        throw "origin release $($Release.tag_name) missing gh_mirror_gui.exe"
+    }
+    if ($null -eq $checksumAsset) {
+        throw "origin release $($Release.tag_name) missing SHA256SUMS.txt"
+    }
+    if ($null -eq $provenanceAsset) {
+        throw "origin release $($Release.tag_name) missing release-provenance.json"
+    }
+
+    $assetDir = Join-Path $EvidenceDir 'origin-release-verification'
+    New-Item -ItemType Directory -Force -Path $assetDir | Out-Null
+    $checksumPath = Join-Path $assetDir $checksumAsset.name
+    $provenancePath = Join-Path $assetDir $provenanceAsset.name
+    $checksumEvidence = Save-ReleaseAsset -Asset $checksumAsset -OutFile $checksumPath
+    $provenanceEvidence = Save-ReleaseAsset -Asset $provenanceAsset -OutFile $provenancePath
+
+    $checksumText = Get-Content -LiteralPath $checksumPath -Raw
+    $checksumLine = @($checksumText -split "`r?`n" | Where-Object {
+        $_ -match '^\s*([A-Fa-f0-9]{64})\s+\*?(\./)?gh_mirror_gui\.exe\s*$'
+    } | Select-Object -First 1)
+    if ($checksumLine.Count -eq 0) {
+        throw "SHA256SUMS.txt did not contain gh_mirror_gui.exe SHA256"
+    }
+    $expectedHash = ([regex]::Match($checksumLine[0], '([A-Fa-f0-9]{64})').Groups[1].Value).ToUpperInvariant()
+
+    $provenance = Get-Content -LiteralPath $provenancePath -Raw | ConvertFrom-Json
+    $provenanceAssetPath = [string]$provenance.artifacts.release_binary.path
+    $provenanceHash = ([string]$provenance.artifacts.release_binary.sha256).ToUpperInvariant()
+    if ($provenanceAssetPath -ne 'gh_mirror_gui.exe') {
+        throw "release-provenance.json release_binary.path mismatch: $provenanceAssetPath"
+    }
+    if ($provenanceHash -ne $expectedHash) {
+        throw "release-provenance.json binary hash $provenanceHash does not match SHA256SUMS.txt $expectedHash"
+    }
+
+    $binaryDigestHash = $null
+    if ($binaryAsset.digest) {
+        $binaryDigestHash = ([string]$binaryAsset.digest -replace '^sha256:', '').ToUpperInvariant()
+        if ($binaryDigestHash -ne $expectedHash) {
+            throw "GitHub asset digest $binaryDigestHash does not match SHA256SUMS.txt $expectedHash"
+        }
+    }
+
+    return [ordered]@{
+        ok = $true
+        repo = $Release.repo
+        tag_name = $Release.tag_name
+        html_url = $Release.html_url
+        binary_asset = [ordered]@{
+            name = $binaryAsset.name
+            size = $binaryAsset.size
+            digest = $binaryAsset.digest
+        }
+        checksum_asset = [ordered]@{
+            name = $checksumAsset.name
+            size = $checksumAsset.size
+            downloaded = $checksumEvidence
+        }
+        provenance_asset = [ordered]@{
+            name = $provenanceAsset.name
+            size = $provenanceAsset.size
+            downloaded = $provenanceEvidence
+        }
+        expected_sha256 = $expectedHash
+        provenance_release_tag = $provenance.release_tag
+        provenance_package_version = $provenance.package_version
+        provenance_github_sha = $provenance.github.sha
+        github_asset_digest_sha256 = $binaryDigestHash
     }
 }
 
@@ -354,6 +473,7 @@ $originRelease = Invoke-GitHubLatestRelease -Repo 'wsolarq11/gh_mirror_gui'
 $targetRelease = Invoke-GitHubLatestRelease -Repo 'carrot-hu23/dst-admin-go'
 $Receipt.checks.origin_latest_release = $originRelease
 $Receipt.checks.target_latest_release = $targetRelease
+$Receipt.checks.origin_release_verification = Invoke-OriginReleaseVerificationSmoke -Release $originRelease
 
 if (!$targetRelease.found) {
     throw 'target latest release lookup failed'

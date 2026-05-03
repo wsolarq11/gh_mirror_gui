@@ -1,0 +1,646 @@
+use crate::download::sha256_file;
+use crate::releases::{ReleaseAsset, ResolvedRelease};
+use reqwest::blocking::Client;
+use std::path::PathBuf;
+
+const MAX_VERIFICATION_ASSET_BYTES: usize = 5 * 1024 * 1024;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct VerificationAsset {
+    pub(crate) name: String,
+    pub(crate) browser_download_url: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct DownloadVerificationPlan {
+    pub(crate) asset_name: String,
+    pub(crate) checksum_asset: Option<VerificationAsset>,
+    pub(crate) provenance_asset: Option<VerificationAsset>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) enum VerificationStatus {
+    Verified,
+    Mismatch,
+    Unknown,
+}
+
+impl VerificationStatus {
+    pub(crate) fn as_str(&self) -> &'static str {
+        match self {
+            Self::Verified => "VERIFIED",
+            Self::Mismatch => "MISMATCH",
+            Self::Unknown => "UNKNOWN",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct VerificationReport {
+    pub(crate) status: VerificationStatus,
+    pub(crate) asset_name: String,
+    pub(crate) file_sha256: String,
+    pub(crate) expected_sha256: Option<String>,
+    pub(crate) source: Option<String>,
+    pub(crate) detail: String,
+}
+
+pub(crate) fn verification_plan_for_selected_asset(
+    release: &ResolvedRelease,
+    asset_index: usize,
+) -> Option<DownloadVerificationPlan> {
+    let selected = release.assets.get(asset_index)?;
+    Some(DownloadVerificationPlan {
+        asset_name: selected.name.clone(),
+        checksum_asset: best_checksum_asset(&release.assets, &selected.name),
+        provenance_asset: best_provenance_asset(&release.assets, &selected.name),
+    })
+}
+
+pub(crate) fn verification_source_summary(plan: &DownloadVerificationPlan) -> String {
+    let mut sources = Vec::new();
+    if let Some(asset) = &plan.checksum_asset {
+        sources.push(asset.name.clone());
+    }
+    if let Some(asset) = &plan.provenance_asset {
+        sources.push(asset.name.clone());
+    }
+
+    if sources.is_empty() {
+        "No checksum/provenance assets detected; result will be UNKNOWN".to_string()
+    } else {
+        format!("Verification assets: {}", sources.join(" + "))
+    }
+}
+
+pub(crate) fn verify_downloaded_file(
+    client: &Client,
+    path: &PathBuf,
+    asset_name: &str,
+    plan: Option<&DownloadVerificationPlan>,
+) -> Result<VerificationReport, String> {
+    let file_sha256 = normalize_sha256(&sha256_file(path)?)
+        .ok_or_else(|| "Downloaded file SHA256 was not a valid SHA256 digest".to_string())?;
+    let Some(plan) = plan else {
+        return Ok(unknown_report(
+            asset_name,
+            file_sha256,
+            "No release asset context was available for checksum/provenance discovery".to_string(),
+        ));
+    };
+
+    let mut notes = Vec::new();
+    if let Some(checksum_asset) = &plan.checksum_asset {
+        match fetch_text_asset(client, &checksum_asset.browser_download_url) {
+            Ok(text) => {
+                if let Some(expected) = expected_sha256_from_checksum_asset(
+                    &text,
+                    &plan.asset_name,
+                    &checksum_asset.name,
+                ) {
+                    return Ok(report_from_expected(
+                        &plan.asset_name,
+                        file_sha256,
+                        expected,
+                        checksum_asset.name.clone(),
+                    ));
+                }
+                notes.push(format!(
+                    "{} did not contain a SHA256 entry for {}",
+                    checksum_asset.name, plan.asset_name
+                ));
+            }
+            Err(e) => notes.push(format!("{} could not be read: {e}", checksum_asset.name)),
+        }
+    }
+
+    if let Some(provenance_asset) = &plan.provenance_asset {
+        match fetch_text_asset(client, &provenance_asset.browser_download_url) {
+            Ok(text) => {
+                if let Some(expected) = expected_sha256_from_provenance(&text, &plan.asset_name) {
+                    return Ok(report_from_expected(
+                        &plan.asset_name,
+                        file_sha256,
+                        expected,
+                        provenance_asset.name.clone(),
+                    ));
+                }
+                notes.push(format!(
+                    "{} did not contain a SHA256 entry for {}",
+                    provenance_asset.name, plan.asset_name
+                ));
+            }
+            Err(e) => notes.push(format!("{} could not be read: {e}", provenance_asset.name)),
+        }
+    }
+
+    if notes.is_empty() {
+        notes.push(
+            "No checksum/provenance assets were detected for the selected release asset".into(),
+        );
+    }
+
+    Ok(unknown_report(
+        &plan.asset_name,
+        file_sha256,
+        notes.join("; "),
+    ))
+}
+
+fn best_checksum_asset(assets: &[ReleaseAsset], target_name: &str) -> Option<VerificationAsset> {
+    assets
+        .iter()
+        .filter(|asset| !filename_matches(&asset.name, target_name))
+        .filter_map(|asset| {
+            checksum_asset_sort_key(&asset.name, target_name).map(|key| (key, asset))
+        })
+        .min_by_key(|(key, _)| *key)
+        .map(|(_, asset)| asset)
+        .map(to_verification_asset)
+}
+
+fn best_provenance_asset(assets: &[ReleaseAsset], target_name: &str) -> Option<VerificationAsset> {
+    assets
+        .iter()
+        .filter(|asset| !filename_matches(&asset.name, target_name))
+        .filter(|asset| provenance_asset_rank(&asset.name).is_some())
+        .min_by_key(|asset| provenance_asset_rank(&asset.name).unwrap_or(u8::MAX))
+        .map(to_verification_asset)
+}
+
+fn to_verification_asset(asset: &ReleaseAsset) -> VerificationAsset {
+    VerificationAsset {
+        name: asset.name.clone(),
+        browser_download_url: asset.browser_download_url.clone(),
+    }
+}
+
+fn checksum_asset_rank(name: &str) -> Option<u8> {
+    let lower = name.to_ascii_lowercase();
+    if lower == "sha256sums.txt" || lower == "sha256sum.txt" {
+        Some(0)
+    } else if lower.ends_with(".sha256") || lower.ends_with(".sha256sum") {
+        Some(1)
+    } else if lower.contains("sha256") {
+        Some(2)
+    } else if lower.contains("checksum") || lower.contains("checksums") {
+        Some(3)
+    } else {
+        None
+    }
+}
+
+fn checksum_asset_sort_key(name: &str, target_name: &str) -> Option<(u8, u8)> {
+    let rank = checksum_asset_rank(name)?;
+    let target_penalty = if checksum_filename_targets_asset(name, target_name) {
+        0
+    } else {
+        1
+    };
+    Some((target_penalty, rank))
+}
+
+fn checksum_filename_targets_asset(name: &str, asset_name: &str) -> bool {
+    let normalized = normalize_filename(name);
+    let lower = normalized.to_ascii_lowercase();
+    for suffix in [
+        ".sha256",
+        ".sha256sum",
+        ".sha256.txt",
+        ".checksum",
+        ".checksums",
+        ".checksum.txt",
+    ] {
+        if let Some(stem) = lower.strip_suffix(suffix) {
+            return filename_matches(stem, asset_name);
+        }
+    }
+    false
+}
+
+fn provenance_asset_rank(name: &str) -> Option<u8> {
+    let lower = name.to_ascii_lowercase();
+    if lower == "release-provenance.json" {
+        Some(0)
+    } else if lower.ends_with(".json") && lower.contains("provenance") {
+        Some(1)
+    } else {
+        None
+    }
+}
+
+fn fetch_text_asset(client: &Client, url: &str) -> Result<String, String> {
+    let response = client
+        .get(url)
+        .header("User-Agent", "gh_mirror_gui-verifier")
+        .send()
+        .map_err(|e| format!("verification asset request failed: {e}"))?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(format!("HTTP {}", status.as_u16()));
+    }
+    let bytes = response
+        .bytes()
+        .map_err(|e| format!("verification asset body read failed: {e}"))?;
+    if bytes.len() > MAX_VERIFICATION_ASSET_BYTES {
+        return Err(format!(
+            "verification asset is too large: {} bytes",
+            bytes.len()
+        ));
+    }
+    String::from_utf8(bytes.to_vec()).map_err(|e| format!("verification asset was not UTF-8: {e}"))
+}
+
+#[cfg(test)]
+fn expected_sha256_from_checksums(text: &str, asset_name: &str) -> Option<String> {
+    expected_sha256_from_checksums_inner(text, asset_name, false)
+}
+
+fn expected_sha256_from_checksum_asset(
+    text: &str,
+    asset_name: &str,
+    checksum_asset_name: &str,
+) -> Option<String> {
+    expected_sha256_from_checksums_inner(
+        text,
+        asset_name,
+        checksum_filename_targets_asset(checksum_asset_name, asset_name),
+    )
+}
+
+fn expected_sha256_from_checksums_inner(
+    text: &str,
+    asset_name: &str,
+    allow_hash_only: bool,
+) -> Option<String> {
+    let mut hash_only = Vec::new();
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+
+        if let Some((filename, hash)) = parse_bsd_sha256_line(trimmed) {
+            if filename_matches(filename, asset_name) {
+                return normalize_sha256(hash);
+            }
+        }
+
+        let mut parts = trimmed.split_whitespace();
+        let Some(hash) = parts.next() else {
+            continue;
+        };
+        let Some(normalized_hash) = normalize_sha256(hash) else {
+            continue;
+        };
+        let filename = parts.collect::<Vec<_>>().join(" ");
+        if filename.is_empty() {
+            hash_only.push(normalized_hash);
+            continue;
+        }
+        if filename_matches(&filename, asset_name) {
+            return Some(normalized_hash);
+        }
+    }
+    if allow_hash_only && hash_only.len() == 1 {
+        return hash_only.into_iter().next();
+    }
+    None
+}
+
+pub(crate) fn expected_sha256_from_provenance(text: &str, asset_name: &str) -> Option<String> {
+    let value = serde_json::from_str::<serde_json::Value>(text).ok()?;
+    find_asset_hash_in_json(&value, asset_name)
+}
+
+fn parse_bsd_sha256_line(line: &str) -> Option<(&str, &str)> {
+    let rest = line.strip_prefix("SHA256 (")?;
+    let (filename, rest) = rest.split_once(") = ")?;
+    Some((filename, rest.trim()))
+}
+
+fn find_asset_hash_in_json(value: &serde_json::Value, asset_name: &str) -> Option<String> {
+    match value {
+        serde_json::Value::Object(map) => {
+            let path = map
+                .get("path")
+                .or_else(|| map.get("name"))
+                .and_then(|v| v.as_str());
+            let hash = map
+                .get("sha256")
+                .or_else(|| map.get("digest"))
+                .and_then(|v| v.as_str());
+            if let (Some(path), Some(hash)) = (path, hash) {
+                if filename_matches(path, asset_name) {
+                    return normalize_sha256(hash);
+                }
+            }
+
+            for (key, child) in map {
+                if filename_matches(key, asset_name) {
+                    if let Some(hash) = child
+                        .get("sha256")
+                        .or_else(|| child.get("digest"))
+                        .and_then(|v| v.as_str())
+                    {
+                        if let Some(hash) = normalize_sha256(hash) {
+                            return Some(hash);
+                        }
+                    }
+                }
+                if let Some(found) = find_asset_hash_in_json(child, asset_name) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        serde_json::Value::Array(values) => values
+            .iter()
+            .find_map(|value| find_asset_hash_in_json(value, asset_name)),
+        _ => None,
+    }
+}
+
+fn report_from_expected(
+    asset_name: &str,
+    file_sha256: String,
+    expected_sha256: String,
+    source: String,
+) -> VerificationReport {
+    let status = if file_sha256 == expected_sha256 {
+        VerificationStatus::Verified
+    } else {
+        VerificationStatus::Mismatch
+    };
+    let detail = if status == VerificationStatus::Verified {
+        format!("SHA256 matched {source}")
+    } else {
+        format!("SHA256 mismatch against {source}")
+    };
+    VerificationReport {
+        status,
+        asset_name: asset_name.to_string(),
+        file_sha256,
+        expected_sha256: Some(expected_sha256),
+        source: Some(source),
+        detail,
+    }
+}
+
+fn unknown_report(asset_name: &str, file_sha256: String, detail: String) -> VerificationReport {
+    VerificationReport {
+        status: VerificationStatus::Unknown,
+        asset_name: asset_name.to_string(),
+        file_sha256,
+        expected_sha256: None,
+        source: None,
+        detail,
+    }
+}
+
+fn normalize_sha256(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    let trimmed = trimmed
+        .strip_prefix("sha256:")
+        .or_else(|| trimmed.strip_prefix("SHA256:"))
+        .unwrap_or(trimmed);
+    if trimmed.len() == 64 && trimmed.chars().all(|c| c.is_ascii_hexdigit()) {
+        Some(trimmed.to_ascii_uppercase())
+    } else {
+        None
+    }
+}
+
+fn filename_matches(candidate: &str, asset_name: &str) -> bool {
+    let candidate = normalize_filename(candidate);
+    let asset_name = normalize_filename(asset_name);
+    candidate.eq_ignore_ascii_case(&asset_name)
+        || candidate
+            .rsplit('/')
+            .next()
+            .is_some_and(|name| name.eq_ignore_ascii_case(&asset_name))
+}
+
+fn normalize_filename(value: &str) -> String {
+    value
+        .trim()
+        .trim_start_matches('*')
+        .trim_start_matches("./")
+        .replace('\\', "/")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
+    use std::time::Duration;
+
+    fn asset(name: &str) -> ReleaseAsset {
+        ReleaseAsset {
+            name: name.to_string(),
+            size: 1,
+            browser_download_url: format!("https://example.test/{name}"),
+            content_type: None,
+        }
+    }
+
+    fn unique_test_path(name: &str) -> PathBuf {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "gh_mirror_gui_verify_{}_{}_{}",
+            std::process::id(),
+            nonce,
+            name
+        ))
+    }
+
+    fn serve_text_once(body: String) -> (String, thread::JoinHandle<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 4096];
+            let n = stream.read(&mut buf).unwrap();
+            let request = String::from_utf8_lossy(&buf[..n]).to_string();
+            let header = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            stream.write_all(header.as_bytes()).unwrap();
+            stream.write_all(body.as_bytes()).unwrap();
+            request
+        });
+
+        (format!("http://{addr}/SHA256SUMS.txt"), handle)
+    }
+
+    #[test]
+    fn detects_checksum_and_provenance_assets_for_selected_release_asset() {
+        let release = ResolvedRelease {
+            owner: "owner".to_string(),
+            repo: "repo".to_string(),
+            tag_name: "v1.0.0".to_string(),
+            name: None,
+            html_url: "https://github.com/owner/repo/releases/tag/v1.0.0".to_string(),
+            assets: vec![
+                asset("app.exe"),
+                asset("SHA256SUMS.txt"),
+                asset("release-provenance.json"),
+            ],
+        };
+
+        let plan = verification_plan_for_selected_asset(&release, 0).unwrap();
+
+        assert_eq!(plan.asset_name, "app.exe");
+        assert_eq!(plan.checksum_asset.as_ref().unwrap().name, "SHA256SUMS.txt");
+        assert_eq!(
+            plan.provenance_asset.as_ref().unwrap().name,
+            "release-provenance.json"
+        );
+        assert!(verification_source_summary(&plan).contains("SHA256SUMS.txt"));
+    }
+
+    #[test]
+    fn parses_sha256sums_common_formats() {
+        let hash = "A9BDB5AE91B153ED8E04513CA9322B4445A91D3BE8DD2695A8F1C206C9937CCC";
+        assert_eq!(
+            expected_sha256_from_checksums(&format!("{hash}  app.exe"), "app.exe"),
+            Some(hash.to_string())
+        );
+        assert_eq!(
+            expected_sha256_from_checksums(&format!("{hash} *./dist/app.exe"), "app.exe"),
+            Some(hash.to_string())
+        );
+        assert_eq!(
+            expected_sha256_from_checksums(&format!("SHA256 (app.exe) = {hash}"), "app.exe"),
+            Some(hash.to_string())
+        );
+        assert_eq!(
+            expected_sha256_from_checksum_asset(hash, "app.exe", "app.exe.sha256"),
+            Some(hash.to_string())
+        );
+        assert_eq!(
+            expected_sha256_from_checksum_asset(
+                &format!("sha256:{hash}"),
+                "app.exe",
+                "app.exe.sha256"
+            ),
+            Some(hash.to_string())
+        );
+        assert_eq!(
+            expected_sha256_from_checksum_asset(hash, "app.exe", "SHA256SUMS.txt"),
+            None
+        );
+    }
+
+    #[test]
+    fn parses_release_provenance_artifact_hash() {
+        let provenance = r#"{
+          "artifacts": {
+            "release_binary": {
+              "path": "gh_mirror_gui.exe",
+              "size": 7121408,
+              "sha256": "a9bdb5ae91b153ed8e04513ca9322b4445a91d3be8dd2695a8f1c206c9937ccc"
+            }
+          }
+        }"#;
+
+        assert_eq!(
+            expected_sha256_from_provenance(provenance, "gh_mirror_gui.exe"),
+            Some("A9BDB5AE91B153ED8E04513CA9322B4445A91D3BE8DD2695A8F1C206C9937CCC".to_string())
+        );
+
+        let digest_provenance = r#"{
+          "artifacts": {
+            "release_binary": {
+              "path": "gh_mirror_gui.exe",
+              "digest": "sha256:a9bdb5ae91b153ed8e04513ca9322b4445a91d3be8dd2695a8f1c206c9937ccc"
+            }
+          }
+        }"#;
+        assert_eq!(
+            expected_sha256_from_provenance(digest_provenance, "gh_mirror_gui.exe"),
+            Some("A9BDB5AE91B153ED8E04513CA9322B4445A91D3BE8DD2695A8F1C206C9937CCC".to_string())
+        );
+    }
+
+    #[test]
+    fn prefers_target_specific_checksum_assets() {
+        let release = ResolvedRelease {
+            owner: "owner".to_string(),
+            repo: "repo".to_string(),
+            tag_name: "v1.0.0".to_string(),
+            name: None,
+            html_url: "https://github.com/owner/repo/releases/tag/v1.0.0".to_string(),
+            assets: vec![
+                asset("app.exe"),
+                asset("SHA256SUMS.txt"),
+                asset("other.exe.sha256"),
+                asset("app.exe.sha256"),
+            ],
+        };
+
+        let plan = verification_plan_for_selected_asset(&release, 0).unwrap();
+
+        assert_eq!(plan.checksum_asset.as_ref().unwrap().name, "app.exe.sha256");
+    }
+
+    #[test]
+    fn reports_verified_mismatch_and_unknown_states() {
+        let hash = "A9BDB5AE91B153ED8E04513CA9322B4445A91D3BE8DD2695A8F1C206C9937CCC";
+        let verified = report_from_expected(
+            "app.exe",
+            hash.to_string(),
+            hash.to_string(),
+            "SHA256SUMS.txt".to_string(),
+        );
+        assert_eq!(verified.status, VerificationStatus::Verified);
+        assert_eq!(verified.status.as_str(), "VERIFIED");
+
+        let mismatch = report_from_expected(
+            "app.exe",
+            hash.to_string(),
+            "B9BDB5AE91B153ED8E04513CA9322B4445A91D3BE8DD2695A8F1C206C9937CCC".to_string(),
+            "SHA256SUMS.txt".to_string(),
+        );
+        assert_eq!(mismatch.status, VerificationStatus::Mismatch);
+
+        let unknown = unknown_report("app.exe", hash.to_string(), "no source".to_string());
+        assert_eq!(unknown.status, VerificationStatus::Unknown);
+    }
+
+    #[test]
+    fn verifies_downloaded_file_against_checksum_asset() {
+        let path = unique_test_path("app.exe");
+        fs::write(&path, b"verified payload").unwrap();
+        let expected = sha256_file(&path).unwrap();
+        let (checksum_url, server) = serve_text_once(format!("{expected}  app.exe\n"));
+        let plan = DownloadVerificationPlan {
+            asset_name: "app.exe".to_string(),
+            checksum_asset: Some(VerificationAsset {
+                name: "SHA256SUMS.txt".to_string(),
+                browser_download_url: checksum_url,
+            }),
+            provenance_asset: None,
+        };
+        let client = Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+
+        let report = verify_downloaded_file(&client, &path, "app.exe", Some(&plan)).unwrap();
+        let request = server.join().unwrap();
+
+        assert!(request.starts_with("GET /SHA256SUMS.txt HTTP/1.1"));
+        assert_eq!(report.status, VerificationStatus::Verified);
+        assert_eq!(report.expected_sha256, Some(expected));
+        assert_eq!(report.source, Some("SHA256SUMS.txt".to_string()));
+        let _ = fs::remove_file(path);
+    }
+}

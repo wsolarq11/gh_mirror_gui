@@ -2,6 +2,7 @@ mod bench;
 mod download;
 mod history;
 mod releases;
+mod verification;
 
 #[cfg(test)]
 use bench::parse_bench_config;
@@ -36,6 +37,10 @@ use std::path::PathBuf;
 use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::{Duration, Instant};
+use verification::{
+    verification_plan_for_selected_asset, verification_source_summary, verify_downloaded_file,
+    DownloadVerificationPlan, VerificationReport, VerificationStatus,
+};
 
 fn log_error(msg: &str) {
     if let Ok(mut f) = std::fs::OpenOptions::new()
@@ -52,6 +57,41 @@ fn log_error(msg: &str) {
     }
 }
 
+fn format_download_completion_status(report: &VerificationReport) -> String {
+    let short_hash = report.file_sha256.chars().take(12).collect::<String>();
+    match report.status {
+        VerificationStatus::Verified => format!(
+            "✅ Download complete · VERIFIED SHA256={} via {}",
+            short_hash,
+            report.source.as_deref().unwrap_or("verification asset")
+        ),
+        VerificationStatus::Mismatch => format!(
+            "❌ Download complete · MISMATCH SHA256={} expected {} via {}",
+            short_hash,
+            report
+                .expected_sha256
+                .as_deref()
+                .map(|hash| hash.chars().take(12).collect::<String>())
+                .unwrap_or_else(|| "unknown".to_string()),
+            report.source.as_deref().unwrap_or("verification asset")
+        ),
+        VerificationStatus::Unknown => format!(
+            "⚠ Download complete · UNKNOWN verification · SHA256={} · {}",
+            short_hash, report.detail
+        ),
+    }
+}
+
+fn status_color(status: &str) -> egui::Color32 {
+    if status.contains('❌') {
+        egui::Color32::from_rgb(220, 70, 70)
+    } else if status.contains('⚠') {
+        egui::Color32::from_rgb(220, 160, 0)
+    } else {
+        egui::Color32::from_rgb(0, 180, 0)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // App state and UI constants
 // ---------------------------------------------------------------------------
@@ -61,6 +101,12 @@ const SPEED_TEST_TIMEOUT_SECS: u64 = 5;
 /// Known mirror sites.  First entry must be "Direct (no mirror)"
 const MIRRORS: &[(&str, &str)] = &[("Direct (no mirror)", "")];
 type ReleaseLookupMessage = (String, Result<ResolvedRelease, String>);
+type DownloadResultMessage = Result<DownloadCompletion, String>;
+
+struct DownloadCompletion {
+    path: PathBuf,
+    verification: VerificationReport,
+}
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct SavedState {
@@ -83,6 +129,7 @@ struct GhMirrorGui {
     download_thread: Option<thread::JoinHandle<()>>,
     control: Option<Arc<DownloadControl>>,
     progress_rx: Option<mpsc::Receiver<(u64, u64, f64, f64)>>,
+    download_result_rx: Option<mpsc::Receiver<DownloadResultMessage>>,
     // Mirror-related fields
     mirrors: Vec<String>,     // human-readable names
     mirror_urls: Vec<String>, // actual URL prefixes
@@ -149,6 +196,7 @@ impl GhMirrorGui {
             download_thread: None,
             control: None,
             progress_rx: None,
+            download_result_rx: None,
             mirrors: names,
             mirror_urls: urls,
             selected_mirror,
@@ -240,6 +288,12 @@ impl GhMirrorGui {
         parse_release_query(&self.url).is_ok() && !is_github_release_asset_download_url(&self.url)
     }
 
+    fn selected_release_verification_plan(&self) -> Option<DownloadVerificationPlan> {
+        let release = self.release.as_ref()?;
+        let asset_index = self.selected_release_asset?;
+        verification_plan_for_selected_asset(release, asset_index)
+    }
+
     fn apply_selected_release_asset(&mut self) -> bool {
         let selected = self
             .release
@@ -288,6 +342,12 @@ impl GhMirrorGui {
             Some(p) => p,
             None => return,
         };
+        let verification_plan = self.selected_release_verification_plan();
+        let asset_name = verification_plan
+            .as_ref()
+            .map(|plan| plan.asset_name.clone())
+            .or_else(|| extract_filename(&self.url))
+            .unwrap_or_else(|| String::from("download"));
 
         self.download_complete_notified = false;
         let control = DownloadControl::new();
@@ -296,12 +356,17 @@ impl GhMirrorGui {
         let proxy = self.proxy.clone();
         let allow_invalid_certs = self.allow_invalid_certs;
         let (progress_tx, progress_rx) = mpsc::channel();
+        let (result_tx, result_rx) = mpsc::channel::<DownloadResultMessage>();
         self.progress_rx = Some(progress_rx);
+        self.download_result_rx = Some(result_rx);
 
         self.progress = 0.0;
         self.speed_text.clear();
         self.elapsed_text.clear();
-        self.status = String::from("Starting download...");
+        self.status = verification_plan
+            .as_ref()
+            .map(|plan| format!("Starting download... {}", verification_source_summary(plan)))
+            .unwrap_or_else(|| String::from("Starting download... verification will be UNKNOWN"));
 
         self.download_thread = Some(thread::spawn(move || {
             let client = match build_client(&proxy, 3600, allow_invalid_certs) {
@@ -309,6 +374,7 @@ impl GhMirrorGui {
                 Err(e) => {
                     log_error(&format!("build_client error: {}", e));
                     let _ = progress_tx.send((0, 0, 0.0, 0.0));
+                    let _ = result_tx.send(Err(format!("Client build error: {e}")));
                     return;
                 }
             };
@@ -342,6 +408,21 @@ impl GhMirrorGui {
                 &progress_tx,
             ) {
                 Ok(()) => {
+                    let verification = match verify_downloaded_file(
+                        &client,
+                        &save_path,
+                        &asset_name,
+                        verification_plan.as_ref(),
+                    ) {
+                        Ok(report) => report,
+                        Err(e) => {
+                            log_error(&format!("verify_downloaded_file error: {}", e));
+                            let _ = result_tx.send(Err(format!(
+                                "Download completed but SHA256 verification failed: {e}"
+                            )));
+                            return;
+                        }
+                    };
                     if let Err(e) = append_download_history(
                         &Some(history_path),
                         &effective_url,
@@ -349,14 +430,20 @@ impl GhMirrorGui {
                         &probe,
                         &strategy,
                         download_start.elapsed(),
+                        Some(&verification),
                     ) {
                         log_error(&format!("append_download_history error: {}", e));
                     }
                     let _ = progress_tx.send((total, total, 0.0, 0.0));
+                    let _ = result_tx.send(Ok(DownloadCompletion {
+                        path: save_path,
+                        verification,
+                    }));
                 }
                 Err(e) => {
                     log_error(&format!("download_file error: {}", e));
                     let _ = progress_tx.send((0, 0, 0.0, 0.0));
+                    let _ = result_tx.send(Err(e));
                 }
             }
         }));
@@ -464,6 +551,7 @@ impl eframe::App for GhMirrorGui {
         // Process download progress
         let progress_rx = self.progress_rx.take();
         if let Some(rx) = progress_rx {
+            let mut keep_progress_rx = true;
             while let Ok((downloaded, total, speed, elapsed)) = rx.try_recv() {
                 if total > 0 {
                     self.progress = (downloaded as f32) / (total as f32);
@@ -473,29 +561,62 @@ impl eframe::App for GhMirrorGui {
                     self.status = String::from("❌ Download failed");
                     self.download_thread = None;
                     self.control = None;
+                    keep_progress_rx = false;
                 } else if downloaded >= total && total > 0 {
                     self.progress = 1.0;
-                    self.status = String::from("✅ Download complete!");
+                    self.status = String::from("Download complete; verifying SHA256...");
                     self.speed_text.clear();
                     self.elapsed_text.clear();
-                    self.download_thread = None;
-                    self.control = None;
-                    // Desktop notification
-                    if !self.download_complete_notified {
-                        self.download_complete_notified = true;
-                        let save_path_str = self.save_dir.to_string_lossy().to_string();
-                        thread::spawn(move || {
-                            let _ = Notification::new()
-                                .summary("gh_mirror_gui")
-                                .body(&format!("Download complete!\nSaved to: {}", save_path_str))
-                                .show();
-                        });
-                    }
+                    keep_progress_rx = false;
                 } else {
                     self.speed_text = format_speed(speed);
                     let total_min = elapsed / 60.0;
                     let total_sec = elapsed % 60.0;
                     self.elapsed_text = format!("{:02.0}:{:04.1}", total_min, total_sec);
+                }
+            }
+            if keep_progress_rx && self.download_thread.is_some() {
+                self.progress_rx = Some(rx);
+            }
+        }
+
+        // Process final download result including checksum/provenance verification.
+        let download_result_rx = self.download_result_rx.take();
+        if let Some(rx) = download_result_rx {
+            match rx.try_recv() {
+                Ok(Ok(completion)) => {
+                    self.status = format_download_completion_status(&completion.verification);
+                    self.download_thread = None;
+                    self.control = None;
+                    self.progress_rx = None;
+                    if !self.download_complete_notified {
+                        self.download_complete_notified = true;
+                        let save_path_str = completion.path.to_string_lossy().to_string();
+                        let status = completion.verification.status.as_str().to_string();
+                        thread::spawn(move || {
+                            let _ = Notification::new()
+                                .summary("gh_mirror_gui")
+                                .body(&format!(
+                                    "Download complete ({status})\nSaved to: {save_path_str}"
+                                ))
+                                .show();
+                        });
+                    }
+                }
+                Ok(Err(e)) => {
+                    self.status = format!("❌ Download failed: {e}");
+                    self.download_thread = None;
+                    self.control = None;
+                    self.progress_rx = None;
+                }
+                Err(mpsc::TryRecvError::Empty) => {
+                    self.download_result_rx = Some(rx);
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.status = String::from("❌ Download failed: worker exited unexpectedly");
+                    self.download_thread = None;
+                    self.control = None;
+                    self.progress_rx = None;
                 }
             }
         }
@@ -614,6 +735,11 @@ impl eframe::App for GhMirrorGui {
                                 .as_deref()
                                 .unwrap_or("unknown content type");
                             ui.label(format!("{} · {}", asset_picker_label(asset), content_type));
+                            if let Some(plan) =
+                                verification_plan_for_selected_asset(&release, selected_idx)
+                            {
+                                ui.label(verification_source_summary(&plan));
+                            }
                             ui.monospace(&asset.browser_download_url);
                         }
                     }
@@ -750,7 +876,7 @@ impl eframe::App for GhMirrorGui {
                     }
                 }
                 // Open downloaded file folder
-                if self.status.contains("✅")
+                if self.status.contains("Download complete")
                     && ui.button("📂 Open Folder").clicked()
                     && self.save_dir.exists()
                 {
@@ -772,7 +898,7 @@ impl eframe::App for GhMirrorGui {
             }
 
             // Status label
-            ui.label(egui::RichText::new(&self.status).color(egui::Color32::from_rgb(0, 180, 0)));
+            ui.label(egui::RichText::new(&self.status).color(status_color(&self.status)));
         });
     }
 }
@@ -1082,6 +1208,10 @@ mod tests {
                 download_ms: 1000,
                 avg_mib_s: 20.0,
                 sha256: "hash".to_string(),
+                verification_status: None,
+                verification_source: None,
+                expected_sha256: None,
+                verification_detail: None,
                 etag: probe.etag.clone(),
                 last_modified: probe.last_modified.clone(),
                 recorded_at_epoch_secs: 1,
@@ -1097,6 +1227,10 @@ mod tests {
                 download_ms: 2000,
                 avg_mib_s: 10.0,
                 sha256: "hash".to_string(),
+                verification_status: None,
+                verification_source: None,
+                expected_sha256: None,
+                verification_detail: None,
                 etag: probe.etag.clone(),
                 last_modified: probe.last_modified.clone(),
                 recorded_at_epoch_secs: 1,
