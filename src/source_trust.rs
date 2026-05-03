@@ -239,6 +239,12 @@ pub(crate) fn sign_ed25519_detached(
     Ok(hex_encode_upper(&signature.to_bytes()))
 }
 
+pub(crate) fn public_key_from_private_seed(private_key_text: &str) -> Result<String, String> {
+    let private_key = decode_hex_array::<32>(private_key_text, "Ed25519 private key seed")?;
+    let signing_key = SigningKey::from_bytes(&private_key);
+    Ok(hex_encode_upper(&signing_key.verifying_key().to_bytes()))
+}
+
 pub(crate) fn trusted_key_fingerprint(public_key_text: &str) -> Option<String> {
     let public_key = decode_hex_array::<32>(public_key_text, "Ed25519 public key").ok()?;
     let digest = Sha256::digest(public_key);
@@ -318,10 +324,22 @@ mod tests {
         let private_key = "1111111111111111111111111111111111111111111111111111111111111111";
         let message = b"SHA256SUMS.txt contents";
         let signature = sign_ed25519_detached(message, private_key).unwrap();
-        let signing_key = SigningKey::from_bytes(&[0x11u8; 32]);
-        let public_key = hex_encode_upper(&signing_key.verifying_key().to_bytes());
+        let public_key = public_key_from_private_seed(private_key).unwrap();
 
         verify_ed25519_detached(message, &signature, &public_key).unwrap();
+    }
+
+    #[test]
+    fn source_trust_derives_release_public_key_from_private_seed() {
+        let private_key = "1111111111111111111111111111111111111111111111111111111111111111";
+        let signing_key = SigningKey::from_bytes(&[0x11u8; 32]);
+        let expected_public_key = hex_encode_upper(&signing_key.verifying_key().to_bytes());
+
+        let public_key = public_key_from_private_seed(private_key).unwrap();
+
+        assert_eq!(public_key, expected_public_key);
+        assert_eq!(public_key.len(), 64);
+        assert!(trusted_key_fingerprint(&public_key).is_some());
     }
 
     #[test]

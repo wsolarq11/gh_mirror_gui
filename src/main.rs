@@ -37,7 +37,7 @@ use std::env;
 use std::fs;
 #[cfg(test)]
 use std::io::{Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -52,6 +52,15 @@ use verification::{
     verification_plan_for_selected_asset, verification_source_summary, verify_downloaded_file,
     DownloadVerificationPlan, VerificationReport, VerificationStatus,
 };
+
+const RELEASE_PRIVATE_KEY_ENV: &str = "RELEASE_ED25519_PRIVATE_KEY_HEX";
+const LEGACY_RELEASE_PRIVATE_KEY_ENV: &str = "GH_MIRROR_GUI_ED25519_PRIVATE_KEY_HEX";
+const RELEASE_PUBLIC_KEY_ASSET: &str = "publisher-key.ed25519.pub";
+const SHA256SUMS_ASSET: &str = "SHA256SUMS.txt";
+const SHA256SUMS_SIGNATURE_ASSET: &str = "SHA256SUMS.txt.sig";
+const PROVENANCE_ASSET: &str = "release-provenance.json";
+const PROVENANCE_SIGNATURE_ASSET: &str = "release-provenance.json.sig";
+const SIGNATURE_FORMAT: &str = "ed25519-detached-hex";
 
 fn log_error(msg: &str) {
     if let Ok(mut f) = std::fs::OpenOptions::new()
@@ -1307,6 +1316,134 @@ fn run_speed_test(
     best_idx
 }
 
+fn load_release_private_key_seed() -> Result<(String, &'static str), String> {
+    for env_name in [RELEASE_PRIVATE_KEY_ENV, LEGACY_RELEASE_PRIVATE_KEY_ENV] {
+        if let Ok(value) = env::var(env_name) {
+            if !value.trim().is_empty() {
+                return Ok((value, env_name));
+            }
+        }
+    }
+
+    Err(format!(
+        "{RELEASE_PRIVATE_KEY_ENV} is required (32-byte Ed25519 seed encoded as 64 hex characters)"
+    ))
+}
+
+fn write_text_file(path: &Path, text: &str) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("Create dir error: {e}"))?;
+    }
+    std::fs::write(path, text).map_err(|e| format!("Write {} error: {e}", path.display()))
+}
+
+fn release_signing_required_assets() -> [&'static str; 6] {
+    [
+        "gh_mirror_gui.exe",
+        SHA256SUMS_ASSET,
+        SHA256SUMS_SIGNATURE_ASSET,
+        PROVENANCE_ASSET,
+        PROVENANCE_SIGNATURE_ASSET,
+        RELEASE_PUBLIC_KEY_ASSET,
+    ]
+}
+
+fn run_release_signing_doctor(args: &[String]) -> Result<(), String> {
+    let mut fixture_dir = PathBuf::from("target/release-signing-fixture");
+    let mut json_out = None;
+    let mut public_key_out = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--fixture-dir" => {
+                i += 1;
+                fixture_dir = args
+                    .get(i)
+                    .map(PathBuf::from)
+                    .ok_or_else(|| "--fixture-dir requires a path".to_string())?;
+            }
+            "--json" => {
+                i += 1;
+                json_out = Some(
+                    args.get(i)
+                        .map(PathBuf::from)
+                        .ok_or_else(|| "--json requires a path".to_string())?,
+                );
+            }
+            "--public-key-out" => {
+                i += 1;
+                public_key_out = Some(
+                    args.get(i)
+                        .map(PathBuf::from)
+                        .ok_or_else(|| "--public-key-out requires a path".to_string())?,
+                );
+            }
+            other => return Err(format!("unknown --release-signing-doctor option: {other}")),
+        }
+        i += 1;
+    }
+
+    let (private_key, private_key_env) = load_release_private_key_seed()?;
+    let public_key = source_trust::public_key_from_private_seed(&private_key)?;
+    let fingerprint = trusted_key_fingerprint(&public_key)
+        .ok_or_else(|| "derived Ed25519 public key fingerprint failed".to_string())?;
+
+    std::fs::create_dir_all(&fixture_dir).map_err(|e| format!("Create fixture dir error: {e}"))?;
+    let source_path = fixture_dir.join(SHA256SUMS_ASSET);
+    let signature_path = fixture_dir.join(SHA256SUMS_SIGNATURE_ASSET);
+    let public_key_path =
+        public_key_out.unwrap_or_else(|| fixture_dir.join(RELEASE_PUBLIC_KEY_ASSET));
+    let fixture_text = concat!(
+        "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF",
+        "  gh_mirror_gui.exe\n"
+    );
+    write_text_file(&source_path, fixture_text)?;
+    let signature = source_trust::sign_ed25519_detached(fixture_text.as_bytes(), &private_key)?;
+    write_text_file(&signature_path, &format!("{signature}\n"))?;
+    write_text_file(&public_key_path, &format!("{public_key}\n"))?;
+    source_trust::verify_ed25519_detached(fixture_text.as_bytes(), &signature, &public_key)?;
+
+    let report = serde_json::json!({
+        "schema_version": 1,
+        "ok": true,
+        "private_key_env": private_key_env,
+        "required_repository_secret": RELEASE_PRIVATE_KEY_ENV,
+        "private_key_material": "not_recorded",
+        "signature_format": SIGNATURE_FORMAT,
+        "public_key": {
+            "asset_name": RELEASE_PUBLIC_KEY_ASSET,
+            "path": public_key_path,
+            "value": public_key,
+            "fingerprint_sha256": fingerprint,
+        },
+        "fixture": {
+            "source_asset_name": SHA256SUMS_ASSET,
+            "signature_asset_name": SHA256SUMS_SIGNATURE_ASSET,
+            "source_path": source_path,
+            "signature_path": signature_path,
+            "source_bytes_signed": true,
+            "signature_hex_chars": signature.len(),
+            "verified": true,
+        },
+        "next_release_required_assets": release_signing_required_assets(),
+        "workflow_contract": {
+            "refuses_unsigned_release": true,
+            "uploads_public_key_pin_asset": RELEASE_PUBLIC_KEY_ASSET,
+            "uploads_signature_assets": [
+                SHA256SUMS_SIGNATURE_ASSET,
+                PROVENANCE_SIGNATURE_ASSET,
+            ],
+        },
+    });
+    let pretty_report =
+        serde_json::to_string_pretty(&report).map_err(|e| format!("Serialize doctor JSON: {e}"))?;
+    if let Some(json_path) = json_out {
+        write_text_file(&json_path, &format!("{pretty_report}\n"))?;
+    }
+    println!("{pretty_report}");
+    Ok(())
+}
+
 fn run_sign_verification_source(args: &[String]) -> Result<(), String> {
     let mut source = None;
     let mut out = None;
@@ -1332,8 +1469,7 @@ fn run_sign_verification_source(args: &[String]) -> Result<(), String> {
 
     let source = source.ok_or_else(|| "--source is required".to_string())?;
     let out = out.ok_or_else(|| "--out is required".to_string())?;
-    let private_key = env::var("GH_MIRROR_GUI_ED25519_PRIVATE_KEY_HEX")
-        .map_err(|_| "GH_MIRROR_GUI_ED25519_PRIVATE_KEY_HEX is required".to_string())?;
+    let (private_key, _) = load_release_private_key_seed()?;
     let source_bytes =
         std::fs::read(&source).map_err(|e| format!("Read source asset error: {e}"))?;
     let signature = source_trust::sign_ed25519_detached(&source_bytes, &private_key)?;
@@ -1352,6 +1488,14 @@ fn run_sign_verification_source(args: &[String]) -> Result<(), String> {
 
 fn main() -> Result<(), eframe::Error> {
     let args = env::args().skip(1).collect::<Vec<_>>();
+    if args.first().map(|s| s.as_str()) == Some("--release-signing-doctor") {
+        if let Err(e) = run_release_signing_doctor(&args[1..]) {
+            eprintln!("release signing doctor failed: {e}");
+            std::process::exit(2);
+        }
+        return Ok(());
+    }
+
     if args.first().map(|s| s.as_str()) == Some("--sign-verification-source") {
         if let Err(e) = run_sign_verification_source(&args[1..]) {
             eprintln!("sign verification source failed: {e}");

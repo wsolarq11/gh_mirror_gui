@@ -183,18 +183,39 @@ the package version in `Cargo.toml`:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\release-verify.ps1 -SkipBenchmarkMatrix
-git tag -a v0.1.2 -m "Release v0.1.2"
+git tag -a v0.1.3 -m "Release v0.1.3"
 git push origin main
-git push origin v0.1.2
+git push origin v0.1.3
 ```
 
 The `Release` GitHub Actions workflow rebuilds the Windows release binary with
 the pinned Rust toolchain, reruns `fmt` / `test` / `clippy`, generates
-`SHA256SUMS.txt` and `release-provenance.json`, and creates the GitHub Release.
-If the repository secret `RELEASE_ED25519_PRIVATE_KEY_HEX` is configured, the
-workflow also uploads `SHA256SUMS.txt.sig` and `release-provenance.json.sig`.
-The private key is a 32-byte Ed25519 seed encoded as 64 hex characters; the GUI
-only stores/imports the matching public key pin.
+`SHA256SUMS.txt` and `release-provenance.json`, signs both verification source
+assets, and creates the GitHub Release.
+
+`RELEASE_ED25519_PRIVATE_KEY_HEX` is required for the next trusted release. It
+must be configured as a GitHub repository secret before pushing the next tag.
+The value is a 32-byte Ed25519 seed encoded as 64 hex characters. The release
+workflow refuses to create an unsigned release when that secret is missing or
+invalid.
+
+The workflow exports the matching public key as `publisher-key.ed25519.pub` and
+uploads detached source signatures as `SHA256SUMS.txt.sig` and
+`release-provenance.json.sig`. Users can download `publisher-key.ed25519.pub`,
+compare its SHA256 fingerprint against the release provenance or an owner
+channel, then paste/import the 64-hex public key into the GUI and enable
+**Require signed checksum/provenance source**. The GUI stores only the public
+key pin/fingerprint, never the private signing seed.
+
+Local signing readiness can be checked without publishing a release:
+
+```powershell
+$env:RELEASE_ED25519_PRIVATE_KEY_HEX = "<64-hex Ed25519 seed>"
+.\target\release\gh_mirror_gui.exe --release-signing-doctor `
+  --fixture-dir .\target\release-signing-fixture `
+  --json .\target\release-signing-readiness.json `
+  --public-key-out .\target\publisher-key.ed25519.pub
+```
 
 ## License
 

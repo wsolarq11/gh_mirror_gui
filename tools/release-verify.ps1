@@ -210,6 +210,103 @@ function Assert-FileContains {
     }
 }
 
+function Invoke-ReleaseSigningReadiness {
+    param(
+        [string]$Exe,
+        [string]$FixtureDir,
+        [string]$JsonFile,
+        [string]$PublicKeyOut
+    )
+
+    $testPrivateKey = '1111111111111111111111111111111111111111111111111111111111111111'
+    $oldReleaseKey = $env:RELEASE_ED25519_PRIVATE_KEY_HEX
+    $oldLegacyKey = $env:GH_MIRROR_GUI_ED25519_PRIVATE_KEY_HEX
+    try {
+        $env:RELEASE_ED25519_PRIVATE_KEY_HEX = $testPrivateKey
+        Remove-Item Env:GH_MIRROR_GUI_ED25519_PRIVATE_KEY_HEX -ErrorAction SilentlyContinue
+        Invoke-LoggedNative `
+            -Name 'release-signing-doctor' `
+            -Exe $Exe `
+            -Arguments @(
+                '--release-signing-doctor',
+                '--fixture-dir', $FixtureDir,
+                '--json', $JsonFile,
+                '--public-key-out', $PublicKeyOut
+            )
+    }
+    finally {
+        if ($null -eq $oldReleaseKey) {
+            Remove-Item Env:RELEASE_ED25519_PRIVATE_KEY_HEX -ErrorAction SilentlyContinue
+        }
+        else {
+            $env:RELEASE_ED25519_PRIVATE_KEY_HEX = $oldReleaseKey
+        }
+        if ($null -eq $oldLegacyKey) {
+            Remove-Item Env:GH_MIRROR_GUI_ED25519_PRIVATE_KEY_HEX -ErrorAction SilentlyContinue
+        }
+        else {
+            $env:GH_MIRROR_GUI_ED25519_PRIVATE_KEY_HEX = $oldLegacyKey
+        }
+    }
+
+    if (!(Test-Path -LiteralPath $JsonFile)) {
+        throw "release signing doctor JSON missing: $JsonFile"
+    }
+    if (!(Test-Path -LiteralPath $PublicKeyOut)) {
+        throw "release signing public key export missing: $PublicKeyOut"
+    }
+    $doctor = Get-Content -LiteralPath $JsonFile -Raw | ConvertFrom-Json
+    if (!$doctor.ok) {
+        throw "release signing doctor did not report ok=true"
+    }
+    if ([string]$doctor.required_repository_secret -ne 'RELEASE_ED25519_PRIVATE_KEY_HEX') {
+        throw "release signing doctor required_repository_secret mismatch"
+    }
+    if ([string]$doctor.signature_format -ne 'ed25519-detached-hex') {
+        throw "release signing doctor signature format mismatch"
+    }
+    $requiredAssets = @($doctor.next_release_required_assets | ForEach-Object { [string]$_ })
+    $missingAssets = @(@(
+            'SHA256SUMS.txt.sig',
+            'release-provenance.json.sig',
+            'publisher-key.ed25519.pub'
+        ) | Where-Object { $requiredAssets -notcontains $_ })
+    if ($missingAssets.Count -gt 0) {
+        throw "release signing doctor missing next-release asset contract: $($missingAssets -join ', ')"
+    }
+    $signaturePath = Join-Path $FixtureDir 'SHA256SUMS.txt.sig'
+    if (!(Test-Path -LiteralPath $signaturePath)) {
+        throw "release signing fixture signature missing: $signaturePath"
+    }
+    $signature = (Get-Content -LiteralPath $signaturePath -Raw).Trim()
+    if ($signature -notmatch '^[0-9A-F]{128}$') {
+        throw "release signing fixture signature was not 128 uppercase hex characters"
+    }
+    $publicKey = (Get-Content -LiteralPath $PublicKeyOut -Raw).Trim()
+    if ($publicKey -notmatch '^[0-9A-F]{64}$') {
+        throw "release signing public key export was not 64 uppercase hex characters"
+    }
+    if ([string]$doctor.public_key.fingerprint_sha256 -notmatch '^[0-9A-F]{64}$') {
+        throw "release signing public key fingerprint was not 64 uppercase hex characters"
+    }
+
+    return [ordered]@{
+        ok = $true
+        command = 'release-signing-doctor'
+        json = $JsonFile
+        fixture_dir = $FixtureDir
+        public_key_export = [ordered]@{
+            path = $PublicKeyOut
+            sha256 = (Get-FileHash -LiteralPath $PublicKeyOut -Algorithm SHA256).Hash
+            fingerprint_sha256 = [string]$doctor.public_key.fingerprint_sha256
+        }
+        required_repository_secret = [string]$doctor.required_repository_secret
+        signature_format = [string]$doctor.signature_format
+        fixture = $doctor.fixture
+        next_release_required_assets = $requiredAssets
+    }
+}
+
 function Invoke-GitHubLatestRelease {
     param([string]$Repo)
 
@@ -494,6 +591,7 @@ $Receipt.provenance = [ordered]@{
     }
     files = [ordered]@{
         repo_agents = Get-OptionalFileEvidence -RelativePath 'AGENTS.md'
+        readme = Get-OptionalFileEvidence -RelativePath 'README.md'
         roadmap = Get-OptionalFileEvidence -RelativePath 'docs\ROADMAP.md'
         architecture = Get-OptionalFileEvidence -RelativePath 'docs\ARCHITECTURE.md'
         cargo_lock = Get-OptionalFileEvidence -RelativePath 'Cargo.lock'
@@ -588,6 +686,7 @@ $Receipt.checks.trust_policy_contract = [ordered]@{
             'reports_verified_mismatch_and_unknown_states',
             'source_trust_verifies_good_and_bad_ed25519_signature',
             'source_trust_signs_detached_signature_that_verifier_accepts',
+            'source_trust_derives_release_public_key_from_private_seed',
             'source_trust_missing_signature_blocks_only_when_required',
             'source_trust_no_key_blocks_required_policy',
             'source_trust_snapshot_records_key_fingerprint_not_raw_key',
@@ -618,6 +717,45 @@ $Receipt.artifacts.sha256sums = [ordered]@{
     path = $sha256SumsPath
     size = (Get-Item -LiteralPath $sha256SumsPath).Length
     sha256 = (Get-FileHash -LiteralPath $sha256SumsPath -Algorithm SHA256).Hash
+}
+$Receipt.checks.release_signing_readiness = [ordered]@{
+    ok = $true
+    workflow = Assert-FileContains `
+        -RelativePath '.github\workflows\release.yml' `
+        -RequiredPatterns @(
+            'RELEASE_ED25519_PRIVATE_KEY_HEX repository secret is required; refusing unsigned release.',
+            '--release-signing-doctor',
+            'publisher-key.ed25519.pub',
+            'SHA256SUMS.txt.sig',
+            'release-provenance.json.sig'
+        )
+    readme = Assert-FileContains `
+        -RelativePath 'README.md' `
+        -RequiredPatterns @(
+            '`RELEASE_ED25519_PRIVATE_KEY_HEX` is required for the next trusted release',
+            '`publisher-key.ed25519.pub`',
+            '`SHA256SUMS.txt.sig`',
+            '`release-provenance.json.sig`'
+        )
+    roadmap = Assert-FileContains `
+        -RelativePath 'docs\ROADMAP.md' `
+        -RequiredPatterns @(
+            'Release signing readiness doctor',
+            '`RELEASE_ED25519_PRIVATE_KEY_HEX` is required before the next tag',
+            '`publisher-key.ed25519.pub`'
+        )
+    architecture = Assert-FileContains `
+        -RelativePath 'docs\ARCHITECTURE.md' `
+        -RequiredPatterns @(
+            'Release signing readiness',
+            '`publisher-key.ed25519.pub`',
+            '`RELEASE_ED25519_PRIVATE_KEY_HEX`'
+        )
+    local_doctor = Invoke-ReleaseSigningReadiness `
+        -Exe $exe `
+        -FixtureDir (Join-Path $EvidenceDir 'release-signing-fixture') `
+        -JsonFile (Join-Path $EvidenceDir 'release-signing-readiness.json') `
+        -PublicKeyOut (Join-Path $EvidenceDir 'publisher-key.ed25519.pub')
 }
 
 $originRelease = Invoke-GitHubLatestRelease -Repo 'wsolarq11/gh_mirror_gui'

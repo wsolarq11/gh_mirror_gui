@@ -83,7 +83,7 @@ jobs:
       - name: Stage release assets
         shell: pwsh
         env:
-          GH_MIRROR_GUI_ED25519_PRIVATE_KEY_HEX: ${{ secrets.RELEASE_ED25519_PRIVATE_KEY_HEX }}
+          RELEASE_ED25519_PRIVATE_KEY_HEX: ${{ secrets.RELEASE_ED25519_PRIVATE_KEY_HEX }}
         run: |
           $gitHead = git rev-parse HEAD
           $gitDescribe = git describe --tags --always --dirty
@@ -101,6 +101,24 @@ jobs:
           Copy-Item -LiteralPath $exe -Destination $assetExe -Force
           $exeHash = (Get-FileHash -LiteralPath $assetExe -Algorithm SHA256).Hash
           "$exeHash  gh_mirror_gui.exe" | Set-Content -LiteralPath (Join-Path $dist "SHA256SUMS.txt") -Encoding ASCII
+
+          if ([string]::IsNullOrWhiteSpace($env:RELEASE_ED25519_PRIVATE_KEY_HEX)) {
+            throw "RELEASE_ED25519_PRIVATE_KEY_HEX repository secret is required; refusing unsigned release."
+          }
+
+          $publicKeyAsset = Join-Path $dist "publisher-key.ed25519.pub"
+          $signingReadinessPath = Join-Path $dist "release-signing-readiness.json"
+          & $assetExe --release-signing-doctor `
+            --fixture-dir "target\release-signing-fixture" `
+            --json $signingReadinessPath `
+            --public-key-out $publicKeyAsset
+          if ($LASTEXITCODE -ne 0) { throw "release signing readiness doctor failed" }
+          $signingReadiness = Get-Content -LiteralPath $signingReadinessPath -Raw | ConvertFrom-Json
+          if (!$signingReadiness.ok) { throw "release signing readiness did not report ok=true" }
+          $publisherKeyFingerprint = [string]$signingReadiness.public_key.fingerprint_sha256
+          if ([string]::IsNullOrWhiteSpace($publisherKeyFingerprint)) {
+            throw "release signing readiness did not export publisher key fingerprint"
+          }
 
           $provenance = [ordered]@{
             schema_version = 1
@@ -130,6 +148,16 @@ jobs:
               rust_toolchain_sha256 = (Get-FileHash -LiteralPath "rust-toolchain.toml" -Algorithm SHA256).Hash
               release_workflow_sha256 = (Get-FileHash -LiteralPath ".github\workflows\release.yml" -Algorithm SHA256).Hash
             }
+            source_trust = [ordered]@{
+              schema_version = 1
+              signature_format = "ed25519-detached-hex"
+              publisher_public_key_asset = "publisher-key.ed25519.pub"
+              publisher_public_key_sha256_fingerprint = $publisherKeyFingerprint
+              signed_assets = @(
+                "SHA256SUMS.txt.sig",
+                "release-provenance.json.sig"
+              )
+            }
             artifacts = [ordered]@{
               release_binary = [ordered]@{
                 path = "gh_mirror_gui.exe"
@@ -141,34 +169,26 @@ jobs:
                 size = (Get-Item -LiteralPath (Join-Path $dist "SHA256SUMS.txt")).Length
                 sha256 = (Get-FileHash -LiteralPath (Join-Path $dist "SHA256SUMS.txt") -Algorithm SHA256).Hash
               }
+              publisher_public_key = [ordered]@{
+                path = "publisher-key.ed25519.pub"
+                size = (Get-Item -LiteralPath $publicKeyAsset).Length
+                sha256 = (Get-FileHash -LiteralPath $publicKeyAsset -Algorithm SHA256).Hash
+                fingerprint_sha256 = $publisherKeyFingerprint
+              }
             }
           }
 
           $provenance | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $dist "release-provenance.json") -Encoding UTF8
 
-          if (![string]::IsNullOrWhiteSpace($env:GH_MIRROR_GUI_ED25519_PRIVATE_KEY_HEX)) {
-            & $assetExe --sign-verification-source `
-              --source (Join-Path $dist "SHA256SUMS.txt") `
-              --out (Join-Path $dist "SHA256SUMS.txt.sig")
-            if ($LASTEXITCODE -ne 0) { throw "SHA256SUMS.txt signing failed" }
+          & $assetExe --sign-verification-source `
+            --source (Join-Path $dist "SHA256SUMS.txt") `
+            --out (Join-Path $dist "SHA256SUMS.txt.sig")
+          if ($LASTEXITCODE -ne 0) { throw "SHA256SUMS.txt signing failed" }
 
-            $provenanceSigned = Get-Content -LiteralPath (Join-Path $dist "release-provenance.json") -Raw | ConvertFrom-Json
-            $provenanceSigned | Add-Member -NotePropertyName source_trust -NotePropertyValue ([ordered]@{
-              schema_version = 1
-              signature_format = "ed25519-detached-hex"
-              signed_assets = @(
-                "SHA256SUMS.txt.sig",
-                "release-provenance.json.sig"
-              )
-            }) -Force
-            $provenanceSigned | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $dist "release-provenance.json") -Encoding UTF8
-            & $assetExe --sign-verification-source `
-              --source (Join-Path $dist "release-provenance.json") `
-              --out (Join-Path $dist "release-provenance.json.sig")
-            if ($LASTEXITCODE -ne 0) { throw "release-provenance.json re-signing failed" }
-          } else {
-            Write-Host "RELEASE_ED25519_PRIVATE_KEY_HEX not configured; detached source signatures were not generated."
-          }
+          & $assetExe --sign-verification-source `
+            --source (Join-Path $dist "release-provenance.json") `
+            --out (Join-Path $dist "release-provenance.json.sig")
+          if ($LASTEXITCODE -ne 0) { throw "release-provenance.json signing failed" }
 
           Get-ChildItem -LiteralPath $dist | Format-Table Name,Length
 
@@ -189,7 +209,8 @@ jobs:
           $assets = @(
             "dist\gh_mirror_gui.exe",
             "dist\SHA256SUMS.txt",
-            "dist\release-provenance.json"
+            "dist\release-provenance.json",
+            "dist\publisher-key.ed25519.pub"
           )
           $assets += @(Get-ChildItem -LiteralPath dist -Filter "*.sig" | ForEach-Object { $_.FullName })
           gh release create $env:RELEASE_TAG @assets `

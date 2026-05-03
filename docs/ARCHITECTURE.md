@@ -81,6 +81,12 @@ Current MVP:
   - `SHA256SUMS.txt.sig`
   - `release-provenance.json.sig`
 - Publisher key pin is an Ed25519 public key.
+- Release public key export is `publisher-key.ed25519.pub`; users pin/import
+  that public key, never the private signing seed.
+- Release signing readiness is checked by a local doctor that reads
+  `RELEASE_ED25519_PRIVATE_KEY_HEX`, derives the publisher public key, signs a
+  fixture source asset, verifies the detached signature, and records the public
+  key fingerprint.
 - Evidence stores key SHA256 fingerprint, not raw public/private key material.
 
 Future adapters may support minisign, cosign, GitHub attestation, SLSA provenance, or enterprise CA chains through the same `source_trust` concept.
@@ -115,6 +121,8 @@ Evidence must remain reviewable and machine-readable:
 - key source files and guardrail document hashes
 - fmt/test/clippy/build command results
 - trust-policy/source-trust gate coverage
+- release signing readiness, including public key export and next-release
+  `.sig` asset contract
 - origin release verification for the existing release
 - network smoke
 - benchmark
@@ -134,4 +142,3 @@ gh_mirror_gui.exe
 ```
 
 User experience remains one UI. Engineering gains stable contracts shared by GUI, CLI, self-updater, enterprise policy tooling, and future source adapters.
-
