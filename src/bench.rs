@@ -265,6 +265,8 @@ fn append_bench_history(path: &Option<PathBuf>, result: &BenchResult) -> Result<
         expected_sha256: None,
         verification_detail: None,
         verification_evidence_path: None,
+        verification_policy: None,
+        verification_file_disposition: None,
         etag: result.etag.clone(),
         last_modified: result.last_modified.clone(),
         recorded_at_epoch_secs: unix_epoch_secs(),

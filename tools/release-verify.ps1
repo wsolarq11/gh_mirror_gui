@@ -479,13 +479,32 @@ Invoke-LoggedNative -Name 'cargo-fmt-check' -Exe 'cargo' -Arguments @('fmt', '--
 Invoke-LoggedNative -Name 'cargo-test-all-targets' -Exe 'cargo' -Arguments @('test', '--all-targets', '--locked')
 $Receipt.checks.trust_policy_contract = [ordered]@{
     ok = $true
-    mismatch_decision = 'BLOCK'
-    unknown_decision = 'RISK'
-    verified_decision = 'TRUSTED'
-    history_evidence = 'REQUIRED_FOR_VERIFIED_MISMATCH_UNKNOWN_DOWNLOAD_REPORTS'
+    decision_transitions = [ordered]@{
+        verified = 'VERIFIED -> TRUSTED'
+        mismatch = 'MISMATCH -> BLOCK'
+        unknown = 'UNKNOWN -> RISK'
+    }
+    policy_defaults = [ordered]@{
+        unknown_keep_file = $true
+        unknown_allow_open = $false
+        mismatch_file_policy = 'QUARANTINE'
+    }
+    file_disposition = [ordered]@{
+        verified = 'KEEP'
+        mismatch = 'QUARANTINE_OR_DELETE_BY_POLICY'
+        unknown = 'KEEP_OR_DELETE_BY_POLICY'
+    }
+    history_evidence_schema = 'policy.schema_version=1 + file_disposition.schema_version=1 REQUIRED_FOR_VERIFIED_MISMATCH_UNKNOWN_DOWNLOAD_REPORTS'
+    gui_decision_points = 'SavedState persistence + Trust policy UI + Open Evidence exact path + open_location_button_label'
     covered_by = Assert-CommandLogContains `
         -CommandName 'cargo-test-all-targets' `
         -RequiredPatterns @(
+            'trust_policy_defaults_are_conservative_but_download_compatible',
+            'file_disposition_plans_cover_verified_mismatch_and_unknown_policy',
+            'applies_quarantine_and_delete_file_dispositions',
+            'gui_open_location_decision_respects_trust_policy',
+            'saved_state_persists_trust_policy_and_history_path',
+            'history_path_setting_uses_default_when_blank_and_custom_when_set',
             'completion_status_makes_mismatch_blocking_and_unknown_risky',
             'append_download_history_records_reviewable_verification_evidence',
             'append_download_history_records_block_and_risk_evidence_decisions',

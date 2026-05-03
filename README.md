@@ -56,6 +56,19 @@ Each verified release download writes a reviewable JSON evidence record next to
 the local download history, and the GUI exposes **Open Evidence** after the
 download finishes.
 
+The **Trust policy** panel makes post-verification handling explicit and
+persists it with the rest of the GUI settings:
+
+- `VERIFIED` is kept and trusted.
+- `MISMATCH` is blocking and is either quarantined under
+  `.gh_mirror_gui-quarantine\` next to the selected save path or deleted,
+  depending on the selected policy.
+- `UNKNOWN` is risky; the user chooses whether to keep the file and whether the
+  GUI may expose **Open Folder** for that saved file.
+- The history/evidence path can be left blank for the default app data location
+  or set to a specific `bench-history.jsonl`; **Open Evidence** uses the exact
+  JSON evidence path recorded for the completed download.
+
 Supported discovery inputs:
 
 ```text

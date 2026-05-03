@@ -2,6 +2,7 @@ mod bench;
 mod download;
 mod history;
 mod releases;
+mod trust_policy;
 mod verification;
 
 #[cfg(test)]
@@ -20,6 +21,7 @@ use eframe::egui;
 use eframe::Storage;
 #[cfg(test)]
 use history::BenchHistoryEntry;
+use history::VerificationHistoryContext;
 use history::{append_download_history, default_history_path, load_bench_history};
 use notify_rust::Notification;
 use releases::{
@@ -37,6 +39,12 @@ use std::path::PathBuf;
 use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::{Duration, Instant};
+#[cfg(test)]
+use trust_policy::FileDispositionAction;
+use trust_policy::{
+    apply_file_disposition, file_disposition_summary, open_location_button_label,
+    plan_file_disposition, AppliedFileDisposition, MismatchFilePolicy, TrustPolicyConfig,
+};
 use verification::{
     verification_plan_for_selected_asset, verification_source_summary, verify_downloaded_file,
     DownloadVerificationPlan, VerificationReport, VerificationStatus,
@@ -57,27 +65,33 @@ fn log_error(msg: &str) {
     }
 }
 
-fn format_download_completion_status(report: &VerificationReport) -> String {
+fn format_download_completion_status(
+    report: &VerificationReport,
+    disposition: &AppliedFileDisposition,
+) -> String {
     let short_hash = report.file_sha256.chars().take(12).collect::<String>();
+    let disposition_summary = file_disposition_summary(disposition);
     match report.status {
         VerificationStatus::Verified => format!(
-            "✅ Download complete · VERIFIED SHA256={} via {}",
+            "✅ Download complete · VERIFIED SHA256={} via {} · {}",
             short_hash,
-            report.source.as_deref().unwrap_or("verification asset")
+            report.source.as_deref().unwrap_or("verification asset"),
+            disposition_summary
         ),
         VerificationStatus::Mismatch => format!(
-            "❌ Verification BLOCKED · MISMATCH SHA256={} expected {} via {} · retry or open evidence before trusting this file",
+            "❌ Verification BLOCKED · MISMATCH SHA256={} expected {} via {} · {} · retry or open evidence before trusting this file",
             short_hash,
             report
                 .expected_sha256
                 .as_deref()
                 .map(|hash| hash.chars().take(12).collect::<String>())
                 .unwrap_or_else(|| "unknown".to_string()),
-            report.source.as_deref().unwrap_or("verification asset")
+            report.source.as_deref().unwrap_or("verification asset"),
+            disposition_summary
         ),
         VerificationStatus::Unknown => format!(
-            "⚠ Download saved · verification UNKNOWN risk · SHA256={} · {}",
-            short_hash, report.detail
+            "⚠ Verification UNKNOWN risk · SHA256={} · {} · {}",
+            short_hash, report.detail, disposition_summary
         ),
     }
 }
@@ -112,9 +126,10 @@ type ReleaseLookupMessage = (String, Result<ResolvedRelease, String>);
 type DownloadResultMessage = Result<DownloadCompletion, String>;
 
 struct DownloadCompletion {
-    path: PathBuf,
+    original_path: PathBuf,
     verification: VerificationReport,
     evidence_path: Option<PathBuf>,
+    file_disposition: AppliedFileDisposition,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -124,6 +139,18 @@ struct SavedState {
     proxy: String,
     #[serde(default)]
     allow_invalid_certs: bool,
+    #[serde(default = "default_unknown_keep_file")]
+    trust_unknown_keep_file: bool,
+    #[serde(default)]
+    trust_unknown_allow_open: bool,
+    #[serde(default)]
+    trust_mismatch_file_policy: MismatchFilePolicy,
+    #[serde(default)]
+    history_path: String,
+}
+
+fn default_unknown_keep_file() -> bool {
+    true
 }
 
 struct GhMirrorGui {
@@ -131,6 +158,8 @@ struct GhMirrorGui {
     save_dir: PathBuf,
     proxy: String,
     allow_invalid_certs: bool,
+    trust_policy: TrustPolicyConfig,
+    history_path: String,
     status: String,
     progress: f32,
     speed_text: String,
@@ -161,6 +190,7 @@ struct GhMirrorGui {
     last_download_path: Option<PathBuf>,
     last_verification: Option<VerificationReport>,
     last_verification_evidence_path: Option<PathBuf>,
+    last_file_disposition: Option<AppliedFileDisposition>,
 }
 
 impl GhMirrorGui {
@@ -175,6 +205,8 @@ impl GhMirrorGui {
             .unwrap_or_else(|| ".".to_string());
         let mut proxy = String::new();
         let mut allow_invalid_certs = false;
+        let mut trust_policy = TrustPolicyConfig::default();
+        let mut history_path = String::new();
         if let Some(storage) = storage {
             if let Some(json) = storage.get_string("app_settings") {
                 if let Ok(state) = serde_json::from_str::<SavedState>(&json) {
@@ -184,6 +216,12 @@ impl GhMirrorGui {
                     }
                     proxy = state.proxy;
                     allow_invalid_certs = state.allow_invalid_certs;
+                    trust_policy = TrustPolicyConfig {
+                        unknown_keep_file: state.trust_unknown_keep_file,
+                        unknown_allow_open: state.trust_unknown_allow_open,
+                        mismatch_file_policy: state.trust_mismatch_file_policy,
+                    };
+                    history_path = state.history_path;
                 }
             }
         }
@@ -201,6 +239,8 @@ impl GhMirrorGui {
             save_dir: PathBuf::from(&save_dir),
             proxy,
             allow_invalid_certs,
+            trust_policy,
+            history_path,
             status: String::from("Ready"),
             progress: 0.0,
             speed_text: String::new(),
@@ -228,6 +268,7 @@ impl GhMirrorGui {
             last_download_path: None,
             last_verification: None,
             last_verification_evidence_path: None,
+            last_file_disposition: None,
         }
     }
 
@@ -248,6 +289,10 @@ impl GhMirrorGui {
         self.speed_test_progress_rx = Some(progress_rx);
         self.speed_test_results = vec![None; MIRRORS.len()];
         self.speed_test_completed = 0;
+    }
+
+    fn effective_history_path(&self) -> PathBuf {
+        history_path_from_setting(&self.history_path)
     }
 
     fn clear_release_lookup_result(&mut self) {
@@ -368,11 +413,14 @@ impl GhMirrorGui {
         self.last_download_path = None;
         self.last_verification = None;
         self.last_verification_evidence_path = None;
+        self.last_file_disposition = None;
         let control = DownloadControl::new();
         let ctrl = control.clone();
         let effective_url = build_effective_url(&self.mirror_urls[self.selected_mirror], &self.url);
         let proxy = self.proxy.clone();
         let allow_invalid_certs = self.allow_invalid_certs;
+        let trust_policy = self.trust_policy.clone();
+        let history_path = self.effective_history_path();
         let (progress_tx, progress_rx) = mpsc::channel();
         let (result_tx, result_rx) = mpsc::channel::<DownloadResultMessage>();
         self.progress_rx = Some(progress_rx);
@@ -397,7 +445,6 @@ impl GhMirrorGui {
                 }
             };
 
-            let history_path = default_history_path();
             let probe = match probe_download(&client, &effective_url) {
                 Ok(probe) => probe,
                 Err(e) => {
@@ -441,14 +488,20 @@ impl GhMirrorGui {
                             return;
                         }
                     };
+                    let disposition_plan =
+                        plan_file_disposition(&save_path, &verification.status, &trust_policy);
                     let evidence_path = match append_download_history(
-                        &Some(history_path),
+                        &Some(history_path.clone()),
                         &effective_url,
                         &save_path,
                         &probe,
                         &strategy,
                         download_start.elapsed(),
-                        Some(&verification),
+                        Some(VerificationHistoryContext {
+                            report: &verification,
+                            policy: &trust_policy,
+                            file_disposition: &disposition_plan,
+                        }),
                     ) {
                         Ok(evidence_path) => evidence_path,
                         Err(e) => {
@@ -456,11 +509,22 @@ impl GhMirrorGui {
                             None
                         }
                     };
+                    let file_disposition = match apply_file_disposition(&disposition_plan) {
+                        Ok(disposition) => disposition,
+                        Err(e) => {
+                            log_error(&format!("apply_file_disposition error: {}", e));
+                            let _ = result_tx.send(Err(format!(
+                                "Download completed but trust policy file disposition failed: {e}"
+                            )));
+                            return;
+                        }
+                    };
                     let _ = progress_tx.send((total, total, 0.0, 0.0));
                     let _ = result_tx.send(Ok(DownloadCompletion {
-                        path: save_path,
+                        original_path: save_path,
                         verification,
                         evidence_path,
+                        file_disposition,
                     }));
                 }
                 Err(e) => {
@@ -496,6 +560,10 @@ impl eframe::App for GhMirrorGui {
             save_dir: self.save_dir.to_string_lossy().to_string(),
             proxy: self.proxy.clone(),
             allow_invalid_certs: self.allow_invalid_certs,
+            trust_unknown_keep_file: self.trust_policy.unknown_keep_file,
+            trust_unknown_allow_open: self.trust_policy.unknown_allow_open,
+            trust_mismatch_file_policy: self.trust_policy.mismatch_file_policy,
+            history_path: self.history_path.clone(),
         };
         if let Ok(json) = serde_json::to_string(&state) {
             storage.set_string("app_settings", json);
@@ -608,16 +676,26 @@ impl eframe::App for GhMirrorGui {
         if let Some(rx) = download_result_rx {
             match rx.try_recv() {
                 Ok(Ok(completion)) => {
-                    self.status = format_download_completion_status(&completion.verification);
-                    self.last_download_path = Some(completion.path.clone());
+                    self.status = format_download_completion_status(
+                        &completion.verification,
+                        &completion.file_disposition,
+                    );
+                    self.last_download_path = completion.file_disposition.final_path.clone();
                     self.last_verification = Some(completion.verification.clone());
                     self.last_verification_evidence_path = completion.evidence_path.clone();
+                    self.last_file_disposition = Some(completion.file_disposition.clone());
                     self.download_thread = None;
                     self.control = None;
                     self.progress_rx = None;
                     if !self.download_complete_notified {
                         self.download_complete_notified = true;
-                        let save_path_str = completion.path.to_string_lossy().to_string();
+                        let save_path_str = completion
+                            .file_disposition
+                            .final_path
+                            .as_ref()
+                            .unwrap_or(&completion.original_path)
+                            .to_string_lossy()
+                            .to_string();
                         let status = format_download_notification_status(&completion.verification);
                         thread::spawn(move || {
                             let _ = Notification::new()
@@ -877,6 +955,52 @@ impl eframe::App for GhMirrorGui {
                 }
             });
 
+            ui.group(|ui| {
+                ui.label(egui::RichText::new("Trust policy").strong());
+                ui.checkbox(
+                    &mut self.trust_policy.unknown_keep_file,
+                    "Keep UNKNOWN downloads",
+                );
+                if !self.trust_policy.unknown_keep_file {
+                    self.trust_policy.unknown_allow_open = false;
+                }
+                ui.add_enabled_ui(self.trust_policy.unknown_keep_file, |ui| {
+                    ui.checkbox(
+                        &mut self.trust_policy.unknown_allow_open,
+                        "Allow Open Folder for UNKNOWN downloads",
+                    );
+                });
+                ui.horizontal(|ui| {
+                    ui.label("MISMATCH file action:");
+                    egui::ComboBox::from_id_salt("mismatch_file_policy")
+                        .selected_text(self.trust_policy.mismatch_file_policy.as_str())
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(
+                                &mut self.trust_policy.mismatch_file_policy,
+                                MismatchFilePolicy::Quarantine,
+                                "QUARANTINE",
+                            );
+                            ui.selectable_value(
+                                &mut self.trust_policy.mismatch_file_policy,
+                                MismatchFilePolicy::Delete,
+                                "DELETE",
+                            );
+                        });
+                });
+                ui.horizontal(|ui| {
+                    ui.label("History/evidence path:");
+                    ui.text_edit_singleline(&mut self.history_path);
+                    if ui.button("Default").clicked() {
+                        self.history_path.clear();
+                    }
+                });
+                ui.small(format!(
+                    "Effective history: {}",
+                    self.effective_history_path().display()
+                ));
+                ui.small("Open Evidence uses the exact JSON evidence path recorded for the completed download.");
+            });
+
             // Action buttons
             ui.horizontal(|ui| {
                 if ui.button("⬇ Download").clicked() {
@@ -934,15 +1058,26 @@ impl eframe::App for GhMirrorGui {
                             let _ = open::that(evidence_path);
                         }
                     }
-                    if let Some(download_path) = &self.last_download_path {
-                        if ui.button("📂 Open Folder").clicked() {
-                            let folder = download_path.parent().unwrap_or(&self.save_dir);
-                            if folder.exists() {
-                                let _ = open::that(folder);
+                    if let (Some(download_path), Some(disposition)) =
+                        (&self.last_download_path, &self.last_file_disposition)
+                    {
+                        if let Some(label) = open_location_button_label(
+                            &report.status,
+                            disposition,
+                            &self.trust_policy,
+                        ) {
+                            if ui.button(label).clicked() {
+                                let folder = download_path.parent().unwrap_or(&self.save_dir);
+                                if folder.exists() {
+                                    let _ = open::that(folder);
+                                }
                             }
                         }
                     }
                 });
+                if let Some(disposition) = &self.last_file_disposition {
+                    ui.small(file_disposition_summary(disposition));
+                }
             }
 
             // Progress bar and info — always visible during download
@@ -967,6 +1102,15 @@ impl eframe::App for GhMirrorGui {
 // ---------------------------------------------------------------------------
 // UI helpers
 // ---------------------------------------------------------------------------
+
+fn history_path_from_setting(value: &str) -> PathBuf {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        default_history_path()
+    } else {
+        PathBuf::from(trimmed)
+    }
+}
 
 fn latency_color(ms: f64) -> egui::Color32 {
     if ms < 200.0 {
@@ -1234,6 +1378,35 @@ mod tests {
         let state: SavedState =
             serde_json::from_str(r#"{"selected_mirror":0,"save_dir":"","proxy":""}"#).unwrap();
         assert!(!state.allow_invalid_certs);
+        assert!(state.trust_unknown_keep_file);
+        assert!(!state.trust_unknown_allow_open);
+        assert_eq!(
+            state.trust_mismatch_file_policy,
+            MismatchFilePolicy::Quarantine
+        );
+        assert!(state.history_path.is_empty());
+    }
+
+    #[test]
+    fn saved_state_persists_trust_policy_and_history_path() {
+        let state: SavedState = serde_json::from_str(
+            r#"{"selected_mirror":0,"save_dir":"C:\\Downloads","proxy":"","allow_invalid_certs":false,"trust_unknown_keep_file":false,"trust_unknown_allow_open":false,"trust_mismatch_file_policy":"DELETE","history_path":"C:\\Evidence\\bench-history.jsonl"}"#,
+        )
+        .unwrap();
+
+        assert!(!state.trust_unknown_keep_file);
+        assert!(!state.trust_unknown_allow_open);
+        assert_eq!(state.trust_mismatch_file_policy, MismatchFilePolicy::Delete);
+        assert_eq!(state.history_path, r"C:\Evidence\bench-history.jsonl");
+    }
+
+    #[test]
+    fn history_path_setting_uses_default_when_blank_and_custom_when_set() {
+        assert_eq!(history_path_from_setting("  "), default_history_path());
+        assert_eq!(
+            history_path_from_setting(r"C:\Evidence\bench-history.jsonl"),
+            PathBuf::from(r"C:\Evidence\bench-history.jsonl")
+        );
     }
 
     #[test]
@@ -1278,14 +1451,25 @@ mod tests {
             source: None,
             detail: "No checksum/provenance assets were detected".to_string(),
         };
+        let kept = AppliedFileDisposition {
+            action: FileDispositionAction::Keep,
+            original_path: PathBuf::from("app.exe"),
+            final_path: Some(PathBuf::from("app.exe")),
+        };
+        let quarantined = AppliedFileDisposition {
+            action: FileDispositionAction::Quarantine,
+            original_path: PathBuf::from("app.exe"),
+            final_path: Some(PathBuf::from(".gh_mirror_gui-quarantine/app.exe")),
+        };
 
-        assert!(format_download_completion_status(&verified).contains("Download complete"));
-        let mismatch_status = format_download_completion_status(&mismatch);
+        assert!(format_download_completion_status(&verified, &kept).contains("Download complete"));
+        let mismatch_status = format_download_completion_status(&mismatch, &quarantined);
         assert!(mismatch_status.contains("Verification BLOCKED"));
         assert!(!mismatch_status.contains("Download complete"));
+        assert!(mismatch_status.contains("file quarantined"));
         assert!(mismatch_status.contains("retry or open evidence"));
-        let unknown_status = format_download_completion_status(&unknown);
-        assert!(unknown_status.contains("verification UNKNOWN risk"));
+        let unknown_status = format_download_completion_status(&unknown, &kept);
+        assert!(unknown_status.contains("Verification UNKNOWN risk"));
         assert!(!unknown_status.contains("✅"));
         assert_eq!(
             format_download_notification_status(&mismatch),
@@ -1321,6 +1505,8 @@ mod tests {
                 expected_sha256: None,
                 verification_detail: None,
                 verification_evidence_path: None,
+                verification_policy: None,
+                verification_file_disposition: None,
                 etag: probe.etag.clone(),
                 last_modified: probe.last_modified.clone(),
                 recorded_at_epoch_secs: 1,
@@ -1344,6 +1530,8 @@ mod tests {
                 expected_sha256: None,
                 verification_detail: None,
                 verification_evidence_path: None,
+                verification_policy: None,
+                verification_file_disposition: None,
                 etag: probe.etag.clone(),
                 last_modified: probe.last_modified.clone(),
                 recorded_at_epoch_secs: 1,

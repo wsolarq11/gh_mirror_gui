@@ -1,4 +1,5 @@
 use crate::download::{sha256_file, DownloadProbe, SelectedDownloadStrategy};
+use crate::trust_policy::{FileDispositionRecord, PlannedFileDisposition, TrustPolicyConfig};
 use crate::verification::VerificationReport;
 use directories::ProjectDirs;
 use std::fs;
@@ -34,6 +35,10 @@ pub(crate) struct BenchHistoryEntry {
     pub(crate) verification_detail: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) verification_evidence_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) verification_policy: Option<crate::trust_policy::TrustPolicySnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) verification_file_disposition: Option<FileDispositionRecord>,
     pub(crate) etag: Option<String>,
     pub(crate) last_modified: Option<String>,
     pub(crate) recorded_at_epoch_secs: u64,
@@ -129,6 +134,8 @@ struct VerificationEvidenceRecord {
     expected_sha256: Option<String>,
     source: Option<String>,
     detail: String,
+    policy: Option<crate::trust_policy::TrustPolicySnapshot>,
+    file_disposition: Option<FileDispositionRecord>,
 }
 
 struct VerificationEvidenceInput<'a> {
@@ -140,6 +147,15 @@ struct VerificationEvidenceInput<'a> {
     strategy: &'a SelectedDownloadStrategy,
     recorded_at_epoch_secs: u64,
     report: &'a VerificationReport,
+    policy: Option<&'a TrustPolicyConfig>,
+    file_disposition: Option<&'a PlannedFileDisposition>,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct VerificationHistoryContext<'a> {
+    pub(crate) report: &'a VerificationReport,
+    pub(crate) policy: &'a TrustPolicyConfig,
+    pub(crate) file_disposition: &'a PlannedFileDisposition,
 }
 
 fn sanitize_evidence_name(value: &str) -> String {
@@ -173,6 +189,8 @@ fn write_verification_evidence(
         strategy,
         recorded_at_epoch_secs,
         report,
+        policy,
+        file_disposition,
     } = input;
     let Some(history_path) = history_path else {
         return Ok(None);
@@ -217,6 +235,8 @@ fn write_verification_evidence(
         expected_sha256: report.expected_sha256.clone(),
         source: report.source.clone(),
         detail: report.detail.clone(),
+        policy: policy.map(TrustPolicyConfig::snapshot),
+        file_disposition: file_disposition.map(PlannedFileDisposition::record),
     };
     let json = serde_json::to_vec_pretty(&record)
         .map_err(|e| format!("Encode verification evidence error: {e}"))?;
@@ -232,7 +252,7 @@ pub(crate) fn append_download_history(
     probe: &DownloadProbe,
     strategy: &SelectedDownloadStrategy,
     download_elapsed: Duration,
-    verification: Option<&VerificationReport>,
+    verification: Option<VerificationHistoryContext<'_>>,
 ) -> Result<Option<PathBuf>, String> {
     let file_bytes = fs::metadata(output)
         .map_err(|e| format!("History output stat error: {e}"))?
@@ -246,7 +266,7 @@ pub(crate) fn append_download_history(
     let sha256 = sha256_file(output)?;
     let _history_matches = strategy.history_matches;
     let recorded_at_epoch_secs = unix_epoch_secs();
-    let verification_evidence_path = if let Some(report) = verification {
+    let verification_evidence_path = if let Some(context) = verification {
         write_verification_evidence(VerificationEvidenceInput {
             history_path: path,
             url,
@@ -255,7 +275,9 @@ pub(crate) fn append_download_history(
             probe,
             strategy,
             recorded_at_epoch_secs,
-            report,
+            report: context.report,
+            policy: Some(context.policy),
+            file_disposition: Some(context.file_disposition),
         })?
     } else {
         None
@@ -275,17 +297,20 @@ pub(crate) fn append_download_history(
         download_ms,
         avg_mib_s,
         sha256,
-        verification_status: verification.map(|report| report.status.as_str().to_string()),
+        verification_status: verification.map(|context| context.report.status.as_str().to_string()),
         verification_trust_decision: verification
-            .map(|report| report.status.trust_decision().as_str().to_string()),
-        verification_asset_name: verification.map(|report| report.asset_name.clone()),
-        verification_file_sha256: verification.map(|report| report.file_sha256.clone()),
-        verification_source: verification.and_then(|report| report.source.clone()),
-        expected_sha256: verification.and_then(|report| report.expected_sha256.clone()),
-        verification_detail: verification.map(|report| report.detail.clone()),
+            .map(|context| context.report.status.trust_decision().as_str().to_string()),
+        verification_asset_name: verification.map(|context| context.report.asset_name.clone()),
+        verification_file_sha256: verification.map(|context| context.report.file_sha256.clone()),
+        verification_source: verification.and_then(|context| context.report.source.clone()),
+        expected_sha256: verification.and_then(|context| context.report.expected_sha256.clone()),
+        verification_detail: verification.map(|context| context.report.detail.clone()),
         verification_evidence_path: verification_evidence_path
             .as_ref()
             .map(|path| path.to_string_lossy().to_string()),
+        verification_policy: verification.map(|context| context.policy.snapshot()),
+        verification_file_disposition: verification
+            .map(|context| context.file_disposition.record()),
         etag: probe.etag.clone(),
         last_modified: probe.last_modified.clone(),
         recorded_at_epoch_secs,
@@ -298,6 +323,7 @@ pub(crate) fn append_download_history(
 mod tests {
     use super::*;
     use crate::download::SelectedDownloadStrategy;
+    use crate::trust_policy::{plan_file_disposition, TrustPolicyConfig};
     use crate::verification::{VerificationReport, VerificationStatus};
 
     fn unique_test_path(name: &str) -> PathBuf {
@@ -337,6 +363,8 @@ mod tests {
             source: Some("SHA256SUMS.txt".to_string()),
             detail: "SHA256 matched SHA256SUMS.txt".to_string(),
         };
+        let policy = TrustPolicyConfig::default();
+        let disposition = plan_file_disposition(&output, &report.status, &policy);
 
         let evidence_path = append_download_history(
             &Some(history.clone()),
@@ -345,7 +373,11 @@ mod tests {
             &probe,
             &strategy,
             Duration::from_millis(10),
-            Some(&report),
+            Some(VerificationHistoryContext {
+                report: &report,
+                policy: &policy,
+                file_disposition: &disposition,
+            }),
         )
         .unwrap();
         let evidence_path = evidence_path.unwrap();
@@ -368,6 +400,20 @@ mod tests {
             entry.verification_evidence_path.as_deref(),
             Some(evidence_path.to_string_lossy().as_ref())
         );
+        assert_eq!(
+            entry
+                .verification_policy
+                .as_ref()
+                .map(|policy| policy.schema_version),
+            Some(1)
+        );
+        assert_eq!(
+            entry
+                .verification_file_disposition
+                .as_ref()
+                .map(|disposition| disposition.action.as_str()),
+            Some("KEEP")
+        );
 
         let evidence = fs::read_to_string(&evidence_path).unwrap();
         let evidence: serde_json::Value = serde_json::from_str(&evidence).unwrap();
@@ -375,6 +421,10 @@ mod tests {
         assert_eq!(evidence["trust_decision"], "TRUSTED");
         assert_eq!(evidence["asset_name"], "app.exe");
         assert_eq!(evidence["file_sha256"], report.file_sha256);
+        assert_eq!(evidence["policy"]["schema_version"], 1);
+        assert_eq!(evidence["policy"]["mismatch_file_policy"], "QUARANTINE");
+        assert_eq!(evidence["file_disposition"]["schema_version"], 1);
+        assert_eq!(evidence["file_disposition"]["action"], "KEEP");
         let _ = fs::remove_file(output);
         let _ = fs::remove_file(history);
         let _ = fs::remove_file(evidence_path);
@@ -419,6 +469,8 @@ mod tests {
                 },
                 detail: format!("trust decision {expected_decision}"),
             };
+            let policy = TrustPolicyConfig::default();
+            let disposition = plan_file_disposition(&output, &report.status, &policy);
 
             let evidence_path = append_download_history(
                 &Some(history.clone()),
@@ -427,7 +479,11 @@ mod tests {
                 &probe,
                 &strategy,
                 Duration::from_millis(10),
-                Some(&report),
+                Some(VerificationHistoryContext {
+                    report: &report,
+                    policy: &policy,
+                    file_disposition: &disposition,
+                }),
             )
             .unwrap()
             .unwrap();
@@ -441,6 +497,16 @@ mod tests {
             let evidence: serde_json::Value = serde_json::from_str(&evidence).unwrap();
             assert_eq!(evidence["trust_decision"], expected_decision);
             assert_eq!(evidence["status"], report.status.as_str());
+            assert_eq!(evidence["policy"]["schema_version"], 1);
+            assert_eq!(evidence["file_disposition"]["schema_version"], 1);
+            assert_eq!(
+                evidence["file_disposition"]["action"],
+                if expected_decision == "BLOCK" {
+                    "QUARANTINE"
+                } else {
+                    "KEEP"
+                }
+            );
 
             let _ = fs::remove_file(output);
             let _ = fs::remove_file(history);
