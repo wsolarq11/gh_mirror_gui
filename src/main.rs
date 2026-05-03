@@ -165,6 +165,7 @@ fn source_trust_status_summary(report: &VerificationReport) -> String {
 struct TrustCenterSnapshot {
     hash_status: String,
     source_authenticity: String,
+    source_trust_detail: String,
     source_asset: String,
     signature_asset: String,
     publisher_key_fingerprint: String,
@@ -224,6 +225,9 @@ fn trust_center_snapshot(
         source_authenticity: source_trust
             .map(|trust| trust.status_label().to_string())
             .unwrap_or_else(|| "NOT_APPLICABLE".to_string()),
+        source_trust_detail: source_trust
+            .map(|trust| trust.detail.clone())
+            .unwrap_or_else(|| "no source trust evidence recorded".to_string()),
         source_asset: report
             .source
             .as_deref()
@@ -267,6 +271,10 @@ fn render_trust_center_snapshot(ui: &mut egui::Ui, snapshot: &TrustCenterSnapsho
 
                 ui.label("Source authenticity");
                 ui.label(&snapshot.source_authenticity);
+                ui.end_row();
+
+                ui.label("Source trust detail");
+                ui.label(&snapshot.source_trust_detail);
                 ui.end_row();
 
                 ui.label("Verification source");
@@ -2397,6 +2405,10 @@ mod tests {
 
         assert_eq!(snapshot.hash_status, "VERIFIED");
         assert_eq!(snapshot.source_authenticity, "TRUSTED_SIGNATURE");
+        assert_eq!(
+            snapshot.source_trust_detail,
+            "release-provenance.json signature verified with pinned Ed25519 publisher key"
+        );
         assert_eq!(snapshot.source_asset, "release-provenance.json");
         assert_eq!(snapshot.signature_asset, "release-provenance.json.sig");
         assert_eq!(snapshot.publisher_key_fingerprint, fingerprint);
@@ -2513,6 +2525,61 @@ mod tests {
 
         assert_ne!(snapshot.publisher_key_fingerprint, "not pinned");
         assert_eq!(snapshot.publisher_key_source, "not recorded");
+        assert_eq!(
+            snapshot.source_trust_detail,
+            "no source trust evidence recorded"
+        );
+    }
+
+    #[test]
+    fn trust_center_snapshot_surfaces_backend_source_trust_detail() {
+        let private_key = "1111111111111111111111111111111111111111111111111111111111111111";
+        let public_key = source_trust::public_key_from_private_seed(private_key).unwrap();
+        let fingerprint = trusted_key_fingerprint(&public_key).unwrap();
+        let detail = "SHA256SUMS.txt detached signature did not verify: invalid Ed25519 signature";
+        let report = VerificationReport {
+            status: VerificationStatus::Verified,
+            asset_name: "gh_mirror_gui.exe".to_string(),
+            file_sha256: "A9BDB5AE91B153ED8E04513CA9322B4445A91D3BE8DD2695A8F1C206C9937CCC"
+                .to_string(),
+            expected_sha256: Some(
+                "A9BDB5AE91B153ED8E04513CA9322B4445A91D3BE8DD2695A8F1C206C9937CCC".to_string(),
+            ),
+            source: Some("SHA256SUMS.txt".to_string()),
+            source_trust: Some(source_trust::SourceTrustEvidence {
+                schema_version: 1,
+                status: source_trust::SourceAuthenticityStatus::BadSignature,
+                decision: source_trust::SourceTrustDecision::Block,
+                required: true,
+                source_asset_name: Some("SHA256SUMS.txt".to_string()),
+                signature_asset_name: Some("SHA256SUMS.txt.sig".to_string()),
+                trusted_publisher_key_fingerprint_sha256: Some(fingerprint),
+                detail: detail.to_string(),
+            }),
+            detail: "SHA256 matched SHA256SUMS.txt".to_string(),
+        };
+        let policy = TrustPolicyConfig {
+            source_trust: source_trust::SourceTrustPolicyConfig {
+                require_trusted_source: true,
+                trusted_publisher_key: public_key,
+            },
+            ..TrustPolicyConfig::default()
+        };
+        let disposition = AppliedFileDisposition {
+            action: FileDispositionAction::Quarantine,
+            original_path: PathBuf::from("gh_mirror_gui.exe"),
+            final_path: Some(PathBuf::from(r"C:\Downloads\gh_mirror_gui.exe.quarantine")),
+        };
+
+        let snapshot = trust_center_snapshot(&report, None, &disposition, &policy.snapshot(), None);
+
+        assert_eq!(snapshot.hash_status, "VERIFIED");
+        assert_eq!(snapshot.source_authenticity, "BAD_SIGNATURE");
+        assert_eq!(snapshot.policy_verdict, "BLOCK");
+        assert_eq!(snapshot.source_asset, "SHA256SUMS.txt");
+        assert_eq!(snapshot.signature_asset, "SHA256SUMS.txt.sig");
+        assert_eq!(snapshot.source_trust_detail, detail);
+        assert_eq!(snapshot.evidence_path, "not recorded");
     }
 
     #[test]
