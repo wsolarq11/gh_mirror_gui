@@ -385,7 +385,9 @@ function Set-RepositorySecret {
     if (!$process.Start()) {
         throw 'failed to start gh secret set'
     }
-    $process.StandardInput.WriteLine($PrivateKeyHex)
+    $stdinBytes = [System.Text.Encoding]::ASCII.GetBytes("$PrivateKeyHex`n")
+    $process.StandardInput.BaseStream.Write($stdinBytes, 0, $stdinBytes.Length)
+    $process.StandardInput.BaseStream.Flush()
     $process.StandardInput.Close()
     $stdout = $process.StandardOutput.ReadToEnd()
     $stderr = $process.StandardError.ReadToEnd()
