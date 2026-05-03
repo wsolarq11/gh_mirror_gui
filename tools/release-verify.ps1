@@ -1093,7 +1093,10 @@ function Save-ReleaseAsset {
 }
 
 function Invoke-OriginReleaseVerificationSmoke {
-    param([object]$Release)
+    param(
+        [object]$Release,
+        [string]$Exe
+    )
 
     if (!$Release.found) {
         throw "origin latest release lookup failed: $($Release.error)"
@@ -1101,23 +1104,41 @@ function Invoke-OriginReleaseVerificationSmoke {
 
     $binaryAsset = Get-ReleaseAssetByName -Release $Release -Name 'gh_mirror_gui.exe'
     $checksumAsset = Get-ReleaseAssetByName -Release $Release -Name 'SHA256SUMS.txt'
+    $checksumSignatureAsset = Get-ReleaseAssetByName -Release $Release -Name 'SHA256SUMS.txt.sig'
     $provenanceAsset = Get-ReleaseAssetByName -Release $Release -Name 'release-provenance.json'
+    $provenanceSignatureAsset = Get-ReleaseAssetByName -Release $Release -Name 'release-provenance.json.sig'
+    $publisherKeyAsset = Get-ReleaseAssetByName -Release $Release -Name 'publisher-key.ed25519.pub'
     if ($null -eq $binaryAsset) {
         throw "origin release $($Release.tag_name) missing gh_mirror_gui.exe"
     }
     if ($null -eq $checksumAsset) {
         throw "origin release $($Release.tag_name) missing SHA256SUMS.txt"
     }
+    if ($null -eq $checksumSignatureAsset) {
+        throw "origin release $($Release.tag_name) missing SHA256SUMS.txt.sig"
+    }
     if ($null -eq $provenanceAsset) {
         throw "origin release $($Release.tag_name) missing release-provenance.json"
+    }
+    if ($null -eq $provenanceSignatureAsset) {
+        throw "origin release $($Release.tag_name) missing release-provenance.json.sig"
+    }
+    if ($null -eq $publisherKeyAsset) {
+        throw "origin release $($Release.tag_name) missing publisher-key.ed25519.pub"
     }
 
     $assetDir = Join-Path $EvidenceDir 'origin-release-verification'
     New-Item -ItemType Directory -Force -Path $assetDir | Out-Null
     $checksumPath = Join-Path $assetDir $checksumAsset.name
+    $checksumSignaturePath = Join-Path $assetDir $checksumSignatureAsset.name
     $provenancePath = Join-Path $assetDir $provenanceAsset.name
+    $provenanceSignaturePath = Join-Path $assetDir $provenanceSignatureAsset.name
+    $publisherKeyPath = Join-Path $assetDir $publisherKeyAsset.name
     $checksumEvidence = Save-ReleaseAsset -Asset $checksumAsset -OutFile $checksumPath
+    $checksumSignatureEvidence = Save-ReleaseAsset -Asset $checksumSignatureAsset -OutFile $checksumSignaturePath
     $provenanceEvidence = Save-ReleaseAsset -Asset $provenanceAsset -OutFile $provenancePath
+    $provenanceSignatureEvidence = Save-ReleaseAsset -Asset $provenanceSignatureAsset -OutFile $provenanceSignaturePath
+    $publisherKeyEvidence = Save-ReleaseAsset -Asset $publisherKeyAsset -OutFile $publisherKeyPath
 
     $checksumText = Get-Content -LiteralPath $checksumPath -Raw
     $checksumLine = @($checksumText -split "`r?`n" | Where-Object {
@@ -1131,6 +1152,7 @@ function Invoke-OriginReleaseVerificationSmoke {
     $provenance = Get-Content -LiteralPath $provenancePath -Raw | ConvertFrom-Json
     $provenanceAssetPath = [string]$provenance.artifacts.release_binary.path
     $provenanceHash = ([string]$provenance.artifacts.release_binary.sha256).ToUpperInvariant()
+    $provenancePublisherFingerprint = ([string]$provenance.source_trust.publisher_public_key_sha256_fingerprint).ToUpperInvariant()
     if ($provenanceAssetPath -ne 'gh_mirror_gui.exe') {
         throw "release-provenance.json release_binary.path mismatch: $provenanceAssetPath"
     }
@@ -1144,6 +1166,54 @@ function Invoke-OriginReleaseVerificationSmoke {
         if ($binaryDigestHash -ne $expectedHash) {
             throw "GitHub asset digest $binaryDigestHash does not match SHA256SUMS.txt $expectedHash"
         }
+    }
+
+    $checksumVerifyJson = Join-Path $assetDir 'verify-SHA256SUMS.txt.json'
+    Invoke-LoggedNative `
+        -Name 'origin-verify-sha256sums-signature' `
+        -Exe $Exe `
+        -Arguments @(
+            '--verify-verification-source',
+            '--source', $checksumPath,
+            '--signature', $checksumSignaturePath,
+            '--public-key-file', $publisherKeyPath,
+            '--json', $checksumVerifyJson
+        )
+    $provenanceVerifyJson = Join-Path $assetDir 'verify-release-provenance.json'
+    Invoke-LoggedNative `
+        -Name 'origin-verify-provenance-signature' `
+        -Exe $Exe `
+        -Arguments @(
+            '--verify-verification-source',
+            '--source', $provenancePath,
+            '--signature', $provenanceSignaturePath,
+            '--public-key-file', $publisherKeyPath,
+            '--json', $provenanceVerifyJson
+        )
+    if (!(Test-Path -LiteralPath $checksumVerifyJson)) {
+        throw "origin SHA256SUMS signature verification JSON missing: $checksumVerifyJson"
+    }
+    if (!(Test-Path -LiteralPath $provenanceVerifyJson)) {
+        throw "origin provenance signature verification JSON missing: $provenanceVerifyJson"
+    }
+    $checksumSignatureVerification = Get-Content -LiteralPath $checksumVerifyJson -Raw | ConvertFrom-Json
+    $provenanceSignatureVerification = Get-Content -LiteralPath $provenanceVerifyJson -Raw | ConvertFrom-Json
+    if (!$checksumSignatureVerification.ok -or !$checksumSignatureVerification.signature.verified) {
+        throw 'origin SHA256SUMS.txt detached signature did not verify'
+    }
+    if (!$provenanceSignatureVerification.ok -or !$provenanceSignatureVerification.signature.verified) {
+        throw 'origin release-provenance.json detached signature did not verify'
+    }
+    $checksumPublisherFingerprint = ([string]$checksumSignatureVerification.public_key.fingerprint_sha256).ToUpperInvariant()
+    $provenanceVerifiedFingerprint = ([string]$provenanceSignatureVerification.public_key.fingerprint_sha256).ToUpperInvariant()
+    if ($checksumPublisherFingerprint -notmatch '^[0-9A-F]{64}$') {
+        throw "origin publisher key fingerprint from SHA256SUMS verification was invalid: $checksumPublisherFingerprint"
+    }
+    if ($provenanceVerifiedFingerprint -ne $checksumPublisherFingerprint) {
+        throw "origin signature verification fingerprint mismatch: SHA256SUMS=$checksumPublisherFingerprint provenance=$provenanceVerifiedFingerprint"
+    }
+    if ($provenancePublisherFingerprint -ne $checksumPublisherFingerprint) {
+        throw "origin release-provenance.json publisher fingerprint $provenancePublisherFingerprint does not match verified public key $checksumPublisherFingerprint"
     }
 
     return [ordered]@{
@@ -1161,17 +1231,87 @@ function Invoke-OriginReleaseVerificationSmoke {
             size = $checksumAsset.size
             downloaded = $checksumEvidence
         }
+        checksum_signature_asset = [ordered]@{
+            name = $checksumSignatureAsset.name
+            size = $checksumSignatureAsset.size
+            digest = $checksumSignatureAsset.digest
+            downloaded = $checksumSignatureEvidence
+        }
         provenance_asset = [ordered]@{
             name = $provenanceAsset.name
             size = $provenanceAsset.size
             downloaded = $provenanceEvidence
+        }
+        provenance_signature_asset = [ordered]@{
+            name = $provenanceSignatureAsset.name
+            size = $provenanceSignatureAsset.size
+            digest = $provenanceSignatureAsset.digest
+            downloaded = $provenanceSignatureEvidence
+        }
+        publisher_key_asset = [ordered]@{
+            name = $publisherKeyAsset.name
+            size = $publisherKeyAsset.size
+            digest = $publisherKeyAsset.digest
+            downloaded = $publisherKeyEvidence
+            fingerprint_sha256 = $checksumPublisherFingerprint
         }
         expected_sha256 = $expectedHash
         provenance_release_tag = $provenance.release_tag
         provenance_package_version = $provenance.package_version
         provenance_github_sha = $provenance.github.sha
         github_asset_digest_sha256 = $binaryDigestHash
+        source_signature_verification = [ordered]@{
+            ok = $true
+            publisher_key_fingerprint_sha256 = $checksumPublisherFingerprint
+            sha256sums = $checksumSignatureVerification
+            provenance = $provenanceSignatureVerification
+        }
     }
+}
+
+function Invoke-UpdateCandidateContractSelfTest {
+    param(
+        [string]$Exe,
+        [string]$JsonFile
+    )
+
+    Invoke-LoggedNative `
+        -Name 'update-candidate-contract-selftest' `
+        -Exe $Exe `
+        -Arguments @(
+            '--update-candidate-contract-selftest',
+            '--json', $JsonFile
+        )
+    if (!(Test-Path -LiteralPath $JsonFile)) {
+        throw "update candidate contract selftest JSON missing: $JsonFile"
+    }
+    $selftest = Get-Content -LiteralPath $JsonFile -Raw | ConvertFrom-Json
+    if (!$selftest.ok) {
+        throw 'update candidate contract selftest did not report ok=true'
+    }
+    if (!$selftest.no_mutation) {
+        throw 'update candidate contract selftest must be no-mutation'
+    }
+    $cases = @($selftest.cases)
+    $required = [ordered]@{
+        newer_trusted_candidate = 'CANDIDATE'
+        same_version_no_update = 'NO_UPDATE'
+        bad_signature_refused = 'REFUSED'
+        missing_key_refused = 'REFUSED'
+        unsigned_required_refused = 'REFUSED'
+    }
+    foreach ($name in $required.Keys) {
+        $case = @($cases | Where-Object { [string]$_.name -eq $name } | Select-Object -First 1)
+        if ($case.Count -eq 0) {
+            throw "update candidate contract selftest missing case: $name"
+        }
+        $status = [string]$case[0].status
+        if ($status -ne [string]$required[$name]) {
+            throw "update candidate contract selftest case $name status $status did not match $($required[$name])"
+        }
+    }
+
+    return $selftest
 }
 
 function Invoke-NetworkRangeSmoke {
@@ -1468,6 +1608,19 @@ $Receipt.checks.trust_policy_contract = [ordered]@{
             'required_source_trust_blocks_missing_signature'
         )
 }
+$Receipt.checks.update_candidate_unit_tests = [ordered]@{
+    ok = $true
+    contract = 'no-mutation self-update candidate must be newer, gh_mirror_gui.exe, hash VERIFIED, trusted signed source, and pinned publisher policy'
+    covered_by = Assert-CommandLogContains `
+        -CommandName 'cargo-test-all-targets' `
+        -RequiredPatterns @(
+            'update_candidate_accepts_newer_trusted_signed_release',
+            'update_candidate_treats_same_version_as_no_update',
+            'update_candidate_refuses_bad_signature',
+            'update_candidate_refuses_missing_publisher_key',
+            'update_candidate_refuses_unsigned_required_source'
+        )
+}
 Invoke-LoggedNative -Name 'cargo-clippy-all-targets' -Exe 'cargo' -Arguments @('clippy', '--all-targets', '--locked', '--', '-D', 'warnings')
 Invoke-LoggedNative -Name 'cargo-build-release' -Exe 'cargo' -Arguments @('build', '--release', '--locked')
 
@@ -1532,12 +1685,17 @@ $Receipt.checks.release_signing_readiness = [ordered]@{
 $Receipt.checks.signed_release_staging = Invoke-SignedReleaseStagingSelfTest `
     -Exe $exe `
     -StageDir (Join-Path $EvidenceDir 'signed-release-staging')
+$Receipt.checks.update_candidate_contract = Invoke-UpdateCandidateContractSelfTest `
+    -Exe $exe `
+    -JsonFile (Join-Path $EvidenceDir 'update-candidate-contract.json')
 
 $originRelease = Invoke-GitHubLatestRelease -Repo 'wsolarq11/gh_mirror_gui'
 $targetRelease = Invoke-GitHubLatestRelease -Repo 'carrot-hu23/dst-admin-go'
 $Receipt.checks.origin_latest_release = $originRelease
 $Receipt.checks.target_latest_release = $targetRelease
-$Receipt.checks.origin_release_verification = Invoke-OriginReleaseVerificationSmoke -Release $originRelease
+$Receipt.checks.origin_release_verification = Invoke-OriginReleaseVerificationSmoke `
+    -Release $originRelease `
+    -Exe $exe
 
 if (!$targetRelease.found) {
     throw 'target latest release lookup failed'

@@ -6,6 +6,7 @@ mod source_trust;
 mod staged_release;
 mod trust_center;
 mod trust_policy;
+mod update_candidate;
 mod verification;
 
 #[cfg(test)]
@@ -54,6 +55,7 @@ use trust_policy::{
     plan_file_disposition_for_report, AppliedFileDisposition, MismatchFilePolicy,
     TrustPolicyConfig, TrustPolicySnapshot,
 };
+use update_candidate::run_update_candidate_contract_selftest;
 use verification::{
     verification_plan_for_selected_asset, verification_source_summary, verify_downloaded_file,
     DownloadVerificationPlan, VerificationReport, VerificationStatus,
@@ -1902,6 +1904,14 @@ fn main() -> Result<(), eframe::Error> {
     if args.first().map(|s| s.as_str()) == Some("--staged-release-download-selftest") {
         if let Err(e) = run_staged_release_download_selftest(&args[1..]) {
             eprintln!("staged release download selftest failed: {e}");
+            std::process::exit(2);
+        }
+        return Ok(());
+    }
+
+    if args.first().map(|s| s.as_str()) == Some("--update-candidate-contract-selftest") {
+        if let Err(e) = run_update_candidate_contract_selftest(&args[1..]) {
+            eprintln!("update candidate contract selftest failed: {e}");
             std::process::exit(2);
         }
         return Ok(());

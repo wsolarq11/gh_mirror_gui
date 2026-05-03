@@ -15,6 +15,9 @@ A small Windows desktop GUI for downloading GitHub release assets with progress,
   `release-provenance.json.sig`, the GUI can verify the verification source
   against a pinned publisher public key and record hash verification separately
   from source authenticity.
+- Public signed release consumption: the release verification front door proves
+  the latest `wsolarq11/gh_mirror_gui` release signatures and publisher key
+  before self-update installation behavior is allowed.
 - Direct GitHub release asset downloads still work.
 - Adaptive strategy selection: single stream or concurrent HTTP `Range` segments based on live sampling and local history.
 - Safe resume via `.part` files and metadata validation for URL, total size, `ETag`, and `Last-Modified`.
@@ -182,17 +185,33 @@ assets against that exported public key, and then re-downloads the staged
 binary through the app itself to prove hash + source-signature + evidence end
 to end.
 
+For public releases, the receipt also records
+`checks.origin_release_verification.source_signature_verification`: it downloads
+the latest public `gh_mirror_gui.exe`, `SHA256SUMS.txt`,
+`SHA256SUMS.txt.sig`, `release-provenance.json`,
+`release-provenance.json.sig`, and `publisher-key.ed25519.pub`; verifies both
+detached source signatures against the public key; and checks that the publisher
+fingerprint matches `release-provenance.json`.
+
+`checks.update_candidate_contract` is a no-mutation self-update gate. It proves
+that candidate evaluation can accept only a newer trusted signed
+`gh_mirror_gui.exe` release and can refuse same-version, bad-signature,
+missing-key, or unsigned-required candidates without installing or replacing
+anything.
+
 ## Release automation
 
-Future trusted releases are created by pushing a version tag. The tag must match
-the package version in `Cargo.toml`. Do not run the tag commands until the
-no-publish bootstrap/preflight helper below reports no blockers:
+`v0.1.3` is the first public signed release with `.sig` assets and
+`publisher-key.ed25519.pub`. Future trusted releases are created by pushing a
+version tag. The tag must match the package version in `Cargo.toml`. Do not run
+the tag commands until the no-publish bootstrap/preflight helper below reports
+no blockers:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\release-verify.ps1 -SkipBenchmarkMatrix
-git tag -a v0.1.3 -m "Release v0.1.3"
+git tag -a <next-tag> -m "Release <next-tag>"
 git push origin main
-git push origin v0.1.3
+git push origin <next-tag>
 ```
 
 The `Release` GitHub Actions workflow rebuilds the Windows release binary with
@@ -213,7 +232,7 @@ fingerprints, and delegates signed staging proof to `tools\release-verify.ps1`.
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\release-signing-bootstrap.ps1 `
   -Action Preflight `
-  -TargetTag v0.1.3
+  -TargetTag <next-tag>
 ```
 
 If the signing root has been generated and stored by the owner, set the current

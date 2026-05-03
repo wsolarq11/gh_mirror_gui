@@ -25,6 +25,7 @@ UI Shell
 - `src/source_trust.rs`: Ed25519 detached signature verification/signing, publisher key pinning, and `source_trust` evidence.
 - `src/trust_policy.rs`: trust policy, file disposition, quarantine/delete/open-location decisions.
 - `src/trust_center.rs`: UI-framework-free Trust Center snapshot contract built from backend/core verification reports, policy snapshots, and evidence paths.
+- `src/update_candidate.rs`: no-mutation self-update candidate contract; it accepts only newer trusted signed releases and refuses same-version, unsigned, bad-signature, or missing-key candidates.
 - `src/history.rs`: benchmark history and verification evidence JSON.
 - `src/main.rs`: current egui UI plus temporary app orchestration. Keep this layer thinner over time.
 - `tools\release-verify.ps1`: single delivery front door and receipt producer.
@@ -139,7 +140,12 @@ Evidence must remain reviewable and machine-readable:
   headless app download selftest that re-downloads the staged binary, verifies
   checksum/provenance signatures against the exported publisher key, and
   records evidence
-- origin release verification for the existing release
+- origin release verification for the existing release, including public
+  `SHA256SUMS.txt.sig`, `release-provenance.json.sig`, and
+  `publisher-key.ed25519.pub` signature verification against the downloaded
+  public release assets
+- update candidate contract selftest that proves the next self-update layer is
+  no-mutation and refuses untrusted candidates before any install/replace step
 - network smoke
 - benchmark
 - GUI launch smoke

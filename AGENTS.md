@@ -13,10 +13,11 @@
 路线分层：
 
 1. **Now**: trusted GitHub Release discovery / asset picker / adaptive resumable download / checksum-provenance-source-trust verification / evidence / policy.
-2. **Next**: signed source becomes real end-to-end in the next release, with publisher key pinning and `.sig` assets.
-3. **Then**: Trust Center UI, auto-update MVP, and a cleaner core/backend contract.
-4. **Later**: source/verifier/policy adapters make GitHub Release only the first adapter in an Artifact Trust Broker.
-5. **North star**: Windows Local Software Trust Root: acquisition, verification, policy, update, rollback, revocation, and audit.
+2. **Completed in `v0.1.3`**: signed source is real in a public release, with publisher key pinning and `.sig` assets.
+3. **Next**: public signed release consumption gate and no-mutation self-update candidate contract.
+4. **Then**: Trust Center UI, auto-update MVP, and a cleaner core/backend contract.
+5. **Later**: source/verifier/policy adapters make GitHub Release only the first adapter in an Artifact Trust Broker.
+6. **North star**: Windows Local Software Trust Root: acquisition, verification, policy, update, rollback, revocation, and audit.
 
 ## Hard boundaries
 
@@ -36,6 +37,7 @@ Every non-trivial feature should map to at least one of these stable surfaces:
 - verification engine
 - source trust
 - policy engine
+- update candidate contract
 - evidence/history
 - UI shell
 - release verification gate
@@ -55,4 +57,3 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\release-verify.ps1 -
 ```
 
 Route guardrails are first-class artifacts. Keep `AGENTS.md`, `docs\ROADMAP.md`, and `docs\ARCHITECTURE.md` in sync with major direction changes, and keep them covered by the release verification receipt.
-
