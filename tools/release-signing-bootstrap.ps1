@@ -149,19 +149,21 @@ function Get-SecretStatus {
 
     $secrets = @()
     if (![string]::IsNullOrWhiteSpace($result.text)) {
-        $secrets = @($result.text | ConvertFrom-Json)
+        $parsed = $result.text | ConvertFrom-Json
+        $secrets = @($parsed | ForEach-Object { $_ })
     }
-    $match = @($secrets | Where-Object {
-            $null -ne $_ -and
-            $_.PSObject.Properties.Name -contains 'name' -and
-            [string]$_.name -eq $SecretName
+    $secretObjects = @($secrets | Where-Object {
+            $null -ne $_ -and $null -ne $_.PSObject.Properties['name']
+        })
+    $match = @($secretObjects | Where-Object {
+            [string]$_.PSObject.Properties['name'].Value -eq $SecretName
         })
     if ($match.Count -eq 0) {
         return [ordered]@{
             ok = $true
             found = $false
             required_secret = $SecretName
-            total_repo_secrets_visible_to_gh = $secrets.Count
+            total_repo_secrets_visible_to_gh = $secretObjects.Count
         }
     }
 
@@ -169,9 +171,9 @@ function Get-SecretStatus {
         ok = $true
         found = $true
         required_secret = $SecretName
-        updated_at = [string]$match[0].updatedAt
-        visibility = [string]$match[0].visibility
-        total_repo_secrets_visible_to_gh = $secrets.Count
+        updated_at = [string]$match[0].PSObject.Properties['updatedAt'].Value
+        visibility = [string]$match[0].PSObject.Properties['visibility'].Value
+        total_repo_secrets_visible_to_gh = $secretObjects.Count
     }
 }
 
@@ -370,7 +372,13 @@ function Set-RepositorySecret {
     $setResult = $PrivateKeyHex | gh secret set $SecretName --repo $Repo 2>&1
     $exitCode = if ($null -eq $LASTEXITCODE) { 0 } else { [int]$LASTEXITCODE }
     $setLog = Join-Path $OutDir 'gh-secret-set.log'
-    @($setResult | ForEach-Object { $_.ToString() }) | Set-Content -LiteralPath $setLog -Encoding UTF8
+    $setLines = @($setResult | ForEach-Object { $_.ToString() })
+    if ($setLines.Count -eq 0) {
+        '' | Set-Content -LiteralPath $setLog -Encoding UTF8
+    }
+    else {
+        $setLines | Set-Content -LiteralPath $setLog -Encoding UTF8
+    }
     $script:Receipt.artifacts.github_secret_set_log = $setLog
 
     if ($exitCode -ne 0) {
