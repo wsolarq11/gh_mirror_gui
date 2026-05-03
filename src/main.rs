@@ -3,6 +3,7 @@ mod download;
 mod history;
 mod releases;
 mod source_trust;
+mod staged_release;
 mod trust_policy;
 mod verification;
 
@@ -32,6 +33,7 @@ use releases::{
 use reqwest::blocking::Client;
 use rfd::FileDialog;
 use source_trust::{normalize_public_key_pin, trusted_key_fingerprint};
+use staged_release::run_staged_release_download_selftest;
 use std::env;
 #[cfg(test)]
 use std::fs;
@@ -1609,6 +1611,14 @@ fn main() -> Result<(), eframe::Error> {
     if args.first().map(|s| s.as_str()) == Some("--bench-download") {
         if let Err(e) = run_bench_download(&args[1..]) {
             eprintln!("benchmark failed: {e}");
+            std::process::exit(2);
+        }
+        return Ok(());
+    }
+
+    if args.first().map(|s| s.as_str()) == Some("--staged-release-download-selftest") {
+        if let Err(e) = run_staged_release_download_selftest(&args[1..]) {
+            eprintln!("staged release download selftest failed: {e}");
             std::process::exit(2);
         }
         return Ok(());

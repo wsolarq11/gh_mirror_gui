@@ -431,6 +431,7 @@ function Invoke-SignedReleaseStagingSelfTest {
     $doctorFixtureDir = Join-Path $StageDir 'doctor-fixture'
     $sha256SumsVerifyJson = Join-Path $StageDir 'SHA256SUMS.txt.sig.verify.json'
     $provenanceVerifyJson = Join-Path $StageDir 'release-provenance.json.sig.verify.json'
+    $downloadSelfTestJson = Join-Path $StageDir 'staged-release-download-selftest.json'
 
     try {
         $env:RELEASE_ED25519_PRIVATE_KEY_HEX = $testPrivateKey
@@ -561,6 +562,14 @@ function Invoke-SignedReleaseStagingSelfTest {
                 '--public-key-file', $publicKeyAsset,
                 '--json', $provenanceVerifyJson
             )
+        Invoke-LoggedNative `
+            -Name 'signed-release-staging-download-selftest' `
+            -Exe $Exe `
+            -Arguments @(
+                '--staged-release-download-selftest',
+                '--release-dir', $StageDir,
+                '--json', $downloadSelfTestJson
+            )
     }
     finally {
         if ($null -eq $oldReleaseKey) {
@@ -584,6 +593,28 @@ function Invoke-SignedReleaseStagingSelfTest {
     }
     if (!$provenanceVerify.ok) {
         throw 'signed release staging release-provenance signature verification did not report ok=true'
+    }
+    if (!(Test-Path -LiteralPath $downloadSelfTestJson)) {
+        throw "signed release staging download selftest JSON missing: $downloadSelfTestJson"
+    }
+    $downloadSelfTest = Get-Content -LiteralPath $downloadSelfTestJson -Raw | ConvertFrom-Json
+    if (!$downloadSelfTest.ok) {
+        throw 'signed release staging download selftest did not report ok=true'
+    }
+    if ([string]$downloadSelfTest.download.sha256 -ne [string]$exeHash) {
+        throw 'signed release staging download selftest binary hash mismatch'
+    }
+    if ([string]$downloadSelfTest.verifications.sha256sums.status -ne 'VERIFIED') {
+        throw 'signed release staging download selftest did not verify SHA256SUMS.txt'
+    }
+    if ([string]$downloadSelfTest.verifications.provenance.status -ne 'VERIFIED') {
+        throw 'signed release staging download selftest did not verify release-provenance.json'
+    }
+    if ([string]$downloadSelfTest.verifications.sha256sums.trust_decision -ne 'TRUSTED') {
+        throw 'signed release staging download selftest SHA256SUMS trust decision mismatch'
+    }
+    if ([string]$downloadSelfTest.verifications.provenance.trust_decision -ne 'TRUSTED') {
+        throw 'signed release staging download selftest provenance trust decision mismatch'
     }
 
     $requiredAssetNames = @(
@@ -634,11 +665,13 @@ function Invoke-SignedReleaseStagingSelfTest {
             sha256sums = $sha256SumsVerify
             provenance = $provenanceVerify
         }
+        download_selftest = $downloadSelfTest
         covered_by = Assert-CommandLogContains `
             -CommandName 'cargo-test-all-targets' `
             -RequiredPatterns @(
                 'verify_verification_source_cli_accepts_publisher_key_file',
-                'verify_verification_source_cli_rejects_bad_signature'
+                'verify_verification_source_cli_rejects_bad_signature',
+                'staged_release_download_selftest_downloads_verifies_and_writes_evidence'
             )
     }
 }
@@ -1026,6 +1059,7 @@ $Receipt.checks.trust_policy_contract = [ordered]@{
             'source_trust_missing_signature_blocks_only_when_required',
             'source_trust_no_key_blocks_required_policy',
             'source_trust_snapshot_records_key_fingerprint_not_raw_key',
+            'parses_release_provenance_with_utf8_bom',
             'detects_checksum_and_provenance_assets_for_selected_release_asset',
             'verifies_downloaded_file_with_good_signed_checksum_source',
             'blocks_bad_signature_even_when_hash_matches',

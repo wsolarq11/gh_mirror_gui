@@ -503,7 +503,8 @@ fn expected_sha256_from_checksums_inner(
 }
 
 pub(crate) fn expected_sha256_from_provenance(text: &str, asset_name: &str) -> Option<String> {
-    let value = serde_json::from_str::<serde_json::Value>(text).ok()?;
+    let value =
+        serde_json::from_str::<serde_json::Value>(text.trim_start_matches('\u{feff}')).ok()?;
     find_asset_hash_in_json(&value, asset_name)
 }
 
@@ -828,6 +829,26 @@ mod tests {
         }"#;
         assert_eq!(
             expected_sha256_from_provenance(digest_provenance, "gh_mirror_gui.exe"),
+            Some("A9BDB5AE91B153ED8E04513CA9322B4445A91D3BE8DD2695A8F1C206C9937CCC".to_string())
+        );
+    }
+
+    #[test]
+    fn parses_release_provenance_with_utf8_bom() {
+        let provenance = concat!(
+            "\u{feff}",
+            r#"{
+              "artifacts": {
+                "release_binary": {
+                  "path": "gh_mirror_gui.exe",
+                  "sha256": "a9bdb5ae91b153ed8e04513ca9322b4445a91d3be8dd2695a8f1c206c9937ccc"
+                }
+              }
+            }"#
+        );
+
+        assert_eq!(
+            expected_sha256_from_provenance(provenance, "gh_mirror_gui.exe"),
             Some("A9BDB5AE91B153ED8E04513CA9322B4445A91D3BE8DD2695A8F1C206C9937CCC".to_string())
         );
     }

@@ -124,7 +124,10 @@ Evidence must remain reviewable and machine-readable:
 - release signing readiness, including public key export and next-release
   `.sig` asset contract
 - signed release staging dry-run, including `release-provenance.json` schema
-  checks and detached signature verification for both signed source assets
+  checks, detached signature verification for both signed source assets, and a
+  headless app download selftest that re-downloads the staged binary, verifies
+  checksum/provenance signatures against the exported publisher key, and
+  records evidence
 - origin release verification for the existing release
 - network smoke
 - benchmark

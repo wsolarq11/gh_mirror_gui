@@ -177,8 +177,10 @@ The receipt records build provenance including the git commit, Rust toolchain,
 decision rules and signed verification source trust gates. It also records
 `checks.signed_release_staging`, a no-publish dry run that stages
 `gh_mirror_gui.exe`, `SHA256SUMS.txt`, `release-provenance.json`, detached
-`.sig` assets, and `publisher-key.ed25519.pub`, then verifies the two signed
-source assets against that exported public key.
+`.sig` assets, and `publisher-key.ed25519.pub`, verifies the two signed source
+assets against that exported public key, and then re-downloads the staged
+binary through the app itself to prove hash + source-signature + evidence end
+to end.
 
 ## Release automation
 
