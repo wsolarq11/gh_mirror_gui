@@ -508,7 +508,6 @@ fn assert_evidence_matches_trusted_source(
 
 fn assert_server_requests_cover_chain(requests: &[String]) -> Result<(), String> {
     let required = [
-        format!("HEAD /{RELEASE_BINARY_ASSET}"),
         format!("GET /{RELEASE_BINARY_ASSET}"),
         format!("GET /{SHA256SUMS_ASSET}"),
         format!("GET /{SHA256SUMS_SIGNATURE_ASSET}"),
@@ -526,14 +525,23 @@ fn assert_server_requests_cover_chain(requests: &[String]) -> Result<(), String>
             missing.join(", ")
         ));
     }
-    let binary_gets = requests
+    let binary_get = format!("GET /{RELEASE_BINARY_ASSET}");
+    let binary_range_probe = format!("GET /{RELEASE_BINARY_ASSET} Range: bytes=0-0");
+    if !requests
         .iter()
-        .filter(|request| request.starts_with(&format!("GET /{RELEASE_BINARY_ASSET}")))
-        .count();
-    if binary_gets < 2 {
+        .any(|request| request == &binary_range_probe)
+    {
         return Err(
-            "staged release download did not exercise range probe plus full binary GET".to_string(),
+            "staged release download did not exercise the deterministic range probe GET"
+                .to_string(),
         );
+    }
+    let binary_full_gets = requests
+        .iter()
+        .filter(|request| *request == &binary_get)
+        .count();
+    if binary_full_gets < 1 {
+        return Err("staged release download did not exercise a full binary GET".to_string());
     }
     Ok(())
 }
@@ -743,6 +751,35 @@ mod tests {
             nonce,
             name
         ))
+    }
+
+    #[test]
+    fn staged_request_contract_allows_missing_best_effort_head_probe() {
+        let requests = vec![
+            format!("GET /{RELEASE_BINARY_ASSET} Range: bytes=0-0"),
+            format!("GET /{RELEASE_BINARY_ASSET}"),
+            format!("GET /{SHA256SUMS_ASSET}"),
+            format!("GET /{SHA256SUMS_SIGNATURE_ASSET}"),
+            format!("GET /{PROVENANCE_ASSET}"),
+            format!("GET /{PROVENANCE_SIGNATURE_ASSET}"),
+        ];
+
+        assert_server_requests_cover_chain(&requests).unwrap();
+    }
+
+    #[test]
+    fn staged_request_contract_requires_deterministic_range_probe() {
+        let requests = vec![
+            format!("GET /{RELEASE_BINARY_ASSET}"),
+            format!("GET /{SHA256SUMS_ASSET}"),
+            format!("GET /{SHA256SUMS_SIGNATURE_ASSET}"),
+            format!("GET /{PROVENANCE_ASSET}"),
+            format!("GET /{PROVENANCE_SIGNATURE_ASSET}"),
+        ];
+
+        let err = assert_server_requests_cover_chain(&requests).unwrap_err();
+
+        assert!(err.contains("deterministic range probe GET"));
     }
 
     #[test]

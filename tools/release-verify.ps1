@@ -413,6 +413,65 @@ function Assert-ReleaseWorkflowArtifactContract {
     }
 }
 
+function Assert-TrustCenterBackendContract {
+    $contractRelativePath = 'src\trust_center.rs'
+    $mainRelativePath = 'src\main.rs'
+    $contractPath = Join-Path $RepoRoot $contractRelativePath
+    $mainPath = Join-Path $RepoRoot $mainRelativePath
+    if (!(Test-Path -LiteralPath $contractPath)) {
+        throw "Trust Center backend contract module missing: $contractRelativePath"
+    }
+    if (!(Test-Path -LiteralPath $mainPath)) {
+        throw "UI shell missing: $mainRelativePath"
+    }
+
+    $contractText = Get-Content -LiteralPath $contractPath -Raw
+    $mainText = Get-Content -LiteralPath $mainPath -Raw
+    $contractCovered = Assert-TextContainsAll `
+        -Text $contractText `
+        -Label $contractRelativePath `
+        -RequiredPatterns @(
+            'pub(crate) struct TrustCenterSnapshot',
+            'pub(crate) fn trust_center_snapshot',
+            'VerificationReport',
+            'TrustPolicySnapshot',
+            'AppliedFileDisposition',
+            'publisher_key_source_label_for_policy',
+            'evidence_access_status'
+        )
+    if ($contractText -match '\begui\b|\beframe\b') {
+        throw "$contractRelativePath must remain UI-framework-free; found egui/eframe reference"
+    }
+    if ($mainText -match '(?m)^\s*fn\s+trust_center_snapshot\s*\(') {
+        throw "$mainRelativePath must render Trust Center snapshots, not construct backend trust snapshots"
+    }
+    $mainCovered = Assert-TextContainsAll `
+        -Text $mainText `
+        -Label $mainRelativePath `
+        -RequiredPatterns @(
+            'mod trust_center;',
+            'trust_center_snapshot',
+            'render_trust_center_snapshot'
+        )
+
+    return [ordered]@{
+        ok = $true
+        contract = 'Trust Center snapshot is a UI-framework-free backend/core DTO; main.rs renders it without owning final trust verdict construction'
+        module = [ordered]@{
+            path = $contractPath
+            sha256 = (Get-FileHash -LiteralPath $contractPath -Algorithm SHA256).Hash
+            required_patterns = $contractCovered
+            ui_framework_free = $true
+        }
+        ui_shell = [ordered]@{
+            path = $mainPath
+            sha256 = (Get-FileHash -LiteralPath $mainPath -Algorithm SHA256).Hash
+            required_patterns = $mainCovered
+            owns_rendering_only = $true
+        }
+    }
+}
+
 function Invoke-ReleaseSigningReadiness {
     param(
         [string]$Exe,
@@ -874,6 +933,8 @@ function Invoke-SignedReleaseStagingSelfTest {
             -RequiredPatterns @(
                 'verify_verification_source_cli_accepts_publisher_key_file',
                 'verify_verification_source_cli_rejects_bad_signature',
+                'staged_request_contract_allows_missing_best_effort_head_probe',
+                'staged_request_contract_requires_deterministic_range_probe',
                 'staged_release_download_selftest_downloads_verifies_and_writes_evidence'
             )
     }
@@ -1171,6 +1232,7 @@ $Receipt.provenance = [ordered]@{
         ci_workflow = Get-OptionalFileEvidence -RelativePath '.github\workflows\ci.yml'
         release_workflow = Get-OptionalFileEvidence -RelativePath '.github\workflows\release.yml'
         release_verify_script = Get-OptionalFileEvidence -RelativePath 'tools\release-verify.ps1'
+        trust_center_contract = Get-OptionalFileEvidence -RelativePath 'src\trust_center.rs'
     }
 }
 
@@ -1240,6 +1302,7 @@ $Receipt.checks.route_guardrails = [ordered]@{
     }
 }
 $Receipt.checks.release_workflow_artifact_contract = Assert-ReleaseWorkflowArtifactContract
+$Receipt.checks.trust_center_backend_contract = Assert-TrustCenterBackendContract
 Invoke-LoggedNative -Name 'cargo-fmt-check' -Exe 'cargo' -Arguments @('fmt', '--check')
 Invoke-LoggedNative -Name 'cargo-test-all-targets' -Exe 'cargo' -Arguments @('test', '--all-targets', '--locked')
 $Receipt.checks.download_engine_contract = [ordered]@{
@@ -1286,7 +1349,7 @@ $Receipt.checks.trust_policy_contract = [ordered]@{
         verification_source_fetch = 'checksum/provenance and signature asset reads retry transient request/server failures before producing UNKNOWN or untrusted-source evidence'
     }
     history_evidence_schema = 'policy.schema_version=2 + policy.source_trust.schema_version=1 + source_trust.schema_version=1 + file_disposition.schema_version=1 REQUIRED_FOR_VERIFIED_MISMATCH_UNKNOWN_DOWNLOAD_REPORTS'
-    gui_decision_points = 'SavedState persistence + Trust policy UI + Source trust pin/import/normalize/display/source label + selected-release publisher-key.ed25519.pub fetch/pin + Trust Center backend verdict snapshot + downloaded asset/hash context + recorded policy-at-decision + pinned publisher key source + backend source-trust detail + Open Evidence exact path/access status + open_location_button_label_for_report'
+    gui_decision_points = 'SavedState persistence + Trust policy UI + Source trust pin/import/normalize/display/source label + selected-release publisher-key.ed25519.pub fetch/pin + Trust Center backend contract snapshot + downloaded asset/hash context + recorded policy-at-decision + pinned publisher key source + backend source-trust detail + Open Evidence exact path/access status + open_location_button_label_for_report'
     covered_by = Assert-CommandLogContains `
         -CommandName 'cargo-test-all-targets' `
         -RequiredPatterns @(

@@ -24,6 +24,7 @@ UI Shell
 - `src/verification.rs`: checksum/provenance parsing, source selection, hash verification, and source-trust attachment.
 - `src/source_trust.rs`: Ed25519 detached signature verification/signing, publisher key pinning, and `source_trust` evidence.
 - `src/trust_policy.rs`: trust policy, file disposition, quarantine/delete/open-location decisions.
+- `src/trust_center.rs`: UI-framework-free Trust Center snapshot contract built from backend/core verification reports, policy snapshots, and evidence paths.
 - `src/history.rs`: benchmark history and verification evidence JSON.
 - `src/main.rs`: current egui UI plus temporary app orchestration. Keep this layer thinner over time.
 - `tools\release-verify.ps1`: single delivery front door and receipt producer.
