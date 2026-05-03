@@ -6,7 +6,10 @@ use directories::ProjectDirs;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
+
+static VERIFICATION_EVIDENCE_NONCE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct BenchHistoryEntry {
@@ -210,10 +213,13 @@ fn write_verification_evidence(
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
+    let evidence_counter = VERIFICATION_EVIDENCE_NONCE_COUNTER.fetch_add(1, Ordering::Relaxed);
     let evidence_path = evidence_dir.join(format!(
-        "{}-{}-{}-{}.json",
+        "{}-{}-{}-{}-{}-{}.json",
         recorded_at_epoch_secs,
         evidence_nonce,
+        std::process::id(),
+        evidence_counter,
         report.status.as_str().to_ascii_lowercase(),
         sanitize_evidence_name(&report.asset_name)
     ));

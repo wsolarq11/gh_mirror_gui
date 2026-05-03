@@ -48,7 +48,7 @@ use trust_policy::FileDispositionAction;
 use trust_policy::{
     apply_file_disposition, file_disposition_summary, open_location_button_label_for_report,
     plan_file_disposition_for_report, AppliedFileDisposition, MismatchFilePolicy,
-    TrustPolicyConfig,
+    TrustPolicyConfig, TrustPolicySnapshot,
 };
 use verification::{
     verification_plan_for_selected_asset, verification_source_summary, verify_downloaded_file,
@@ -169,19 +169,41 @@ struct TrustCenterSnapshot {
     signature_asset: String,
     publisher_key_fingerprint: String,
     policy_verdict: String,
+    policy_at_decision: String,
     evidence_path: String,
     file_disposition: String,
     final_path: String,
+}
+
+fn format_trust_policy_snapshot(policy: &TrustPolicySnapshot) -> String {
+    let signed_source = if policy.source_trust.require_trusted_source {
+        "required"
+    } else {
+        "optional"
+    };
+    let publisher_key = policy
+        .source_trust
+        .trusted_publisher_key_fingerprint_sha256
+        .as_deref()
+        .unwrap_or("not pinned");
+    let unknown = match (policy.unknown_keep_file, policy.unknown_allow_open) {
+        (true, true) => "KEEP/open allowed",
+        (true, false) => "KEEP/open blocked",
+        (false, _) => "DELETE/open blocked",
+    };
+    format!(
+        "signed_source={signed_source}; publisher_key={publisher_key}; UNKNOWN={unknown}; MISMATCH={}",
+        policy.mismatch_file_policy
+    )
 }
 
 fn trust_center_snapshot(
     report: &VerificationReport,
     evidence_path: Option<&Path>,
     disposition: &AppliedFileDisposition,
-    policy: &TrustPolicyConfig,
+    policy_snapshot: &TrustPolicySnapshot,
 ) -> TrustCenterSnapshot {
     let source_trust = report.source_trust.as_ref();
-    let policy_snapshot = policy.snapshot();
     let publisher_key_fingerprint = source_trust
         .and_then(|trust| trust.trusted_publisher_key_fingerprint_sha256.as_deref())
         .or(policy_snapshot
@@ -208,6 +230,7 @@ fn trust_center_snapshot(
             .to_string(),
         publisher_key_fingerprint,
         policy_verdict: report.effective_trust_decision().as_str().to_string(),
+        policy_at_decision: format_trust_policy_snapshot(policy_snapshot),
         evidence_path: evidence_path
             .map(|path| path.display().to_string())
             .unwrap_or_else(|| "not recorded".to_string()),
@@ -253,6 +276,10 @@ fn render_trust_center_snapshot(ui: &mut egui::Ui, snapshot: &TrustCenterSnapsho
 
                 ui.label("Policy verdict");
                 ui.label(&snapshot.policy_verdict);
+                ui.end_row();
+
+                ui.label("Policy at decision");
+                ui.label(&snapshot.policy_at_decision);
                 ui.end_row();
 
                 ui.label("Evidence path");
@@ -301,6 +328,7 @@ struct DownloadCompletion {
     original_path: PathBuf,
     verification: VerificationReport,
     evidence_path: Option<PathBuf>,
+    policy_snapshot: TrustPolicySnapshot,
     file_disposition: AppliedFileDisposition,
 }
 
@@ -366,6 +394,7 @@ struct GhMirrorGui {
     last_download_path: Option<PathBuf>,
     last_verification: Option<VerificationReport>,
     last_verification_evidence_path: Option<PathBuf>,
+    last_trust_policy_snapshot: Option<TrustPolicySnapshot>,
     last_file_disposition: Option<AppliedFileDisposition>,
 }
 
@@ -448,6 +477,7 @@ impl GhMirrorGui {
             last_download_path: None,
             last_verification: None,
             last_verification_evidence_path: None,
+            last_trust_policy_snapshot: None,
             last_file_disposition: None,
         }
     }
@@ -593,6 +623,7 @@ impl GhMirrorGui {
         self.last_download_path = None;
         self.last_verification = None;
         self.last_verification_evidence_path = None;
+        self.last_trust_policy_snapshot = None;
         self.last_file_disposition = None;
         let control = DownloadControl::new();
         let ctrl = control.clone();
@@ -705,6 +736,7 @@ impl GhMirrorGui {
                         original_path: save_path,
                         verification,
                         evidence_path,
+                        policy_snapshot: trust_policy.snapshot(),
                         file_disposition,
                     }));
                 }
@@ -870,6 +902,7 @@ impl eframe::App for GhMirrorGui {
                     self.last_download_path = completion.file_disposition.final_path.clone();
                     self.last_verification = Some(completion.verification.clone());
                     self.last_verification_evidence_path = completion.evidence_path.clone();
+                    self.last_trust_policy_snapshot = Some(completion.policy_snapshot.clone());
                     self.last_file_disposition = Some(completion.file_disposition.clone());
                     self.download_thread = None;
                     self.control = None;
@@ -1344,11 +1377,15 @@ impl eframe::App for GhMirrorGui {
                 ));
                 if let Some(disposition) = &self.last_file_disposition {
                     ui.small(file_disposition_summary(disposition));
+                    let policy_snapshot = self
+                        .last_trust_policy_snapshot
+                        .clone()
+                        .unwrap_or_else(|| self.trust_policy.snapshot());
                     let snapshot = trust_center_snapshot(
                         &report,
                         self.last_verification_evidence_path.as_deref(),
                         disposition,
-                        &self.trust_policy,
+                        &policy_snapshot,
                     );
                     render_trust_center_snapshot(ui, &snapshot);
                 }
@@ -2103,7 +2140,12 @@ mod tests {
         };
         let evidence_path = PathBuf::from(r"C:\Evidence\download.json");
 
-        let snapshot = trust_center_snapshot(&report, Some(&evidence_path), &disposition, &policy);
+        let snapshot = trust_center_snapshot(
+            &report,
+            Some(&evidence_path),
+            &disposition,
+            &policy.snapshot(),
+        );
 
         assert_eq!(snapshot.hash_status, "VERIFIED");
         assert_eq!(snapshot.source_authenticity, "TRUSTED_SIGNATURE");
@@ -2111,9 +2153,68 @@ mod tests {
         assert_eq!(snapshot.signature_asset, "release-provenance.json.sig");
         assert_eq!(snapshot.publisher_key_fingerprint, fingerprint);
         assert_eq!(snapshot.policy_verdict, "TRUSTED");
+        assert!(snapshot
+            .policy_at_decision
+            .contains("signed_source=required"));
+        assert!(snapshot.policy_at_decision.contains(&fingerprint));
         assert_eq!(snapshot.evidence_path, r"C:\Evidence\download.json");
         assert_eq!(snapshot.file_disposition, "KEEP (file kept)");
         assert_eq!(snapshot.final_path, r"C:\Downloads\gh_mirror_gui.exe");
+    }
+
+    #[test]
+    fn trust_center_snapshot_uses_recorded_policy_snapshot_for_last_download() {
+        let recorded_key = source_trust::public_key_from_private_seed(
+            "1111111111111111111111111111111111111111111111111111111111111111",
+        )
+        .unwrap();
+        let current_key = source_trust::public_key_from_private_seed(
+            "2222222222222222222222222222222222222222222222222222222222222222",
+        )
+        .unwrap();
+        let recorded_fingerprint = trusted_key_fingerprint(&recorded_key).unwrap();
+        let current_fingerprint = trusted_key_fingerprint(&current_key).unwrap();
+        let recorded_policy = TrustPolicyConfig {
+            unknown_keep_file: false,
+            mismatch_file_policy: MismatchFilePolicy::Delete,
+            source_trust: source_trust::SourceTrustPolicyConfig {
+                require_trusted_source: true,
+                trusted_publisher_key: recorded_key,
+            },
+            ..TrustPolicyConfig::default()
+        }
+        .snapshot();
+        let report = VerificationReport {
+            status: VerificationStatus::Verified,
+            asset_name: "gh_mirror_gui.exe".to_string(),
+            file_sha256: "A9BDB5AE91B153ED8E04513CA9322B4445A91D3BE8DD2695A8F1C206C9937CCC"
+                .to_string(),
+            expected_sha256: Some(
+                "A9BDB5AE91B153ED8E04513CA9322B4445A91D3BE8DD2695A8F1C206C9937CCC".to_string(),
+            ),
+            source: Some("SHA256SUMS.txt".to_string()),
+            source_trust: None,
+            detail: "SHA256 matched SHA256SUMS.txt".to_string(),
+        };
+        let disposition = AppliedFileDisposition {
+            action: FileDispositionAction::Keep,
+            original_path: PathBuf::from("gh_mirror_gui.exe"),
+            final_path: Some(PathBuf::from(r"C:\Downloads\gh_mirror_gui.exe")),
+        };
+
+        let snapshot = trust_center_snapshot(&report, None, &disposition, &recorded_policy);
+
+        assert_eq!(snapshot.publisher_key_fingerprint, recorded_fingerprint);
+        assert!(snapshot
+            .policy_at_decision
+            .contains("signed_source=required"));
+        assert!(snapshot
+            .policy_at_decision
+            .contains("UNKNOWN=DELETE/open blocked"));
+        assert!(snapshot.policy_at_decision.contains("MISMATCH=DELETE"));
+        assert!(snapshot.policy_at_decision.contains(&recorded_fingerprint));
+        assert!(!snapshot.policy_at_decision.contains(&current_fingerprint));
+        assert_eq!(snapshot.evidence_path, "not recorded");
     }
 
     #[test]
