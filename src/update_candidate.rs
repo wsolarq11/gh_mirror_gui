@@ -398,12 +398,22 @@ pub(crate) fn run_update_candidate_latest_selftest(args: &[String]) -> Result<()
 
 pub(crate) fn run_update_candidate_stage_selftest(args: &[String]) -> Result<(), String> {
     let mut json_out: Option<PathBuf> = None;
+    let mut current_version_override: Option<String> = None;
+    let mut trusted_publisher_key_file: Option<PathBuf> = None;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
             "--json" => {
                 i += 1;
                 json_out = args.get(i).map(PathBuf::from);
+            }
+            "--current-version" => {
+                i += 1;
+                current_version_override = args.get(i).cloned();
+            }
+            "--trusted-publisher-key-file" => {
+                i += 1;
+                trusted_publisher_key_file = args.get(i).map(PathBuf::from);
             }
             other => {
                 return Err(format!(
@@ -434,7 +444,15 @@ pub(crate) fn run_update_candidate_stage_selftest(args: &[String]) -> Result<(),
         nonce
     ));
 
-    let policy = SourceTrustPolicyConfig::default();
+    let mut policy = SourceTrustPolicyConfig::default();
+    if let Some(path) = trusted_publisher_key_file.as_ref() {
+        let text = std::fs::read_to_string(path)
+            .map_err(|e| format!("Read trusted publisher key file {}: {e}", path.display()))?;
+        policy.trusted_publisher_key = crate::source_trust::normalize_public_key_pin(&text)?;
+    }
+    let current_version = current_version_override
+        .as_deref()
+        .unwrap_or(env!("CARGO_PKG_VERSION"));
     let client = Client::builder()
         .timeout(std::time::Duration::from_secs(120))
         .build()
@@ -442,7 +460,7 @@ pub(crate) fn run_update_candidate_stage_selftest(args: &[String]) -> Result<(),
     let report = stage_latest_update_candidate(
         &client,
         UpdateCandidateStageConfig {
-            current_version: env!("CARGO_PKG_VERSION"),
+            current_version,
             source_trust_policy: &policy,
             evidence_dir: &evidence_dir,
             stage_root: &stage_root,
@@ -496,6 +514,10 @@ pub(crate) fn run_update_candidate_stage_selftest(args: &[String]) -> Result<(),
         "ok": ok,
         "status": report.status,
         "allowed_statuses": ["STAGED", "NO_UPDATE", "REFUSED"],
+        "input": {
+            "current_version": current_version,
+            "trusted_publisher_key_file": trusted_publisher_key_file.as_ref().map(|path| path.display().to_string()),
+        },
         "no_mutation": report.check_report.evaluation.no_mutation,
         "no_install": report.no_install,
         "check_evidence_ready": check_evidence_ready,
