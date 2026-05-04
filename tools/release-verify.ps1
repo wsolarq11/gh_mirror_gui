@@ -4,7 +4,11 @@ param(
     [switch]$SkipGuiSmoke,
     [switch]$SkipNetworkSmoke,
     [switch]$SkipBenchmark,
-    [switch]$SkipBenchmarkMatrix
+    [switch]$SkipBenchmarkMatrix,
+    # Optional post-publish check: run the previous published release binary and
+    # prove Self-update Stage 2 produces a real-world NO_UPDATE vs STAGED verdict
+    # against the currently published latest release (no install / no exe replacement).
+    [switch]$PostPublishSelfUpdateStage2
 )
 
 $ErrorActionPreference = 'Stop'
@@ -1101,6 +1105,105 @@ function Get-GitHubAccessToken {
     }
 }
 
+function Convert-GitHubApiReleaseToReceiptShape {
+    param(
+        [object]$Release,
+        [string]$Repo
+    )
+
+    return [ordered]@{
+        repo = $Repo
+        tag_name = $Release.tag_name
+        name = $Release.name
+        created_at = if ($Release.PSObject.Properties.Name -contains 'created_at') { $Release.created_at } else { $null }
+        published_at = $Release.published_at
+        html_url = $Release.html_url
+        draft = if ($Release.PSObject.Properties.Name -contains 'draft') { [bool]$Release.draft } else { $false }
+        prerelease = if ($Release.PSObject.Properties.Name -contains 'prerelease') { [bool]$Release.prerelease } else { $false }
+        body = $Release.body
+        assets = @($Release.assets | ForEach-Object {
+            $digest = if ($_.PSObject.Properties.Name -contains 'digest') { $_.digest } else { $null }
+            $contentType = if ($_.PSObject.Properties.Name -contains 'content_type') { $_.content_type } else { $null }
+            [ordered]@{
+                name = $_.name
+                size = $_.size
+                content_type = $contentType
+                digest = $digest
+                api_url = if ($_.PSObject.Properties.Name -contains 'url') { $_.url } else { $null }
+                browser_download_url = $_.browser_download_url
+            }
+        })
+    }
+}
+
+function Invoke-GitHubPublishedReleases {
+    param(
+        [string]$Repo,
+        [int]$PerPage = 10
+    )
+
+    try {
+        $token = Get-GitHubAccessToken
+        $headers = @{
+            'User-Agent' = 'gh_mirror_gui-release-verify'
+            'Accept'     = 'application/vnd.github+json'
+        }
+        if (![string]::IsNullOrWhiteSpace($token)) {
+            $headers.Authorization = "Bearer $token"
+        }
+
+        $raw = Invoke-RestMethod `
+            -Headers $headers `
+            -Uri "https://api.github.com/repos/$Repo/releases?per_page=$PerPage"
+
+        $published = @(
+            $raw |
+                Where-Object { !$_.draft -and !$_.prerelease -and ![string]::IsNullOrWhiteSpace([string]$_.published_at) } |
+                ForEach-Object { Convert-GitHubApiReleaseToReceiptShape -Release $_ -Repo $Repo }
+        )
+
+        # Keep a deterministic order aligned with GitHub's "latest release" semantics.
+        # GitHub defines "latest release" as the most recent non-draft, non-prerelease
+        # release sorted by `created_at` (not published_at). So we prefer created_at
+        # when present, then published_at.
+        $sorted = @(
+            $published |
+                Sort-Object {
+                    if (![string]::IsNullOrWhiteSpace([string]$_.created_at)) {
+                        [DateTime]::Parse([string]$_.created_at)
+                    }
+                    elseif (![string]::IsNullOrWhiteSpace([string]$_.published_at)) {
+                        [DateTime]::Parse([string]$_.published_at)
+                    }
+                    else {
+                        [DateTime]::MinValue
+                    }
+                } -Descending
+        )
+
+        return [ordered]@{
+            ok = $true
+            repo = $Repo
+            count = $sorted.Count
+            releases = $sorted
+        }
+    }
+    catch {
+        $status = $null
+        if ($_.Exception.Response) {
+            $status = [int]$_.Exception.Response.StatusCode
+        }
+        return [ordered]@{
+            ok = $false
+            repo = $Repo
+            status_code = $status
+            error = $_.Exception.Message
+            count = 0
+            releases = @()
+        }
+    }
+}
+
 function Get-ReleaseAssetByName {
     param(
         [object]$Release,
@@ -1112,6 +1215,56 @@ function Get-ReleaseAssetByName {
         return $null
     }
     return $matches[0]
+}
+
+function Invoke-WebRequestWithRetry {
+    param(
+        [string]$Uri,
+        [hashtable]$Headers,
+        [string]$OutFile,
+        [int]$MaxAttempts = 5,
+        [int]$BaseDelaySeconds = 2
+    )
+
+    $attempt = 1
+    while ($true) {
+        try {
+            if (![string]::IsNullOrWhiteSpace($OutFile) -and (Test-Path -LiteralPath $OutFile)) {
+                Remove-Item -LiteralPath $OutFile -Force -ErrorAction SilentlyContinue
+            }
+            Invoke-WebRequest `
+                -Uri $Uri `
+                -Headers $Headers `
+                -MaximumRedirection 10 `
+                -OutFile $OutFile `
+                -UseBasicParsing | Out-Null
+            return [ordered]@{
+                ok = $true
+                attempts = $attempt
+            }
+        }
+        catch {
+            $status = $null
+            try {
+                if ($_.Exception.Response) {
+                    $status = [int]$_.Exception.Response.StatusCode
+                }
+            }
+            catch {
+                $status = $null
+            }
+
+            $transient = @($null, 408, 425, 429, 500, 502, 503, 504)
+            $isTransient = ($transient -contains $status)
+            if (!$isTransient -or $attempt -ge $MaxAttempts) {
+                throw
+            }
+
+            $delay = [int]([Math]::Min(30, $BaseDelaySeconds * [Math]::Pow(2, ($attempt - 1))))
+            Start-Sleep -Seconds $delay
+            $attempt += 1
+        }
+    }
 }
 
 function Save-ReleaseAsset {
@@ -1146,20 +1299,10 @@ function Save-ReleaseAsset {
         if ($headers.ContainsKey('Authorization')) {
             $apiHeaders.Authorization = $headers.Authorization
         }
-        Invoke-WebRequest `
-            -Uri $apiUrl `
-            -Headers $apiHeaders `
-            -MaximumRedirection 10 `
-            -OutFile $OutFile `
-            -UseBasicParsing | Out-Null
+        Invoke-WebRequestWithRetry -Uri $apiUrl -Headers $apiHeaders -OutFile $OutFile | Out-Null
     }
     else {
-        Invoke-WebRequest `
-            -Uri $Asset.browser_download_url `
-            -Headers $headers `
-            -MaximumRedirection 10 `
-            -OutFile $OutFile `
-            -UseBasicParsing | Out-Null
+        Invoke-WebRequestWithRetry -Uri $Asset.browser_download_url -Headers $headers -OutFile $OutFile | Out-Null
     }
 
     return [ordered]@{
@@ -1481,6 +1624,116 @@ function Invoke-UpdateCandidateStageSelfTest {
     }
 
     return $selftest
+}
+
+function Invoke-PostPublishSelfUpdateStage2Check {
+    param(
+        [string]$Repo,
+        [string]$ExpectedLatestTag,
+        [string]$Exe
+    )
+
+    $dir = Join-Path $EvidenceDir 'post-publish-self-update-stage2'
+    New-Item -ItemType Directory -Force -Path $dir | Out-Null
+
+    $releaseList = Invoke-GitHubPublishedReleases -Repo $Repo -PerPage 10
+    if (!$releaseList.ok) {
+        throw "post-publish self-update Stage 2 release list failed: HTTP $($releaseList.status_code) $($releaseList.error)"
+    }
+    $releases = @($releaseList.releases)
+    if ($releases.Count -lt 2) {
+        throw "post-publish self-update Stage 2 requires at least 2 published releases; got $($releases.Count)"
+    }
+
+    $latest = $null
+    if (![string]::IsNullOrWhiteSpace($ExpectedLatestTag)) {
+        $latest = @($releases | Where-Object { $_.tag_name -eq $ExpectedLatestTag } | Select-Object -First 1)[0]
+    }
+    if ($null -eq $latest) {
+        $latest = $releases[0]
+    }
+    $previous = @($releases | Where-Object { $_.tag_name -ne $latest.tag_name } | Select-Object -First 1)[0]
+    if ($null -eq $previous) {
+        throw "post-publish self-update Stage 2 could not determine the previous published release for $Repo"
+    }
+
+    $publisherKeyAsset = Get-ReleaseAssetByName -Release $latest -Name 'publisher-key.ed25519.pub'
+    if ($null -eq $publisherKeyAsset) {
+        throw "post-publish self-update Stage 2 latest release $($latest.tag_name) missing publisher-key.ed25519.pub"
+    }
+
+    if ([string]::IsNullOrWhiteSpace($Exe) -or !(Test-Path -LiteralPath $Exe)) {
+        throw "post-publish self-update Stage 2 requires a local built gh_mirror_gui.exe to run selftests: $Exe"
+    }
+
+    $publisherKeyPath = Join-Path $dir "publisher-key.ed25519.pub"
+    $publisherKeyEvidence = Save-ReleaseAsset -Asset $publisherKeyAsset -OutFile $publisherKeyPath
+
+    $json = Join-Path $dir 'update-candidate-stage-selftest.json'
+    Invoke-LoggedNative `
+        -Name 'post-publish-self-update-stage2' `
+        -Exe $Exe `
+        -Arguments @(
+            '--update-candidate-stage-selftest',
+            '--json', $json,
+            '--current-version', $previous.tag_name,
+            '--trusted-publisher-key-file', $publisherKeyPath
+        )
+
+    if (!(Test-Path -LiteralPath $json)) {
+        throw "post-publish self-update Stage 2 stage selftest JSON missing: $json"
+    }
+    $selftest = Get-Content -LiteralPath $json -Raw | ConvertFrom-Json
+
+    if (!$selftest.ok) {
+        throw 'post-publish self-update Stage 2 stage selftest did not report ok=true'
+    }
+    if (!$selftest.no_mutation) {
+        throw 'post-publish self-update Stage 2 must be no-mutation'
+    }
+    if (!$selftest.no_install) {
+        throw 'post-publish self-update Stage 2 must be no-install'
+    }
+    $allowed = @('STAGED', 'NO_UPDATE')
+    if ($allowed -notcontains [string]$selftest.status) {
+        throw "post-publish self-update Stage 2 status $($selftest.status) was not allowed"
+    }
+    if ([string]$selftest.report.release_tag -eq 'unknown') {
+        throw 'post-publish self-update Stage 2 did not resolve a live latest release'
+    }
+    if ([string]$selftest.input.trusted_publisher_key_file -ne $publisherKeyPath) {
+        throw 'post-publish self-update Stage 2 did not pass the Release asset publisher key file into the selftest'
+    }
+    if ([string]$selftest.input.current_version -ne [string]$previous.tag_name) {
+        throw 'post-publish self-update Stage 2 did not override current version to the previous release tag'
+    }
+
+    $stageDir = [string]$selftest.report.stage_dir
+    if ($selftest.status -eq 'STAGED') {
+        if ([string]::IsNullOrWhiteSpace($stageDir) -or !(Test-Path -LiteralPath $stageDir)) {
+            throw 'post-publish self-update Stage 2 STAGED verdict missing stage_dir'
+        }
+        if (!$stageDir.StartsWith($dir, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "post-publish self-update Stage 2 stage_dir must stay inside evidence dir: $stageDir"
+        }
+    }
+
+    return [ordered]@{
+        ok = $true
+        repo = $Repo
+        latest_release_tag = [string]$latest.tag_name
+        simulated_current_release_tag = [string]$previous.tag_name
+        pinned_publisher_key = [ordered]@{
+            from_release_tag = [string]$latest.tag_name
+            asset = [string]$publisherKeyAsset.name
+            downloaded = $publisherKeyEvidence
+        }
+        runner_binary = [ordered]@{
+            path = $Exe
+            sha256 = (Get-FileHash -LiteralPath $Exe -Algorithm SHA256).Hash
+        }
+        stage_selftest = $selftest
+    }
 }
 
 function Invoke-NetworkRangeSmoke {
@@ -1886,6 +2139,20 @@ $Receipt.checks.update_candidate_latest_selftest = Invoke-UpdateCandidateLatestS
 $Receipt.checks.update_candidate_stage_selftest = Invoke-UpdateCandidateStageSelfTest `
     -Exe $exe `
     -JsonFile (Join-Path $EvidenceDir 'update-candidate-stage-selftest.json')
+
+if ($PostPublishSelfUpdateStage2) {
+    $expectedLatestTag = $null
+    if ($originRelease.found) {
+        $expectedLatestTag = [string]$originRelease.tag_name
+    }
+    $Receipt.checks.post_publish_self_update_stage2 = Invoke-PostPublishSelfUpdateStage2Check `
+        -Repo 'wsolarq11/gh_mirror_gui' `
+        -ExpectedLatestTag $expectedLatestTag `
+        -Exe $exe
+}
+else {
+    $Receipt.checks.post_publish_self_update_stage2 = [ordered]@{ skipped = $true }
+}
 
 if (!$targetRelease.found) {
     throw 'target latest release lookup failed'
