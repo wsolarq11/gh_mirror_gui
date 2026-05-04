@@ -1434,6 +1434,55 @@ function Invoke-UpdateCandidateLatestSelfTest {
     return $selftest
 }
 
+function Invoke-UpdateCandidateStageSelfTest {
+    param(
+        [string]$Exe,
+        [string]$JsonFile
+    )
+
+    Invoke-LoggedNative `
+        -Name 'update-candidate-stage-selftest' `
+        -Exe $Exe `
+        -Arguments @(
+            '--update-candidate-stage-selftest',
+            '--json', $JsonFile
+        )
+    if (!(Test-Path -LiteralPath $JsonFile)) {
+        throw "update candidate stage selftest JSON missing: $JsonFile"
+    }
+    $selftest = Get-Content -LiteralPath $JsonFile -Raw | ConvertFrom-Json
+    if (!$selftest.ok) {
+        throw 'update candidate stage selftest did not report ok=true'
+    }
+    if (!$selftest.no_mutation) {
+        throw 'update candidate stage selftest must be no-mutation'
+    }
+    if (!$selftest.no_install) {
+        throw 'update candidate stage selftest must be no-install'
+    }
+    if (!$selftest.check_evidence_ready) {
+        throw 'update candidate stage selftest check evidence path was not ready'
+    }
+    if (!$selftest.stage_evidence_ready) {
+        throw 'update candidate stage selftest stage evidence was not ready'
+    }
+    $allowed = @('STAGED', 'NO_UPDATE', 'REFUSED')
+    if ($allowed -notcontains [string]$selftest.status) {
+        throw "update candidate stage selftest status $($selftest.status) was not allowed"
+    }
+    if ([string]$selftest.report.release_tag -eq 'unknown') {
+        throw 'update candidate stage selftest did not resolve a live latest release'
+    }
+    if (!$selftest.report.no_install) {
+        throw 'update candidate stage report must be no-install'
+    }
+    if (!$selftest.report.check_report.evaluation.no_mutation) {
+        throw 'update candidate stage report evaluation must be no-mutation'
+    }
+
+    return $selftest
+}
+
 function Invoke-NetworkRangeSmoke {
     param(
         [string]$Url,
@@ -1834,6 +1883,9 @@ $Receipt.checks.origin_release_verification = Invoke-OriginReleaseVerificationSm
 $Receipt.checks.update_candidate_latest_selftest = Invoke-UpdateCandidateLatestSelfTest `
     -Exe $exe `
     -JsonFile (Join-Path $EvidenceDir 'update-candidate-latest-selftest.json')
+$Receipt.checks.update_candidate_stage_selftest = Invoke-UpdateCandidateStageSelfTest `
+    -Exe $exe `
+    -JsonFile (Join-Path $EvidenceDir 'update-candidate-stage-selftest.json')
 
 if (!$targetRelease.found) {
     throw 'target latest release lookup failed'

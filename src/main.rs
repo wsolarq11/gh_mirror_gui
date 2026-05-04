@@ -58,8 +58,8 @@ use trust_policy::{
 use update_candidate::{
     check_latest_update_candidate, refused_update_candidate_check_report,
     run_update_candidate_contract_selftest, run_update_candidate_latest_selftest,
-    stage_latest_update_candidate, UpdateCandidateCheckConfig, UpdateCandidateCheckReport,
-    UpdateCandidateStageConfig, UpdateCandidateStageReport,
+    run_update_candidate_stage_selftest, stage_latest_update_candidate, UpdateCandidateCheckConfig,
+    UpdateCandidateCheckReport, UpdateCandidateStageConfig, UpdateCandidateStageReport,
 };
 use verification::{
     verification_plan_for_selected_asset, verification_source_summary, verify_downloaded_file,
@@ -2272,6 +2272,14 @@ fn main() -> Result<(), eframe::Error> {
     if args.first().map(|s| s.as_str()) == Some("--update-candidate-latest-selftest") {
         if let Err(e) = run_update_candidate_latest_selftest(&args[1..]) {
             eprintln!("update candidate latest selftest failed: {e}");
+            std::process::exit(2);
+        }
+        return Ok(());
+    }
+
+    if args.first().map(|s| s.as_str()) == Some("--update-candidate-stage-selftest") {
+        if let Err(e) = run_update_candidate_stage_selftest(&args[1..]) {
+            eprintln!("update candidate stage selftest failed: {e}");
             std::process::exit(2);
         }
         return Ok(());

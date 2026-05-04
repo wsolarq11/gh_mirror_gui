@@ -396,6 +396,129 @@ pub(crate) fn run_update_candidate_latest_selftest(args: &[String]) -> Result<()
     }
 }
 
+pub(crate) fn run_update_candidate_stage_selftest(args: &[String]) -> Result<(), String> {
+    let mut json_out: Option<PathBuf> = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--json" => {
+                i += 1;
+                json_out = args.get(i).map(PathBuf::from);
+            }
+            other => {
+                return Err(format!(
+                    "unknown --update-candidate-stage-selftest option: {other}"
+                ));
+            }
+        }
+        i += 1;
+    }
+
+    let base_dir = json_out
+        .as_ref()
+        .and_then(|path| path.parent())
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    let evidence_dir = base_dir.join(format!(
+        "update-candidate-stage-selftest-evidence-{}-{}",
+        std::process::id(),
+        nonce
+    ));
+    let stage_root = base_dir.join(format!(
+        "update-candidate-stage-selftest-stage-{}-{}",
+        std::process::id(),
+        nonce
+    ));
+
+    let policy = SourceTrustPolicyConfig::default();
+    let client = Client::builder()
+        .timeout(std::time::Duration::from_secs(120))
+        .build()
+        .map_err(|e| format!("Build update candidate stage selftest client: {e}"))?;
+    let report = stage_latest_update_candidate(
+        &client,
+        UpdateCandidateStageConfig {
+            current_version: env!("CARGO_PKG_VERSION"),
+            source_trust_policy: &policy,
+            evidence_dir: &evidence_dir,
+            stage_root: &stage_root,
+            api_base: None,
+        },
+    );
+
+    let check_evidence_ready = report
+        .check_report
+        .evaluation
+        .evidence_path
+        .as_deref()
+        .is_some_and(|path| Path::new(path).is_file());
+
+    let stage_evidence_ready = match report.status {
+        UpdateCandidateStageStatus::Staged => report
+            .evidence_path
+            .as_deref()
+            .is_some_and(|path| Path::new(path).is_file()),
+        _ => true,
+    };
+
+    let stage_dir_ready = match report.status {
+        UpdateCandidateStageStatus::Staged => report
+            .stage_dir
+            .as_deref()
+            .is_some_and(|dir| Path::new(dir).is_dir()),
+        _ => true,
+    };
+
+    let staged_asset_ready = match report.status {
+        UpdateCandidateStageStatus::Staged => report
+            .staged_asset_path
+            .as_deref()
+            .is_some_and(|path| Path::new(path).is_file()),
+        _ => true,
+    };
+
+    let ok = report.release_tag != "unknown"
+        && report.no_install
+        && report.check_report.evaluation.no_mutation
+        && report.check_report.evidence_write_error.is_none()
+        && check_evidence_ready
+        && report.evidence_write_error.is_none()
+        && stage_evidence_ready
+        && stage_dir_ready
+        && staged_asset_ready;
+
+    let output = serde_json::json!({
+        "schema_version": UPDATE_CANDIDATE_STAGE_SCHEMA_VERSION,
+        "ok": ok,
+        "status": report.status,
+        "allowed_statuses": ["STAGED", "NO_UPDATE", "REFUSED"],
+        "no_mutation": report.check_report.evaluation.no_mutation,
+        "no_install": report.no_install,
+        "check_evidence_ready": check_evidence_ready,
+        "stage_evidence_ready": stage_evidence_ready,
+        "report": report,
+    });
+    let pretty =
+        serde_json::to_string_pretty(&output).map_err(|e| format!("Serialize JSON: {e}"))?;
+    if let Some(json_path) = json_out {
+        std::fs::write(&json_path, format!("{pretty}\n"))
+            .map_err(|e| format!("Write update candidate stage selftest JSON: {e}"))?;
+    }
+    println!("{pretty}");
+    if ok {
+        Ok(())
+    } else {
+        Err(
+            "update candidate stage selftest did not produce a live no-install verdict with evidence"
+                .to_string(),
+        )
+    }
+}
+
 pub(crate) fn evaluate_update_candidate(
     input: UpdateCandidateInput<'_>,
 ) -> UpdateCandidateEvaluation {
