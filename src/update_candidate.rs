@@ -326,6 +326,47 @@ pub(crate) fn refused_update_candidate_check_report(
     finish_update_candidate_check_report(report, evidence_path)
 }
 
+pub(crate) fn refused_update_candidate_stage_report(
+    current_version: &str,
+    reason: impl Into<String>,
+    evidence_dir: &Path,
+) -> UpdateCandidateStageReport {
+    let reason = reason.into();
+    let check_report =
+        refused_update_candidate_check_report(current_version, reason.clone(), evidence_dir);
+    let publisher_key_fingerprint = check_report
+        .publisher_key_fingerprint_sha256()
+        .map(|v| v.to_string());
+
+    let mut report = UpdateCandidateStageReport {
+        schema_version: UPDATE_CANDIDATE_STAGE_SCHEMA_VERSION,
+        status: UpdateCandidateStageStatus::Refused,
+        repo: format!("{SELF_UPDATE_OWNER}/{SELF_UPDATE_REPO}"),
+        release_tag: check_report.release_tag.clone(),
+        release_url: check_report.release_url.clone(),
+        stage_dir: None,
+        staged_asset_path: None,
+        staged_sha256: None,
+        expected_sha256: None,
+        publisher_key_fingerprint_sha256: publisher_key_fingerprint,
+        reason,
+        no_install: true,
+        check_report,
+        evidence_path: None,
+        evidence_write_error: None,
+    };
+
+    if let Some(evidence_path) =
+        allocate_update_candidate_evidence_path(evidence_dir, "stage-runtime-refused")
+    {
+        report.evidence_path = Some(evidence_path.display().to_string());
+        if let Err(e) = write_update_candidate_stage_evidence(&evidence_path, &report) {
+            report.evidence_write_error = Some(e);
+        }
+    }
+    report
+}
+
 pub(crate) fn run_update_candidate_latest_selftest(args: &[String]) -> Result<(), String> {
     let mut json_out: Option<PathBuf> = None;
     let mut i = 0;
@@ -1798,6 +1839,36 @@ mod tests {
         assert!(!requests
             .iter()
             .any(|request| request.starts_with("GET /gh_mirror_gui.exe ")));
+        let _ = std::fs::remove_dir_all(evidence_dir);
+    }
+
+    #[test]
+    fn refused_update_candidate_stage_report_writes_a_reviewable_evidence_record() {
+        let evidence_dir = unique_evidence_dir("refused_stage");
+        let report = refused_update_candidate_stage_report(
+            "0.1.6",
+            "self-update client build failed",
+            &evidence_dir,
+        );
+
+        assert_eq!(report.status, UpdateCandidateStageStatus::Refused);
+        assert!(report.no_install);
+        assert!(report.check_report.evaluation.no_mutation);
+
+        let stage_evidence = report
+            .evidence_path
+            .as_deref()
+            .expect("stage refused report should record an evidence path");
+        assert!(Path::new(stage_evidence).is_file());
+
+        let check_evidence = report
+            .check_report
+            .evaluation
+            .evidence_path
+            .as_deref()
+            .expect("refused check report should record an evidence path");
+        assert!(Path::new(check_evidence).is_file());
+
         let _ = std::fs::remove_dir_all(evidence_dir);
     }
 

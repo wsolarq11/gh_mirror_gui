@@ -57,9 +57,10 @@ use trust_policy::{
 };
 use update_candidate::{
     check_latest_update_candidate, refused_update_candidate_check_report,
-    run_update_candidate_contract_selftest, run_update_candidate_latest_selftest,
-    run_update_candidate_stage_selftest, stage_latest_update_candidate, UpdateCandidateCheckConfig,
-    UpdateCandidateCheckReport, UpdateCandidateStageConfig, UpdateCandidateStageReport,
+    refused_update_candidate_stage_report, run_update_candidate_contract_selftest,
+    run_update_candidate_latest_selftest, run_update_candidate_stage_selftest,
+    stage_latest_update_candidate, UpdateCandidateCheckConfig, UpdateCandidateCheckReport,
+    UpdateCandidateStageConfig, UpdateCandidateStageReport,
 };
 use verification::{
     verification_plan_for_selected_asset, verification_source_summary, verify_downloaded_file,
@@ -743,32 +744,11 @@ impl GhMirrorGui {
                         api_base: None,
                     },
                 ),
-                Err(e) => {
-                    let check_report = refused_update_candidate_check_report(
-                        env!("CARGO_PKG_VERSION"),
-                        format!("self-update client build failed: {e}"),
-                        &evidence_dir,
-                    );
-                    UpdateCandidateStageReport {
-                        schema_version: 1,
-                        status: update_candidate::UpdateCandidateStageStatus::Refused,
-                        repo: "wsolarq11/gh_mirror_gui".to_string(),
-                        release_tag: check_report.release_tag.clone(),
-                        release_url: check_report.release_url.clone(),
-                        stage_dir: None,
-                        staged_asset_path: None,
-                        staged_sha256: None,
-                        expected_sha256: None,
-                        publisher_key_fingerprint_sha256: check_report
-                            .publisher_key_fingerprint_sha256()
-                            .map(ToString::to_string),
-                        reason: "self-update client build failed".to_string(),
-                        no_install: true,
-                        check_report,
-                        evidence_path: None,
-                        evidence_write_error: None,
-                    }
-                }
+                Err(e) => refused_update_candidate_stage_report(
+                    env!("CARGO_PKG_VERSION"),
+                    format!("self-update client build failed: {e}"),
+                    &evidence_dir,
+                ),
             };
             let _ = tx.send(report);
         }));
