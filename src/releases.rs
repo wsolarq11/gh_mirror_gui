@@ -6,35 +6,35 @@ const DEFAULT_GITHUB_API_BASE: &str = "https://api.github.com";
 const RELEASE_RESOLVER_USER_AGENT: &str = "gh_mirror_gui-release-resolver";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum ReleaseQueryKind {
+pub enum ReleaseQueryKind {
     Latest,
     Tag(String),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ReleaseQuery {
-    pub(crate) owner: String,
-    pub(crate) repo: String,
-    pub(crate) kind: ReleaseQueryKind,
+pub struct ReleaseQuery {
+    pub owner: String,
+    pub repo: String,
+    pub kind: ReleaseQueryKind,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ReleaseAsset {
-    pub(crate) name: String,
-    pub(crate) size: u64,
-    pub(crate) browser_download_url: String,
-    pub(crate) content_type: Option<String>,
-    pub(crate) api_url: Option<String>,
+pub struct ReleaseAsset {
+    pub name: String,
+    pub size: u64,
+    pub browser_download_url: String,
+    pub content_type: Option<String>,
+    pub api_url: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ResolvedRelease {
-    pub(crate) owner: String,
-    pub(crate) repo: String,
-    pub(crate) tag_name: String,
-    pub(crate) name: Option<String>,
-    pub(crate) html_url: String,
-    pub(crate) assets: Vec<ReleaseAsset>,
+pub struct ResolvedRelease {
+    pub owner: String,
+    pub repo: String,
+    pub tag_name: String,
+    pub name: Option<String>,
+    pub html_url: String,
+    pub assets: Vec<ReleaseAsset>,
 }
 
 #[derive(serde::Deserialize)]
@@ -67,7 +67,7 @@ impl ReleaseQuery {
     }
 }
 
-pub(crate) fn parse_release_query(input: &str) -> Result<ReleaseQuery, String> {
+pub fn parse_release_query(input: &str) -> Result<ReleaseQuery, String> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
         return Err("Enter a GitHub repository or release URL first".to_string());
@@ -85,7 +85,7 @@ pub(crate) fn parse_release_query(input: &str) -> Result<ReleaseQuery, String> {
     parse_repo_slug(trimmed)
 }
 
-pub(crate) fn is_github_release_asset_download_url(input: &str) -> bool {
+pub fn is_github_release_asset_download_url(input: &str) -> bool {
     let trimmed = input.trim();
     if !looks_like_github_url(trimmed) {
         return false;
@@ -110,22 +110,6 @@ pub(crate) fn resolve_release_assets(
     query: &ReleaseQuery,
 ) -> Result<ResolvedRelease, String> {
     resolve_release_assets_with_base(client, DEFAULT_GITHUB_API_BASE, query)
-}
-
-pub(crate) fn format_asset_size(bytes: u64) -> String {
-    if bytes >= 1024 * 1024 * 1024 {
-        format!("{:.2} GiB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
-    } else if bytes >= 1024 * 1024 {
-        format!("{:.1} MiB", bytes as f64 / (1024.0 * 1024.0))
-    } else if bytes >= 1024 {
-        format!("{:.1} KiB", bytes as f64 / 1024.0)
-    } else {
-        format!("{bytes} B")
-    }
-}
-
-pub(crate) fn asset_picker_label(asset: &ReleaseAsset) -> String {
-    format!("{} ({})", asset.name, format_asset_size(asset.size))
 }
 
 pub(crate) fn resolve_release_assets_with_base(
@@ -443,7 +427,6 @@ mod tests {
         assert_eq!(release.assets.len(), 1);
         assert_eq!(release.assets[0].name, "app.zip");
         assert_eq!(release.assets[0].size, 1_048_576);
-        assert_eq!(asset_picker_label(&release.assets[0]), "app.zip (1.0 MiB)");
     }
 
     #[test]

@@ -8,14 +8,14 @@ use std::path::{Path, PathBuf};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub(crate) enum MismatchFilePolicy {
+pub enum MismatchFilePolicy {
     #[default]
     Quarantine,
     Delete,
 }
 
 impl MismatchFilePolicy {
-    pub(crate) fn as_str(&self) -> &'static str {
+    pub fn as_str(&self) -> &'static str {
         match self {
             Self::Quarantine => "QUARANTINE",
             Self::Delete => "DELETE",
@@ -24,11 +24,11 @@ impl MismatchFilePolicy {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) struct TrustPolicyConfig {
-    pub(crate) unknown_keep_file: bool,
-    pub(crate) unknown_allow_open: bool,
-    pub(crate) mismatch_file_policy: MismatchFilePolicy,
-    pub(crate) source_trust: SourceTrustPolicyConfig,
+pub struct TrustPolicyConfig {
+    pub unknown_keep_file: bool,
+    pub unknown_allow_open: bool,
+    pub mismatch_file_policy: MismatchFilePolicy,
+    pub source_trust: SourceTrustPolicyConfig,
 }
 
 impl Default for TrustPolicyConfig {
@@ -43,7 +43,7 @@ impl Default for TrustPolicyConfig {
 }
 
 impl TrustPolicyConfig {
-    pub(crate) fn snapshot(&self) -> TrustPolicySnapshot {
+    pub fn snapshot(&self) -> TrustPolicySnapshot {
         TrustPolicySnapshot {
             schema_version: 2,
             unknown_keep_file: self.unknown_keep_file,
@@ -55,18 +55,18 @@ impl TrustPolicyConfig {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) struct TrustPolicySnapshot {
-    pub(crate) schema_version: u32,
-    pub(crate) unknown_keep_file: bool,
-    pub(crate) unknown_allow_open: bool,
-    pub(crate) mismatch_file_policy: String,
+pub struct TrustPolicySnapshot {
+    pub schema_version: u32,
+    pub unknown_keep_file: bool,
+    pub unknown_allow_open: bool,
+    pub mismatch_file_policy: String,
     #[serde(default)]
-    pub(crate) source_trust: SourceTrustPolicySnapshot,
+    pub source_trust: SourceTrustPolicySnapshot,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub(crate) enum FileDispositionAction {
+pub enum FileDispositionAction {
     Keep,
     Quarantine,
     Delete,
@@ -112,10 +112,10 @@ pub(crate) struct FileDispositionRecord {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct AppliedFileDisposition {
-    pub(crate) action: FileDispositionAction,
-    pub(crate) original_path: PathBuf,
-    pub(crate) final_path: Option<PathBuf>,
+pub struct AppliedFileDisposition {
+    pub action: FileDispositionAction,
+    pub original_path: PathBuf,
+    pub final_path: Option<PathBuf>,
 }
 
 #[cfg(test)]
@@ -261,7 +261,7 @@ pub(crate) fn open_location_button_label(
     }
 }
 
-pub(crate) fn open_location_button_label_for_report(
+pub fn open_location_button_label_for_report(
     report: &VerificationReport,
     disposition: &AppliedFileDisposition,
     policy: &TrustPolicyConfig,
@@ -292,7 +292,7 @@ pub(crate) fn open_location_button_label_for_report(
     }
 }
 
-pub(crate) fn file_disposition_summary(disposition: &AppliedFileDisposition) -> String {
+pub fn file_disposition_summary(disposition: &AppliedFileDisposition) -> String {
     match disposition.action {
         FileDispositionAction::Keep => "file kept".to_string(),
         FileDispositionAction::Delete => "file deleted by trust policy".to_string(),

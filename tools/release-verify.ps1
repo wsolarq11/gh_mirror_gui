@@ -529,7 +529,7 @@ function Assert-TrustCenterBackendContract {
         -Text $mainText `
         -Label $mainRelativePath `
         -RequiredPatterns @(
-            'mod trust_center;',
+            'gh_mirror_gui::backend_contract',
             'trust_center_snapshot',
             'render_trust_center_snapshot'
         )

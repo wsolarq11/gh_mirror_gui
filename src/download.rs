@@ -17,7 +17,7 @@ pub(crate) const SEGMENTED_MIN_SIZE: u64 = 8 * 1024 * 1024;
 pub(crate) const SEGMENT_SIZE: u64 = 4 * 1024 * 1024;
 pub(crate) const SEGMENT_CONCURRENCY: usize = 4;
 
-pub(crate) struct DownloadControl {
+pub struct DownloadControl {
     cancel_flag: AtomicBool,
     pause_flag: AtomicBool,
     pause_mutex: Mutex<()>,
@@ -33,7 +33,7 @@ struct CachedClient {
 }
 
 impl DownloadControl {
-    pub(crate) fn new() -> Arc<Self> {
+    pub fn new() -> Arc<Self> {
         Arc::new(Self {
             cancel_flag: AtomicBool::new(false),
             pause_flag: AtomicBool::new(false),
@@ -42,21 +42,21 @@ impl DownloadControl {
         })
     }
 
-    pub(crate) fn cancel(&self) {
+    pub fn cancel(&self) {
         self.cancel_flag.store(true, Ordering::Relaxed);
         self.pause_condvar.notify_all();
     }
 
-    pub(crate) fn pause(&self) {
+    pub fn pause(&self) {
         self.pause_flag.store(true, Ordering::Relaxed);
     }
 
-    pub(crate) fn resume(&self) {
+    pub fn resume(&self) {
         self.pause_flag.store(false, Ordering::Relaxed);
         self.pause_condvar.notify_all();
     }
 
-    pub(crate) fn is_paused(&self) -> bool {
+    pub fn is_paused(&self) -> bool {
         self.pause_flag.load(Ordering::Relaxed)
     }
 }
@@ -96,22 +96,6 @@ pub(crate) struct SelectedDownloadStrategy {
     pub(crate) variant: String,
     pub(crate) config: Option<SegmentedDownloadConfig>,
     pub(crate) history_matches: usize,
-}
-
-pub(crate) fn extract_filename(url: &str) -> Option<String> {
-    let parts: Vec<&str> = url.rsplitn(2, '/').collect();
-    if parts.len() >= 2 && !parts[0].is_empty() {
-        return Some(parts[0].to_string());
-    }
-    None
-}
-
-pub(crate) fn build_effective_url(mirror_url: &str, raw_url: &str) -> String {
-    if mirror_url.is_empty() {
-        raw_url.to_string()
-    } else {
-        format!("{}{}", mirror_url, raw_url)
-    }
 }
 
 pub(crate) fn build_client(
@@ -234,16 +218,6 @@ pub(crate) fn probe_download(client: &Client, url: &str) -> Result<DownloadProbe
         etag,
         last_modified,
     })
-}
-
-pub(crate) fn format_speed(speed_kbps: f64) -> String {
-    if speed_kbps > 1024.0 {
-        format!("{:.1} MB/s", speed_kbps / 1024.0)
-    } else if speed_kbps > 1.0 {
-        format!("{:.0} KB/s", speed_kbps)
-    } else {
-        format!("{:.1} B/s", speed_kbps * 1024.0)
-    }
 }
 
 pub(crate) fn download_with_strategy(
@@ -817,4 +791,376 @@ pub(crate) fn sha256_file(path: &PathBuf) -> Result<String, String> {
     }
 
     Ok(format!("{:X}", hasher.finalize()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use reqwest::blocking::Client;
+    use std::net::TcpListener;
+
+    fn unique_test_path(name: &str) -> PathBuf {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "gh_mirror_gui_{}_{}_{}",
+            std::process::id(),
+            nonce,
+            name
+        ))
+    }
+
+    fn serve_once(body: Vec<u8>) -> (String, std::thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 2048];
+            let n = stream.read(&mut buf).unwrap();
+            let req = String::from_utf8_lossy(&buf[..n]);
+
+            let range_start = req
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    if name.eq_ignore_ascii_case("range") {
+                        value.trim().strip_prefix("bytes=")?.strip_suffix('-')
+                    } else {
+                        None
+                    }
+                })
+                .and_then(|start| start.parse::<usize>().ok())
+                .unwrap_or(0);
+
+            if range_start > 0 {
+                let payload = &body[range_start..];
+                let header = format!(
+                    "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {}-{}/{}\r\nConnection: close\r\n\r\n",
+                    payload.len(),
+                    range_start,
+                    body.len() - 1,
+                    body.len()
+                );
+                stream.write_all(header.as_bytes()).unwrap();
+                stream.write_all(payload).unwrap();
+            } else {
+                let header = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                stream.write_all(header.as_bytes()).unwrap();
+                stream.write_all(&body).unwrap();
+            }
+        });
+
+        (format!("http://{addr}/file.bin"), handle)
+    }
+
+    fn parse_range(req: &str, body_len: usize) -> Option<(usize, usize)> {
+        req.lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                if name.eq_ignore_ascii_case("range") {
+                    value.trim().strip_prefix("bytes=")
+                } else {
+                    None
+                }
+            })
+            .and_then(|range| {
+                let (start, end) = range.split_once('-')?;
+                let start = start.parse::<usize>().ok()?;
+                let end = if end.is_empty() {
+                    body_len.checked_sub(1)?
+                } else {
+                    end.parse::<usize>().ok()?
+                };
+                Some((start, end.min(body_len - 1)))
+            })
+    }
+
+    fn serve_range_requests(
+        body: Vec<u8>,
+        expected_requests: usize,
+    ) -> (String, std::thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = std::thread::spawn(move || {
+            for _ in 0..expected_requests {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut buf = [0u8; 4096];
+                let n = stream.read(&mut buf).unwrap();
+                let req = String::from_utf8_lossy(&buf[..n]);
+                let method = req
+                    .lines()
+                    .next()
+                    .and_then(|line| line.split_whitespace().next())
+                    .unwrap_or("GET");
+
+                if method == "HEAD" {
+                    let header = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nAccept-Ranges: bytes\r\nETag: \"test-etag\"\r\nLast-Modified: Mon, 01 Jan 2024 00:00:00 GMT\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    stream.write_all(header.as_bytes()).unwrap();
+                    continue;
+                }
+
+                if let Some((start, end)) = parse_range(&req, body.len()) {
+                    let payload = &body[start..=end];
+                    let header = format!(
+                        "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {}-{}/{}\r\nAccept-Ranges: bytes\r\nETag: \"test-etag\"\r\nLast-Modified: Mon, 01 Jan 2024 00:00:00 GMT\r\nConnection: close\r\n\r\n",
+                        payload.len(),
+                        start,
+                        end,
+                        body.len()
+                    );
+                    stream.write_all(header.as_bytes()).unwrap();
+                    stream.write_all(payload).unwrap();
+                } else {
+                    let header = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    stream.write_all(header.as_bytes()).unwrap();
+                    stream.write_all(&body).unwrap();
+                }
+            }
+        });
+
+        (format!("http://{addr}/file.bin"), handle)
+    }
+
+    fn serve_ignore_range_once(body: Vec<u8>) -> (String, std::thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 2048];
+            let _ = stream.read(&mut buf).unwrap();
+            let header = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            stream.write_all(header.as_bytes()).unwrap();
+            stream.write_all(&body).unwrap();
+        });
+
+        (format!("http://{addr}/file.bin"), handle)
+    }
+
+    fn serve_drop_then_once(body: Vec<u8>) -> (String, std::thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = std::thread::spawn(move || {
+            let (mut dropped_stream, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 256];
+            let _ = dropped_stream.read(&mut buf);
+            drop(dropped_stream);
+
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 2048];
+            let _ = stream.read(&mut buf).unwrap();
+            let header = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            stream.write_all(header.as_bytes()).unwrap();
+            stream.write_all(&body).unwrap();
+        });
+
+        (format!("http://{addr}/file.bin"), handle)
+    }
+
+    #[test]
+    fn client_builder_rejects_invalid_proxy_url() {
+        let err = build_client("http://127.0.0.1:abc", 5, false).unwrap_err();
+        assert!(err.contains("Invalid proxy URL"));
+    }
+
+    #[test]
+    fn probe_download_detects_range_support_and_metadata() {
+        let body = b"range probe payload".to_vec();
+        let (url, server) = serve_range_requests(body.clone(), 2);
+        let client = Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+
+        let probe = probe_download(&client, &url).unwrap();
+
+        server.join().unwrap();
+        assert_eq!(probe.total, body.len() as u64);
+        assert!(probe.range_supported);
+        assert_eq!(probe.etag, Some("\"test-etag\"".to_string()));
+        assert_eq!(
+            probe.last_modified,
+            Some("Mon, 01 Jan 2024 00:00:00 GMT".to_string())
+        );
+    }
+
+    #[test]
+    fn download_single_creates_new_temp_file_with_write_access() {
+        let body = b"fresh download payload".to_vec();
+        let (url, server) = serve_once(body.clone());
+        let save_path = unique_test_path("fresh.bin");
+        let client = Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+        let ctrl = DownloadControl::new();
+        let (tx, rx) = std::sync::mpsc::channel();
+
+        download_single(
+            &client,
+            &url,
+            save_path.to_str().unwrap(),
+            body.len() as u64,
+            &ctrl,
+            &tx,
+        )
+        .unwrap();
+
+        server.join().unwrap();
+        assert_eq!(fs::read(&save_path).unwrap(), body);
+        assert!(rx
+            .try_iter()
+            .any(|(downloaded, total, _, _)| downloaded > 0 && total == body.len() as u64));
+        assert!(!save_path.with_extension("bin.part").exists());
+        let _ = fs::remove_file(save_path);
+    }
+
+    #[test]
+    fn download_single_retries_transient_request_send_failure() {
+        let body = b"retry after dropped connection".to_vec();
+        let (url, server) = serve_drop_then_once(body.clone());
+        let save_path = unique_test_path("retry-send.bin");
+        let client = Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+        let ctrl = DownloadControl::new();
+        let (tx, _rx) = std::sync::mpsc::channel();
+
+        download_single(
+            &client,
+            &url,
+            save_path.to_str().unwrap(),
+            body.len() as u64,
+            &ctrl,
+            &tx,
+        )
+        .unwrap();
+
+        server.join().unwrap();
+        assert_eq!(fs::read(&save_path).unwrap(), body);
+        let _ = fs::remove_file(save_path);
+    }
+
+    #[test]
+    fn download_single_restarts_when_resume_range_is_ignored() {
+        let body = b"server ignored range and returned full body".to_vec();
+        let (url, server) = serve_ignore_range_once(body.clone());
+        let save_path = unique_test_path("ignored-range.bin");
+        let part_path = format!("{}.part", save_path.to_string_lossy());
+        fs::write(&part_path, &body[..7]).unwrap();
+
+        let client = Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+        let ctrl = DownloadControl::new();
+        let (tx, _rx) = std::sync::mpsc::channel();
+
+        download_single(
+            &client,
+            &url,
+            save_path.to_str().unwrap(),
+            body.len() as u64,
+            &ctrl,
+            &tx,
+        )
+        .unwrap();
+
+        server.join().unwrap();
+        assert_eq!(fs::read(&save_path).unwrap(), body);
+        assert!(!PathBuf::from(&part_path).exists());
+        let _ = fs::remove_file(save_path);
+    }
+
+    #[test]
+    fn download_segmented_writes_all_ranges_and_removes_resume_meta() {
+        let body = (0..=255).cycle().take(1024).collect::<Vec<u8>>();
+        let segment_size = 128;
+        let request_count = body.len() / segment_size;
+        let (url, server) = serve_range_requests(body.clone(), request_count);
+        let save_path = unique_test_path("segmented.bin");
+        let probe = DownloadProbe {
+            total: body.len() as u64,
+            range_supported: true,
+            etag: Some("\"test-etag\"".to_string()),
+            last_modified: Some("Mon, 01 Jan 2024 00:00:00 GMT".to_string()),
+        };
+        let client = Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+        let ctrl = DownloadControl::new();
+        let (tx, rx) = std::sync::mpsc::channel();
+
+        download_segmented(
+            &client,
+            &url,
+            save_path.to_str().unwrap(),
+            &probe,
+            SegmentedDownloadConfig {
+                segment_size: segment_size as u64,
+                concurrency: 3,
+            },
+            &ctrl,
+            &tx,
+        )
+        .unwrap();
+
+        server.join().unwrap();
+        assert_eq!(fs::read(&save_path).unwrap(), body);
+        assert!(!PathBuf::from(format!("{}.part", save_path.to_string_lossy())).exists());
+        assert!(!PathBuf::from(format!("{}.part.json", save_path.to_string_lossy())).exists());
+        assert!(rx
+            .try_iter()
+            .any(|(downloaded, total, _, _)| downloaded == total && total == body.len() as u64));
+        let _ = fs::remove_file(save_path);
+    }
+
+    #[test]
+    fn download_single_resumes_existing_part_file_with_range_request() {
+        let body = b"resume download payload".to_vec();
+        let (url, server) = serve_once(body.clone());
+        let save_path = unique_test_path("resume.bin");
+        let part_path = format!("{}.part", save_path.to_string_lossy());
+        fs::write(&part_path, &body[..7]).unwrap();
+
+        let client = Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+        let ctrl = DownloadControl::new();
+        let (tx, _rx) = std::sync::mpsc::channel();
+
+        download_single(
+            &client,
+            &url,
+            save_path.to_str().unwrap(),
+            body.len() as u64,
+            &ctrl,
+            &tx,
+        )
+        .unwrap();
+
+        server.join().unwrap();
+        assert_eq!(fs::read(&save_path).unwrap(), body);
+        assert!(!PathBuf::from(&part_path).exists());
+        let _ = fs::remove_file(save_path);
+    }
 }

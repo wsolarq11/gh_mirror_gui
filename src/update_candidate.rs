@@ -44,34 +44,34 @@ pub(crate) struct UpdateCandidateStageConfig<'a> {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub(crate) enum UpdateCandidateStageStatus {
+pub enum UpdateCandidateStageStatus {
     Staged,
     NoUpdate,
     Refused,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) struct UpdateCandidateStageReport {
-    pub(crate) schema_version: u32,
-    pub(crate) status: UpdateCandidateStageStatus,
-    pub(crate) repo: String,
-    pub(crate) release_tag: String,
-    pub(crate) release_url: String,
-    pub(crate) stage_dir: Option<String>,
-    pub(crate) staged_asset_path: Option<String>,
-    pub(crate) staged_sha256: Option<String>,
-    pub(crate) expected_sha256: Option<String>,
-    pub(crate) publisher_key_fingerprint_sha256: Option<String>,
-    pub(crate) reason: String,
-    pub(crate) no_install: bool,
-    pub(crate) check_report: UpdateCandidateCheckReport,
-    pub(crate) evidence_path: Option<String>,
-    pub(crate) evidence_write_error: Option<String>,
+pub struct UpdateCandidateStageReport {
+    pub schema_version: u32,
+    pub status: UpdateCandidateStageStatus,
+    pub repo: String,
+    pub release_tag: String,
+    pub release_url: String,
+    pub stage_dir: Option<String>,
+    pub staged_asset_path: Option<String>,
+    pub staged_sha256: Option<String>,
+    pub expected_sha256: Option<String>,
+    pub publisher_key_fingerprint_sha256: Option<String>,
+    pub reason: String,
+    pub no_install: bool,
+    pub check_report: UpdateCandidateCheckReport,
+    pub evidence_path: Option<String>,
+    pub evidence_write_error: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub(crate) enum UpdateCandidateStatus {
+pub enum UpdateCandidateStatus {
     Candidate,
     NoUpdate,
     Refused,
@@ -88,37 +88,37 @@ impl UpdateCandidateStatus {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) struct UpdateCandidateEvaluation {
-    pub(crate) schema_version: u32,
-    pub(crate) status: UpdateCandidateStatus,
-    pub(crate) current_version: String,
-    pub(crate) candidate_version: String,
-    pub(crate) release_tag: String,
-    pub(crate) asset_name: String,
-    pub(crate) reason: String,
-    pub(crate) verification_status: String,
-    pub(crate) source_authenticity_status: Option<String>,
-    pub(crate) source_trust_decision: Option<String>,
-    pub(crate) publisher_key_fingerprint_sha256: Option<String>,
-    pub(crate) evidence_path: Option<String>,
-    pub(crate) no_mutation: bool,
+pub struct UpdateCandidateEvaluation {
+    pub schema_version: u32,
+    pub status: UpdateCandidateStatus,
+    pub current_version: String,
+    pub candidate_version: String,
+    pub release_tag: String,
+    pub asset_name: String,
+    pub reason: String,
+    pub verification_status: String,
+    pub source_authenticity_status: Option<String>,
+    pub source_trust_decision: Option<String>,
+    pub publisher_key_fingerprint_sha256: Option<String>,
+    pub evidence_path: Option<String>,
+    pub no_mutation: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) struct UpdateCandidateCheckReport {
-    pub(crate) schema_version: u32,
-    pub(crate) repo: String,
-    pub(crate) release_tag: String,
-    pub(crate) release_url: String,
-    pub(crate) asset_name: String,
-    pub(crate) release_publisher_key_fingerprint_sha256: Option<String>,
-    pub(crate) evaluation: UpdateCandidateEvaluation,
-    pub(crate) verification_report: Option<VerificationReport>,
-    pub(crate) evidence_write_error: Option<String>,
+pub struct UpdateCandidateCheckReport {
+    pub schema_version: u32,
+    pub repo: String,
+    pub release_tag: String,
+    pub release_url: String,
+    pub asset_name: String,
+    pub release_publisher_key_fingerprint_sha256: Option<String>,
+    pub evaluation: UpdateCandidateEvaluation,
+    pub verification_report: Option<VerificationReport>,
+    pub evidence_write_error: Option<String>,
 }
 
 impl UpdateCandidateCheckReport {
-    pub(crate) fn status_display(&self) -> &'static str {
+    pub fn status_display(&self) -> &'static str {
         match self.evaluation.status {
             UpdateCandidateStatus::Candidate => "candidate",
             UpdateCandidateStatus::NoUpdate => "no-update",
@@ -126,7 +126,7 @@ impl UpdateCandidateCheckReport {
         }
     }
 
-    pub(crate) fn refusal_reason(&self) -> Option<&str> {
+    pub fn refusal_reason(&self) -> Option<&str> {
         if self.evaluation.status == UpdateCandidateStatus::Refused {
             Some(self.evaluation.reason.as_str())
         } else {
@@ -134,7 +134,7 @@ impl UpdateCandidateCheckReport {
         }
     }
 
-    pub(crate) fn publisher_key_fingerprint_sha256(&self) -> Option<&str> {
+    pub fn publisher_key_fingerprint_sha256(&self) -> Option<&str> {
         self.evaluation
             .publisher_key_fingerprint_sha256
             .as_deref()
@@ -367,7 +367,7 @@ pub(crate) fn refused_update_candidate_stage_report(
     report
 }
 
-pub(crate) fn run_update_candidate_latest_selftest(args: &[String]) -> Result<(), String> {
+pub fn run_update_candidate_latest_selftest(args: &[String]) -> Result<(), String> {
     let mut json_out: Option<PathBuf> = None;
     let mut i = 0;
     while i < args.len() {
@@ -437,7 +437,7 @@ pub(crate) fn run_update_candidate_latest_selftest(args: &[String]) -> Result<()
     }
 }
 
-pub(crate) fn run_update_candidate_stage_selftest(args: &[String]) -> Result<(), String> {
+pub fn run_update_candidate_stage_selftest(args: &[String]) -> Result<(), String> {
     let mut json_out: Option<PathBuf> = None;
     let mut current_version_override: Option<String> = None;
     let mut trusted_publisher_key_file: Option<PathBuf> = None;
@@ -1228,7 +1228,7 @@ fn sanitize_evidence_component(value: &str) -> String {
     }
 }
 
-pub(crate) fn run_update_candidate_contract_selftest(args: &[String]) -> Result<(), String> {
+pub fn run_update_candidate_contract_selftest(args: &[String]) -> Result<(), String> {
     let mut json_out: Option<PathBuf> = None;
     let mut i = 0;
     while i < args.len() {

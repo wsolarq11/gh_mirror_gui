@@ -1,68 +1,24 @@
-mod backend_contract;
-mod bench;
-mod download;
-mod history;
-mod releases;
-mod source_trust;
-mod staged_release;
-mod trust_center;
-mod trust_policy;
-mod update_candidate;
-mod verification;
-
-use backend_contract::{BackendClientSettings, DownloadCompletion};
-#[cfg(test)]
-use bench::choose_history_backed_strategy;
-#[cfg(test)]
-use bench::parse_bench_config;
-use bench::run_bench_download;
-use directories::UserDirs;
-#[cfg(test)]
-use download::{build_client, probe_download, DownloadProbe};
-use download::{build_effective_url, extract_filename, format_speed, sha256_file, DownloadControl};
-#[cfg(test)]
-use download::{
-    download_segmented, download_single, SegmentedDownloadConfig, SEGMENT_CONCURRENCY, SEGMENT_SIZE,
+use backend_contract::{
+    AppliedFileDisposition, DownloadControl, DownloadVerificationPlan, ImportedPublisherKeyPin,
+    MismatchFilePolicy, ResolvedRelease, TrustCenterSnapshot, TrustPolicyConfig,
+    TrustPolicySnapshot, UpdateCandidateCheckReport, UpdateCandidateStageReport,
+    VerificationReport, VerificationStatus, VerificationTrustDecision,
 };
+use directories::UserDirs;
 use eframe::egui;
 use eframe::Storage;
-use history::default_history_path;
-#[cfg(test)]
-use history::BenchHistoryEntry;
+use gh_mirror_gui::backend_contract;
+use gh_mirror_gui::backend_contract::{BackendClientSettings, DownloadCompletion};
 use notify_rust::Notification;
-use releases::{
-    asset_picker_label, is_github_release_asset_download_url, parse_release_query, ResolvedRelease,
-};
 use reqwest::blocking::Client;
 use rfd::FileDialog;
-use source_trust::{normalize_public_key_pin, trusted_key_fingerprint, ImportedPublisherKeyPin};
-use staged_release::run_staged_release_download_selftest;
 use std::env;
 #[cfg(test)]
 use std::fs;
-#[cfg(test)]
-use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::{Duration, Instant};
-use trust_center::{
-    publisher_key_source_label_for_policy, trust_center_snapshot, TrustCenterSnapshot,
-};
-#[cfg(test)]
-use trust_policy::FileDispositionAction;
-use trust_policy::{
-    file_disposition_summary, open_location_button_label_for_report, AppliedFileDisposition,
-    MismatchFilePolicy, TrustPolicyConfig, TrustPolicySnapshot,
-};
-use update_candidate::{
-    run_update_candidate_contract_selftest, run_update_candidate_latest_selftest,
-    run_update_candidate_stage_selftest, UpdateCandidateCheckReport, UpdateCandidateStageReport,
-};
-use verification::{
-    verification_plan_for_selected_asset, verification_source_summary, DownloadVerificationPlan,
-    VerificationReport, VerificationStatus,
-};
 
 const RELEASE_PRIVATE_KEY_ENV: &str = "RELEASE_ED25519_PRIVATE_KEY_HEX";
 const LEGACY_RELEASE_PRIVATE_KEY_ENV: &str = "GH_MIRROR_GUI_ED25519_PRIVATE_KEY_HEX";
@@ -78,10 +34,10 @@ fn format_download_completion_status(
     disposition: &AppliedFileDisposition,
 ) -> String {
     let short_hash = report.file_sha256.chars().take(12).collect::<String>();
-    let disposition_summary = file_disposition_summary(disposition);
+    let disposition_summary = backend_contract::file_disposition_summary(disposition);
     let source_trust = source_trust_status_summary(report);
     match (report.status.clone(), report.effective_trust_decision()) {
-        (VerificationStatus::Verified, verification::VerificationTrustDecision::Block) => format!(
+        (VerificationStatus::Verified, VerificationTrustDecision::Block) => format!(
             "❌ Verification BLOCKED · SHA256 matched {} but source authenticity is {} · {} · {}",
             report.source.as_deref().unwrap_or("verification asset"),
             source_trust,
@@ -115,7 +71,7 @@ fn format_download_completion_status(
 
 fn format_download_notification_status(report: &VerificationReport) -> String {
     match (report.status.clone(), report.effective_trust_decision()) {
-        (VerificationStatus::Verified, verification::VerificationTrustDecision::Block) => {
+        (VerificationStatus::Verified, VerificationTrustDecision::Block) => {
             "Download blocked (UNTRUSTED SOURCE)".to_string()
         }
         (VerificationStatus::Verified, _) => "Download complete (VERIFIED)".to_string(),
@@ -146,8 +102,8 @@ fn source_trust_status_summary(report: &VerificationReport) -> String {
                 .unwrap_or_default();
             format!(
                 "{} decision={}{}{}",
-                trust.status_label(),
-                trust.decision_label(),
+                trust.status.as_str(),
+                trust.decision.as_str(),
                 signature,
                 pin
             )
@@ -377,7 +333,7 @@ fn render_update_candidate_stage(ui: &mut egui::Ui, report: &UpdateCandidateStag
 fn import_publisher_key_pin_from_path(path: &Path) -> Result<String, String> {
     let text = std::fs::read_to_string(path)
         .map_err(|e| format!("Read publisher public key {}: {e}", path.display()))?;
-    normalize_public_key_pin(&text)
+    backend_contract::normalize_public_key_pin(&text)
 }
 
 fn apply_imported_publisher_key_pin(
@@ -534,7 +490,7 @@ impl GhMirrorGui {
                         unknown_keep_file: state.trust_unknown_keep_file,
                         unknown_allow_open: state.trust_unknown_allow_open,
                         mismatch_file_policy: state.trust_mismatch_file_policy,
-                        source_trust: source_trust::SourceTrustPolicyConfig {
+                        source_trust: backend_contract::SourceTrustPolicyConfig {
                             require_trusted_source: state.source_trust_require_signed,
                             trusted_publisher_key: state.source_trust_publisher_key,
                         },
@@ -717,7 +673,7 @@ impl GhMirrorGui {
         }
 
         let input = self.url.trim().to_string();
-        let query = match parse_release_query(&input) {
+        let query = match backend_contract::parse_release_query(&input) {
             Ok(query) => query,
             Err(e) => {
                 self.release = None;
@@ -731,10 +687,13 @@ impl GhMirrorGui {
         let proxy = self.proxy.clone();
         let allow_invalid_certs = self.allow_invalid_certs;
         let (tx, rx) = mpsc::channel::<ReleaseLookupMessage>();
+        let kind_label = match &query.kind {
+            backend_contract::ReleaseQueryKind::Latest => "latest".to_string(),
+            backend_contract::ReleaseQueryKind::Tag(tag) => format!("tag {tag}"),
+        };
         let status = format!(
-            "Resolving {} {} assets...",
-            query.repo_slug(),
-            query.selector_label()
+            "Resolving {}/{} {kind_label} assets...",
+            query.owner, query.repo
         );
         self.release_status = status.clone();
         self.status = status;
@@ -750,13 +709,14 @@ impl GhMirrorGui {
     }
 
     fn input_requires_release_asset_choice(&self) -> bool {
-        parse_release_query(&self.url).is_ok() && !is_github_release_asset_download_url(&self.url)
+        backend_contract::parse_release_query(&self.url).is_ok()
+            && !backend_contract::is_github_release_asset_download_url(&self.url)
     }
 
     fn selected_release_verification_plan(&self) -> Option<DownloadVerificationPlan> {
         let release = self.release.as_ref()?;
         let asset_index = self.selected_release_asset?;
-        verification_plan_for_selected_asset(release, asset_index)
+        backend_contract::verification_plan_for_selected_asset(release, asset_index)
     }
 
     fn apply_selected_release_asset(&mut self) -> bool {
@@ -785,7 +745,10 @@ impl GhMirrorGui {
         }
 
         let Some((asset, source_label)) = self.release.as_ref().and_then(|release| {
-            source_trust::publisher_key_asset(&release.assets)
+            release
+                .assets
+                .iter()
+                .find(|asset| asset.name == RELEASE_PUBLIC_KEY_ASSET)
                 .cloned()
                 .map(|asset| {
                     let source_label = format!(
@@ -867,7 +830,10 @@ impl GhMirrorGui {
         let allow_invalid_certs = self.allow_invalid_certs;
         let trust_policy = self.trust_policy.clone();
         let publisher_key_source_at_decision =
-            publisher_key_source_label_for_policy(&trust_policy, &self.publisher_key_source);
+            backend_contract::publisher_key_source_label_for_policy(
+                &trust_policy,
+                &self.publisher_key_source,
+            );
         let history_path = self.effective_history_path();
         let (progress_tx, progress_rx) = mpsc::channel();
         let (result_tx, result_rx) = mpsc::channel::<DownloadResultMessage>();
@@ -879,7 +845,12 @@ impl GhMirrorGui {
         self.elapsed_text.clear();
         self.status = verification_plan
             .as_ref()
-            .map(|plan| format!("Starting download... {}", verification_source_summary(plan)))
+            .map(|plan| {
+                format!(
+                    "Starting download... {}",
+                    backend_contract::verification_source_summary(plan)
+                )
+            })
             .unwrap_or_else(|| String::from("Starting download... verification will be UNKNOWN"));
 
         self.download_thread = Some(thread::spawn(move || {
@@ -1184,7 +1155,7 @@ impl eframe::App for GhMirrorGui {
                 }
                 if url_response.lost_focus()
                     && ui.input(|i| i.key_pressed(egui::Key::Enter))
-                    && parse_release_query(&self.url).is_ok()
+                    && backend_contract::parse_release_query(&self.url).is_ok()
                 {
                     self.start_release_lookup();
                 }
@@ -1193,7 +1164,7 @@ impl eframe::App for GhMirrorGui {
                         if let Ok(text) = clipboard.get_text() {
                             self.url = text;
                             self.clear_release_lookup_result();
-                            if parse_release_query(&self.url).is_ok() {
+                            if backend_contract::parse_release_query(&self.url).is_ok() {
                                 self.start_release_lookup();
                             }
                         }
@@ -1230,8 +1201,10 @@ impl eframe::App for GhMirrorGui {
                         release.owner, release.repo, release.tag_name, release_name
                     ));
 
-                    if let Some(publisher_key_asset) =
-                        source_trust::publisher_key_asset(&release.assets)
+                    if let Some(publisher_key_asset) = release
+                        .assets
+                        .iter()
+                        .find(|asset| asset.name == RELEASE_PUBLIC_KEY_ASSET)
                     {
                         ui.horizontal(|ui| {
                             ui.label(format!("Publisher key: {}", publisher_key_asset.name));
@@ -1297,10 +1270,12 @@ impl eframe::App for GhMirrorGui {
                                 .as_deref()
                                 .unwrap_or("unknown content type");
                             ui.label(format!("{} · {}", asset_picker_label(asset), content_type));
-                            if let Some(plan) =
-                                verification_plan_for_selected_asset(&release, selected_idx)
+                            if let Some(plan) = backend_contract::verification_plan_for_selected_asset(
+                                &release,
+                                selected_idx,
+                            )
                             {
-                                ui.label(verification_source_summary(&plan));
+                                ui.label(backend_contract::verification_source_summary(&plan));
                             }
                             ui.monospace(&asset.browser_download_url);
                         }
@@ -1481,7 +1456,7 @@ impl eframe::App for GhMirrorGui {
                                     self.trust_policy.source_trust.trusted_publisher_key = pin;
                                     self.publisher_key_source =
                                         format!("local file {}", path.display());
-                                    let fingerprint = trusted_key_fingerprint(
+                                    let fingerprint = backend_contract::trusted_key_fingerprint(
                                         &self.trust_policy.source_trust.trusted_publisher_key,
                                     )
                                     .unwrap_or_else(|| "unknown".to_string());
@@ -1500,7 +1475,7 @@ impl eframe::App for GhMirrorGui {
                         }
                     }
                     if ui.button("Normalize key").clicked() {
-                        match normalize_public_key_pin(
+                        match backend_contract::normalize_public_key_pin(
                             &self.trust_policy.source_trust.trusted_publisher_key,
                         ) {
                             Ok(pin) => {
@@ -1521,13 +1496,14 @@ impl eframe::App for GhMirrorGui {
                         self.publisher_key_source.clear();
                     }
                 });
-                if let Some(fingerprint) =
-                    trusted_key_fingerprint(&self.trust_policy.source_trust.trusted_publisher_key)
+                if let Some(fingerprint) = backend_contract::trusted_key_fingerprint(
+                    &self.trust_policy.source_trust.trusted_publisher_key,
+                )
                 {
                     ui.small(format!("Pinned key SHA256 fingerprint: {fingerprint}"));
                     ui.small(format!(
                         "Pinned key source: {}",
-                        publisher_key_source_label_for_policy(
+                        backend_contract::publisher_key_source_label_for_policy(
                             &self.trust_policy,
                             &self.publisher_key_source
                         )
@@ -1630,7 +1606,7 @@ impl eframe::App for GhMirrorGui {
                     match (report.status.clone(), report.effective_trust_decision()) {
                         (
                             VerificationStatus::Verified,
-                            verification::VerificationTrustDecision::Block,
+                            VerificationTrustDecision::Block,
                         ) => {
                             ui.colored_label(
                                 egui::Color32::from_rgb(220, 70, 70),
@@ -1683,7 +1659,7 @@ impl eframe::App for GhMirrorGui {
                     if let (Some(download_path), Some(disposition)) =
                         (&self.last_download_path, &self.last_file_disposition)
                     {
-                        if let Some(label) = open_location_button_label_for_report(
+                        if let Some(label) = backend_contract::open_location_button_label_for_report(
                             &report,
                             disposition,
                             &self.trust_policy,
@@ -1702,12 +1678,12 @@ impl eframe::App for GhMirrorGui {
                     source_trust_status_summary(&report)
                 ));
                 if let Some(disposition) = &self.last_file_disposition {
-                    ui.small(file_disposition_summary(disposition));
+                    ui.small(backend_contract::file_disposition_summary(disposition));
                     let policy_snapshot = self
                         .last_trust_policy_snapshot
                         .clone()
                         .unwrap_or_else(|| self.trust_policy.snapshot());
-                    let snapshot = trust_center_snapshot(
+                    let snapshot = backend_contract::trust_center_snapshot(
                         &report,
                         self.last_verification_evidence_path.as_deref(),
                         disposition,
@@ -1744,10 +1720,73 @@ impl eframe::App for GhMirrorGui {
 fn history_path_from_setting(value: &str) -> PathBuf {
     let trimmed = value.trim();
     if trimmed.is_empty() {
-        default_history_path()
+        backend_contract::default_history_path()
     } else {
         PathBuf::from(trimmed)
     }
+}
+
+fn extract_filename(url: &str) -> Option<String> {
+    let parts: Vec<&str> = url.rsplitn(2, '/').collect();
+    if parts.len() >= 2 && !parts[0].is_empty() {
+        Some(parts[0].to_string())
+    } else {
+        None
+    }
+}
+
+fn build_effective_url(mirror_url: &str, raw_url: &str) -> String {
+    if mirror_url.is_empty() {
+        raw_url.to_string()
+    } else {
+        format!("{}{}", mirror_url, raw_url)
+    }
+}
+
+fn format_speed(speed_kbps: f64) -> String {
+    if speed_kbps > 1024.0 {
+        format!("{:.1} MB/s", speed_kbps / 1024.0)
+    } else if speed_kbps > 1.0 {
+        format!("{:.0} KB/s", speed_kbps)
+    } else {
+        format!("{:.1} B/s", speed_kbps * 1024.0)
+    }
+}
+
+fn sha256_file(path: &PathBuf) -> Result<String, String> {
+    use sha2::{Digest, Sha256};
+    const HASH_BUFFER_SIZE: usize = 256 * 1024;
+
+    let mut file = std::fs::File::open(path).map_err(|e| format!("Open hash input error: {e}"))?;
+    let mut hasher = Sha256::new();
+    let mut buf = vec![0u8; HASH_BUFFER_SIZE];
+
+    loop {
+        let n = std::io::Read::read(&mut file, &mut buf)
+            .map_err(|e| format!("Hash read error: {e}"))?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+
+    Ok(format!("{:X}", hasher.finalize()))
+}
+
+fn format_asset_size(bytes: u64) -> String {
+    if bytes >= 1024 * 1024 * 1024 {
+        format!("{:.2} GiB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
+    } else if bytes >= 1024 * 1024 {
+        format!("{:.1} MiB", bytes as f64 / (1024.0 * 1024.0))
+    } else if bytes >= 1024 {
+        format!("{:.1} KiB", bytes as f64 / 1024.0)
+    } else {
+        format!("{bytes} B")
+    }
+}
+
+fn asset_picker_label(asset: &backend_contract::ReleaseAsset) -> String {
+    format!("{} ({})", asset.name, format_asset_size(asset.size))
 }
 
 fn latency_color(ms: f64) -> egui::Color32 {
@@ -1869,8 +1908,8 @@ fn run_release_signing_doctor(args: &[String]) -> Result<(), String> {
     }
 
     let (private_key, private_key_env) = load_release_private_key_seed()?;
-    let public_key = source_trust::public_key_from_private_seed(&private_key)?;
-    let fingerprint = trusted_key_fingerprint(&public_key)
+    let public_key = backend_contract::public_key_from_private_seed(&private_key)?;
+    let fingerprint = backend_contract::trusted_key_fingerprint(&public_key)
         .ok_or_else(|| "derived Ed25519 public key fingerprint failed".to_string())?;
 
     std::fs::create_dir_all(&fixture_dir).map_err(|e| format!("Create fixture dir error: {e}"))?;
@@ -1883,10 +1922,10 @@ fn run_release_signing_doctor(args: &[String]) -> Result<(), String> {
         "  gh_mirror_gui.exe\n"
     );
     write_text_file(&source_path, fixture_text)?;
-    let signature = source_trust::sign_ed25519_detached(fixture_text.as_bytes(), &private_key)?;
+    let signature = backend_contract::sign_ed25519_detached(fixture_text.as_bytes(), &private_key)?;
     write_text_file(&signature_path, &format!("{signature}\n"))?;
     write_text_file(&public_key_path, &format!("{public_key}\n"))?;
-    source_trust::verify_ed25519_detached(fixture_text.as_bytes(), &signature, &public_key)?;
+    backend_contract::verify_ed25519_detached(fixture_text.as_bytes(), &signature, &public_key)?;
 
     let report = serde_json::json!({
         "schema_version": 1,
@@ -1957,7 +1996,7 @@ fn run_sign_verification_source(args: &[String]) -> Result<(), String> {
     let (private_key, _) = load_release_private_key_seed()?;
     let source_bytes =
         std::fs::read(&source).map_err(|e| format!("Read source asset error: {e}"))?;
-    let signature = source_trust::sign_ed25519_detached(&source_bytes, &private_key)?;
+    let signature = backend_contract::sign_ed25519_detached(&source_bytes, &private_key)?;
     if let Some(parent) = out.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("Create signature dir error: {e}"))?;
     }
@@ -2031,9 +2070,9 @@ fn run_verify_verification_source(args: &[String]) -> Result<(), String> {
             "--public-key".to_string(),
         )
     };
-    let public_key = normalize_public_key_pin(&public_key_text)?;
-    source_trust::verify_ed25519_detached(&source_bytes, signature_text.trim(), &public_key)?;
-    let fingerprint = trusted_key_fingerprint(&public_key)
+    let public_key = backend_contract::normalize_public_key_pin(&public_key_text)?;
+    backend_contract::verify_ed25519_detached(&source_bytes, signature_text.trim(), &public_key)?;
+    let fingerprint = backend_contract::trusted_key_fingerprint(&public_key)
         .ok_or_else(|| "publisher key fingerprint failed".to_string())?;
     let source_sha256 = sha256_file(&source)?;
 
@@ -2092,7 +2131,7 @@ fn main() -> Result<(), eframe::Error> {
     }
 
     if args.first().map(|s| s.as_str()) == Some("--bench-download") {
-        if let Err(e) = run_bench_download(&args[1..]) {
+        if let Err(e) = backend_contract::run_bench_download(&args[1..]) {
             eprintln!("benchmark failed: {e}");
             std::process::exit(2);
         }
@@ -2100,7 +2139,7 @@ fn main() -> Result<(), eframe::Error> {
     }
 
     if args.first().map(|s| s.as_str()) == Some("--staged-release-download-selftest") {
-        if let Err(e) = run_staged_release_download_selftest(&args[1..]) {
+        if let Err(e) = backend_contract::run_staged_release_download_selftest(&args[1..]) {
             eprintln!("staged release download selftest failed: {e}");
             std::process::exit(2);
         }
@@ -2108,7 +2147,7 @@ fn main() -> Result<(), eframe::Error> {
     }
 
     if args.first().map(|s| s.as_str()) == Some("--update-candidate-contract-selftest") {
-        if let Err(e) = run_update_candidate_contract_selftest(&args[1..]) {
+        if let Err(e) = backend_contract::run_update_candidate_contract_selftest(&args[1..]) {
             eprintln!("update candidate contract selftest failed: {e}");
             std::process::exit(2);
         }
@@ -2116,7 +2155,7 @@ fn main() -> Result<(), eframe::Error> {
     }
 
     if args.first().map(|s| s.as_str()) == Some("--update-candidate-latest-selftest") {
-        if let Err(e) = run_update_candidate_latest_selftest(&args[1..]) {
+        if let Err(e) = backend_contract::run_update_candidate_latest_selftest(&args[1..]) {
             eprintln!("update candidate latest selftest failed: {e}");
             std::process::exit(2);
         }
@@ -2124,7 +2163,7 @@ fn main() -> Result<(), eframe::Error> {
     }
 
     if args.first().map(|s| s.as_str()) == Some("--update-candidate-stage-selftest") {
-        if let Err(e) = run_update_candidate_stage_selftest(&args[1..]) {
+        if let Err(e) = backend_contract::run_update_candidate_stage_selftest(&args[1..]) {
             eprintln!("update candidate stage selftest failed: {e}");
             std::process::exit(2);
         }
@@ -2147,8 +2186,7 @@ fn main() -> Result<(), eframe::Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::TcpListener;
-    use std::sync::mpsc;
+    use backend_contract::FileDispositionAction;
 
     fn unique_test_path(name: &str) -> PathBuf {
         let nonce = std::time::SystemTime::now()
@@ -2172,8 +2210,8 @@ mod tests {
         let private_key = "1111111111111111111111111111111111111111111111111111111111111111";
         let source_bytes = b"release verification source bytes";
         fs::write(&source, source_bytes).unwrap();
-        let signature = source_trust::sign_ed25519_detached(source_bytes, private_key).unwrap();
-        let public_key = source_trust::public_key_from_private_seed(private_key).unwrap();
+        let signature = backend_contract::sign_ed25519_detached(source_bytes, private_key).unwrap();
+        let public_key = backend_contract::public_key_from_private_seed(private_key).unwrap();
         fs::write(&signature_path, format!("{signature}\n")).unwrap();
         fs::write(&public_key_path, format!("ed25519:{public_key}\n")).unwrap();
 
@@ -2214,9 +2252,10 @@ mod tests {
         let private_key = "1111111111111111111111111111111111111111111111111111111111111111";
         let source_bytes = b"release verification source bytes";
         fs::write(&source, source_bytes).unwrap();
-        let mut signature = source_trust::sign_ed25519_detached(source_bytes, private_key).unwrap();
+        let mut signature =
+            backend_contract::sign_ed25519_detached(source_bytes, private_key).unwrap();
         signature.replace_range(0..2, "00");
-        let public_key = source_trust::public_key_from_private_seed(private_key).unwrap();
+        let public_key = backend_contract::public_key_from_private_seed(private_key).unwrap();
         fs::write(&signature_path, format!("{signature}\n")).unwrap();
 
         let err = run_verify_verification_source(&[
@@ -2232,167 +2271,6 @@ mod tests {
 
         let _ = fs::remove_file(source);
         let _ = fs::remove_file(signature_path);
-    }
-
-    fn serve_once(body: Vec<u8>) -> (String, thread::JoinHandle<()>) {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let handle = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            let mut buf = [0u8; 2048];
-            let n = stream.read(&mut buf).unwrap();
-            let req = String::from_utf8_lossy(&buf[..n]);
-
-            let range_start = req
-                .lines()
-                .find_map(|line| {
-                    let (name, value) = line.split_once(':')?;
-                    if name.eq_ignore_ascii_case("range") {
-                        value.trim().strip_prefix("bytes=")?.strip_suffix('-')
-                    } else {
-                        None
-                    }
-                })
-                .and_then(|start| start.parse::<usize>().ok())
-                .unwrap_or(0);
-
-            if range_start > 0 {
-                let payload = &body[range_start..];
-                let header = format!(
-                    "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {}-{}/{}\r\nConnection: close\r\n\r\n",
-                    payload.len(),
-                    range_start,
-                    body.len() - 1,
-                    body.len()
-                );
-                stream.write_all(header.as_bytes()).unwrap();
-                stream.write_all(payload).unwrap();
-            } else {
-                let header = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                    body.len()
-                );
-                stream.write_all(header.as_bytes()).unwrap();
-                stream.write_all(&body).unwrap();
-            }
-        });
-
-        (format!("http://{addr}/file.bin"), handle)
-    }
-
-    fn parse_range(req: &str, body_len: usize) -> Option<(usize, usize)> {
-        req.lines()
-            .find_map(|line| {
-                let (name, value) = line.split_once(':')?;
-                if name.eq_ignore_ascii_case("range") {
-                    value.trim().strip_prefix("bytes=")
-                } else {
-                    None
-                }
-            })
-            .and_then(|range| {
-                let (start, end) = range.split_once('-')?;
-                let start = start.parse::<usize>().ok()?;
-                let end = if end.is_empty() {
-                    body_len.checked_sub(1)?
-                } else {
-                    end.parse::<usize>().ok()?
-                };
-                Some((start, end.min(body_len - 1)))
-            })
-    }
-
-    fn serve_range_requests(
-        body: Vec<u8>,
-        expected_requests: usize,
-    ) -> (String, thread::JoinHandle<()>) {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let handle = thread::spawn(move || {
-            for _ in 0..expected_requests {
-                let (mut stream, _) = listener.accept().unwrap();
-                let mut buf = [0u8; 4096];
-                let n = stream.read(&mut buf).unwrap();
-                let req = String::from_utf8_lossy(&buf[..n]);
-                let method = req
-                    .lines()
-                    .next()
-                    .and_then(|line| line.split_whitespace().next())
-                    .unwrap_or("GET");
-
-                if method == "HEAD" {
-                    let header = format!(
-                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nAccept-Ranges: bytes\r\nETag: \"test-etag\"\r\nLast-Modified: Mon, 01 Jan 2024 00:00:00 GMT\r\nConnection: close\r\n\r\n",
-                        body.len()
-                    );
-                    stream.write_all(header.as_bytes()).unwrap();
-                    continue;
-                }
-
-                if let Some((start, end)) = parse_range(&req, body.len()) {
-                    let payload = &body[start..=end];
-                    let header = format!(
-                        "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {}-{}/{}\r\nAccept-Ranges: bytes\r\nETag: \"test-etag\"\r\nLast-Modified: Mon, 01 Jan 2024 00:00:00 GMT\r\nConnection: close\r\n\r\n",
-                        payload.len(),
-                        start,
-                        end,
-                        body.len()
-                    );
-                    stream.write_all(header.as_bytes()).unwrap();
-                    stream.write_all(payload).unwrap();
-                } else {
-                    let header = format!(
-                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                        body.len()
-                    );
-                    stream.write_all(header.as_bytes()).unwrap();
-                    stream.write_all(&body).unwrap();
-                }
-            }
-        });
-
-        (format!("http://{addr}/file.bin"), handle)
-    }
-
-    fn serve_ignore_range_once(body: Vec<u8>) -> (String, thread::JoinHandle<()>) {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let handle = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            let mut buf = [0u8; 2048];
-            let _ = stream.read(&mut buf).unwrap();
-            let header = format!(
-                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                body.len()
-            );
-            stream.write_all(header.as_bytes()).unwrap();
-            stream.write_all(&body).unwrap();
-        });
-
-        (format!("http://{addr}/file.bin"), handle)
-    }
-
-    fn serve_drop_then_once(body: Vec<u8>) -> (String, thread::JoinHandle<()>) {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let handle = thread::spawn(move || {
-            let (mut dropped_stream, _) = listener.accept().unwrap();
-            let mut buf = [0u8; 256];
-            let _ = dropped_stream.read(&mut buf);
-            drop(dropped_stream);
-
-            let (mut stream, _) = listener.accept().unwrap();
-            let mut buf = [0u8; 2048];
-            let _ = stream.read(&mut buf).unwrap();
-            let header = format!(
-                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                body.len()
-            );
-            stream.write_all(header.as_bytes()).unwrap();
-            stream.write_all(&body).unwrap();
-        });
-
-        (format!("http://{addr}/file.bin"), handle)
     }
 
     #[test]
@@ -2417,12 +2295,6 @@ mod tests {
         assert_eq!(format_speed(0.5), "512.0 B/s");
         assert_eq!(format_speed(512.0), "512 KB/s");
         assert_eq!(format_speed(2048.0), "2.0 MB/s");
-    }
-
-    #[test]
-    fn client_builder_rejects_invalid_proxy_url() {
-        let err = build_client("http://127.0.0.1:abc", 5, false).unwrap_err();
-        assert!(err.contains("Invalid proxy URL"));
     }
 
     #[test]
@@ -2467,14 +2339,14 @@ mod tests {
     #[test]
     fn publisher_key_import_accepts_release_public_key_asset() {
         let private_key = "1111111111111111111111111111111111111111111111111111111111111111";
-        let public_key = source_trust::public_key_from_private_seed(private_key).unwrap();
+        let public_key = backend_contract::public_key_from_private_seed(private_key).unwrap();
         let path = unique_test_path("publisher-key.ed25519.pub");
         fs::write(&path, format!("ed25519:{public_key}\r\n")).unwrap();
 
         let imported_pin = import_publisher_key_pin_from_path(&path).unwrap();
 
         assert_eq!(imported_pin, public_key);
-        assert!(trusted_key_fingerprint(&imported_pin).is_some());
+        assert!(backend_contract::trusted_key_fingerprint(&imported_pin).is_some());
 
         let _ = fs::remove_file(path);
     }
@@ -2482,8 +2354,8 @@ mod tests {
     #[test]
     fn publisher_key_import_result_updates_trust_policy_pin_and_status() {
         let private_key = "1111111111111111111111111111111111111111111111111111111111111111";
-        let public_key = source_trust::public_key_from_private_seed(private_key).unwrap();
-        let fingerprint = trusted_key_fingerprint(&public_key).unwrap();
+        let public_key = backend_contract::public_key_from_private_seed(private_key).unwrap();
+        let fingerprint = backend_contract::trusted_key_fingerprint(&public_key).unwrap();
         let imported = ImportedPublisherKeyPin {
             public_key: public_key.clone(),
             fingerprint_sha256: fingerprint.clone(),
@@ -2510,24 +2382,14 @@ mod tests {
 
     #[test]
     fn history_path_setting_uses_default_when_blank_and_custom_when_set() {
-        assert_eq!(history_path_from_setting("  "), default_history_path());
+        assert_eq!(
+            history_path_from_setting("  "),
+            backend_contract::default_history_path()
+        );
         assert_eq!(
             history_path_from_setting(r"C:\Evidence\bench-history.jsonl"),
             PathBuf::from(r"C:\Evidence\bench-history.jsonl")
         );
-    }
-
-    #[test]
-    fn bench_config_accepts_explicit_unsafe_tls_flag() {
-        let config = parse_bench_config(&[
-            "--url".to_string(),
-            "https://example.test/file.bin".to_string(),
-            "--out".to_string(),
-            "target/test.bin".to_string(),
-            "--allow-invalid-certs".to_string(),
-        ])
-        .unwrap();
-        assert!(config.allow_invalid_certs);
     }
 
     #[test]
@@ -2597,10 +2459,10 @@ mod tests {
             file_sha256: hash.to_string(),
             expected_sha256: Some(hash.to_string()),
             source: Some("SHA256SUMS.txt".to_string()),
-            source_trust: Some(source_trust::SourceTrustEvidence {
+            source_trust: Some(backend_contract::SourceTrustEvidence {
                 schema_version: 1,
-                status: source_trust::SourceAuthenticityStatus::BadSignature,
-                decision: source_trust::SourceTrustDecision::Block,
+                status: backend_contract::SourceAuthenticityStatus::BadSignature,
+                decision: backend_contract::SourceTrustDecision::Block,
                 required: false,
                 source_asset_name: Some("SHA256SUMS.txt".to_string()),
                 signature_asset_name: Some("SHA256SUMS.txt.sig".to_string()),
@@ -2624,278 +2486,5 @@ mod tests {
             format_download_notification_status(&report),
             "Download blocked (UNTRUSTED SOURCE)"
         );
-    }
-
-    #[test]
-    fn history_backed_strategy_prefers_best_matching_full_download() {
-        let probe = DownloadProbe {
-            total: 32 * 1024 * 1024,
-            range_supported: true,
-            etag: Some("\"etag\"".to_string()),
-            last_modified: Some("Mon, 01 Jan 2024 00:00:00 GMT".to_string()),
-        };
-        let history = vec![
-            BenchHistoryEntry {
-                schema_version: 1,
-                url: "https://example.test/file.bin".to_string(),
-                variant: "seg-c4-s4m".to_string(),
-                mode: "segmented".to_string(),
-                total_bytes: probe.total,
-                segment_size: Some(4 * 1024 * 1024),
-                concurrency: Some(4),
-                download_ms: 1000,
-                avg_mib_s: 20.0,
-                sha256: "hash".to_string(),
-                verification_status: None,
-                verification_trust_decision: None,
-                verification_asset_name: None,
-                verification_file_sha256: None,
-                verification_source: None,
-                verification_source_trust: None,
-                expected_sha256: None,
-                verification_detail: None,
-                verification_evidence_path: None,
-                verification_policy: None,
-                verification_file_disposition: None,
-                etag: probe.etag.clone(),
-                last_modified: probe.last_modified.clone(),
-                recorded_at_epoch_secs: 1,
-            },
-            BenchHistoryEntry {
-                schema_version: 1,
-                url: "https://example.test/file.bin".to_string(),
-                variant: "seg-c8-s4m".to_string(),
-                mode: "segmented".to_string(),
-                total_bytes: probe.total,
-                segment_size: Some(4 * 1024 * 1024),
-                concurrency: Some(8),
-                download_ms: 2000,
-                avg_mib_s: 10.0,
-                sha256: "hash".to_string(),
-                verification_status: None,
-                verification_trust_decision: None,
-                verification_asset_name: None,
-                verification_file_sha256: None,
-                verification_source: None,
-                verification_source_trust: None,
-                expected_sha256: None,
-                verification_detail: None,
-                verification_evidence_path: None,
-                verification_policy: None,
-                verification_file_disposition: None,
-                etag: probe.etag.clone(),
-                last_modified: probe.last_modified.clone(),
-                recorded_at_epoch_secs: 1,
-            },
-        ];
-
-        let strategy = choose_history_backed_strategy(&probe, &history);
-
-        assert_eq!(strategy.variant, "seg-c4-s4m");
-        assert_eq!(strategy.config.unwrap().concurrency, 4);
-        assert_eq!(strategy.config.unwrap().segment_size, 4 * 1024 * 1024);
-        assert_eq!(strategy.history_matches, 2);
-    }
-
-    #[test]
-    fn history_backed_strategy_uses_static_default_without_history() {
-        let probe = DownloadProbe {
-            total: 32 * 1024 * 1024,
-            range_supported: true,
-            etag: None,
-            last_modified: None,
-        };
-
-        let strategy = choose_history_backed_strategy(&probe, &[]);
-
-        assert_eq!(strategy.variant, "seg-c4-s4m");
-        assert_eq!(strategy.config.unwrap().concurrency, SEGMENT_CONCURRENCY);
-        assert_eq!(strategy.config.unwrap().segment_size, SEGMENT_SIZE);
-        assert_eq!(strategy.history_matches, 0);
-    }
-
-    #[test]
-    fn probe_download_detects_range_support_and_metadata() {
-        let body = b"range probe payload".to_vec();
-        let (url, server) = serve_range_requests(body.clone(), 2);
-        let client = Client::builder()
-            .timeout(Duration::from_secs(5))
-            .build()
-            .unwrap();
-
-        let probe = probe_download(&client, &url).unwrap();
-
-        server.join().unwrap();
-        assert_eq!(probe.total, body.len() as u64);
-        assert!(probe.range_supported);
-        assert_eq!(probe.etag, Some("\"test-etag\"".to_string()));
-        assert_eq!(
-            probe.last_modified,
-            Some("Mon, 01 Jan 2024 00:00:00 GMT".to_string())
-        );
-    }
-
-    #[test]
-    fn download_single_creates_new_temp_file_with_write_access() {
-        let body = b"fresh download payload".to_vec();
-        let (url, server) = serve_once(body.clone());
-        let save_path = unique_test_path("fresh.bin");
-        let client = Client::builder()
-            .timeout(Duration::from_secs(5))
-            .build()
-            .unwrap();
-        let ctrl = DownloadControl::new();
-        let (tx, rx) = mpsc::channel();
-
-        download_single(
-            &client,
-            &url,
-            save_path.to_str().unwrap(),
-            body.len() as u64,
-            &ctrl,
-            &tx,
-        )
-        .unwrap();
-
-        server.join().unwrap();
-        assert_eq!(fs::read(&save_path).unwrap(), body);
-        assert!(rx
-            .try_iter()
-            .any(|(downloaded, total, _, _)| downloaded > 0 && total == body.len() as u64));
-        assert!(!save_path.with_extension("bin.part").exists());
-        let _ = fs::remove_file(save_path);
-    }
-
-    #[test]
-    fn download_single_retries_transient_request_send_failure() {
-        let body = b"retry after dropped connection".to_vec();
-        let (url, server) = serve_drop_then_once(body.clone());
-        let save_path = unique_test_path("retry-send.bin");
-        let client = Client::builder()
-            .timeout(Duration::from_secs(5))
-            .build()
-            .unwrap();
-        let ctrl = DownloadControl::new();
-        let (tx, _rx) = mpsc::channel();
-
-        download_single(
-            &client,
-            &url,
-            save_path.to_str().unwrap(),
-            body.len() as u64,
-            &ctrl,
-            &tx,
-        )
-        .unwrap();
-
-        server.join().unwrap();
-        assert_eq!(fs::read(&save_path).unwrap(), body);
-        let _ = fs::remove_file(save_path);
-    }
-
-    #[test]
-    fn download_single_restarts_when_resume_range_is_ignored() {
-        let body = b"server ignored range and returned full body".to_vec();
-        let (url, server) = serve_ignore_range_once(body.clone());
-        let save_path = unique_test_path("ignored-range.bin");
-        let part_path = format!("{}.part", save_path.to_string_lossy());
-        fs::write(&part_path, &body[..7]).unwrap();
-
-        let client = Client::builder()
-            .timeout(Duration::from_secs(5))
-            .build()
-            .unwrap();
-        let ctrl = DownloadControl::new();
-        let (tx, _rx) = mpsc::channel();
-
-        download_single(
-            &client,
-            &url,
-            save_path.to_str().unwrap(),
-            body.len() as u64,
-            &ctrl,
-            &tx,
-        )
-        .unwrap();
-
-        server.join().unwrap();
-        assert_eq!(fs::read(&save_path).unwrap(), body);
-        assert!(!PathBuf::from(&part_path).exists());
-        let _ = fs::remove_file(save_path);
-    }
-
-    #[test]
-    fn download_segmented_writes_all_ranges_and_removes_resume_meta() {
-        let body = (0..=255).cycle().take(1024).collect::<Vec<u8>>();
-        let segment_size = 128;
-        let request_count = body.len() / segment_size;
-        let (url, server) = serve_range_requests(body.clone(), request_count);
-        let save_path = unique_test_path("segmented.bin");
-        let probe = DownloadProbe {
-            total: body.len() as u64,
-            range_supported: true,
-            etag: Some("\"test-etag\"".to_string()),
-            last_modified: Some("Mon, 01 Jan 2024 00:00:00 GMT".to_string()),
-        };
-        let client = Client::builder()
-            .timeout(Duration::from_secs(5))
-            .build()
-            .unwrap();
-        let ctrl = DownloadControl::new();
-        let (tx, rx) = mpsc::channel();
-
-        download_segmented(
-            &client,
-            &url,
-            save_path.to_str().unwrap(),
-            &probe,
-            SegmentedDownloadConfig {
-                segment_size: segment_size as u64,
-                concurrency: 3,
-            },
-            &ctrl,
-            &tx,
-        )
-        .unwrap();
-
-        server.join().unwrap();
-        assert_eq!(fs::read(&save_path).unwrap(), body);
-        assert!(!PathBuf::from(format!("{}.part", save_path.to_string_lossy())).exists());
-        assert!(!PathBuf::from(format!("{}.part.json", save_path.to_string_lossy())).exists());
-        assert!(rx
-            .try_iter()
-            .any(|(downloaded, total, _, _)| downloaded == total && total == body.len() as u64));
-        let _ = fs::remove_file(save_path);
-    }
-
-    #[test]
-    fn download_single_resumes_existing_part_file_with_range_request() {
-        let body = b"resume download payload".to_vec();
-        let (url, server) = serve_once(body.clone());
-        let save_path = unique_test_path("resume.bin");
-        let part_path = format!("{}.part", save_path.to_string_lossy());
-        fs::write(&part_path, &body[..7]).unwrap();
-
-        let client = Client::builder()
-            .timeout(Duration::from_secs(5))
-            .build()
-            .unwrap();
-        let ctrl = DownloadControl::new();
-        let (tx, _rx) = mpsc::channel();
-
-        download_single(
-            &client,
-            &url,
-            save_path.to_str().unwrap(),
-            body.len() as u64,
-            &ctrl,
-            &tx,
-        )
-        .unwrap();
-
-        server.join().unwrap();
-        assert_eq!(fs::read(&save_path).unwrap(), body);
-        assert!(!PathBuf::from(&part_path).exists());
-        let _ = fs::remove_file(save_path);
     }
 }

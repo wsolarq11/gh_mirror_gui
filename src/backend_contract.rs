@@ -1,48 +1,132 @@
 use crate::bench::choose_history_backed_strategy;
-use crate::download::{
-    build_client, download_with_strategy, probe_download, DownloadControl, DownloadProbe,
-};
+use crate::download::{build_client, download_with_strategy, probe_download, DownloadProbe};
 use crate::history::{append_download_history, load_bench_history, VerificationHistoryContext};
-use crate::releases::ReleaseAsset;
-use crate::releases::{resolve_release_assets, ReleaseQuery, ResolvedRelease};
-use crate::source_trust::SourceTrustPolicyConfig;
-use crate::source_trust::{import_publisher_key_pin_from_release_asset, ImportedPublisherKeyPin};
-use crate::trust_policy::{
-    apply_file_disposition, plan_file_disposition_for_report, AppliedFileDisposition,
-    TrustPolicyConfig, TrustPolicySnapshot,
-};
+use crate::releases::resolve_release_assets;
+use crate::source_trust::import_publisher_key_pin_from_release_asset;
+use crate::trust_policy::{apply_file_disposition, plan_file_disposition_for_report};
 use crate::update_candidate::{
     check_latest_update_candidate, refused_update_candidate_check_report,
     refused_update_candidate_stage_report, stage_latest_update_candidate,
 };
-use crate::update_candidate::{UpdateCandidateCheckReport, UpdateCandidateStageReport};
-use crate::verification::{verify_downloaded_file, DownloadVerificationPlan, VerificationReport};
+use crate::verification::verify_downloaded_file;
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::{mpsc, Arc};
 use std::time::Instant;
 
-pub(crate) type DownloadProgressMessage = (u64, u64, f64, f64);
+// ---------------------------------------------------------------------------
+// Public backend contract surface (the single runtime "door")
+// ---------------------------------------------------------------------------
+
+pub use crate::bench::run_bench_download;
+pub use crate::download::DownloadControl;
+pub use crate::history::default_history_path;
+pub use crate::releases::{is_github_release_asset_download_url, parse_release_query};
+pub use crate::releases::{ReleaseAsset, ReleaseQuery, ReleaseQueryKind, ResolvedRelease};
+pub use crate::source_trust::public_key_from_private_seed;
+pub use crate::source_trust::sign_ed25519_detached;
+pub use crate::source_trust::verify_ed25519_detached;
+pub use crate::source_trust::ImportedPublisherKeyPin;
+pub use crate::source_trust::SourceAuthenticityStatus;
+pub use crate::source_trust::SourceTrustDecision;
+pub use crate::source_trust::SourceTrustEvidence;
+pub use crate::source_trust::SourceTrustPolicyConfig;
+pub use crate::source_trust::SourceTrustPolicySnapshot;
+pub use crate::source_trust::{normalize_public_key_pin, trusted_key_fingerprint};
+pub use crate::staged_release::run_staged_release_download_selftest;
+pub use crate::trust_center::publisher_key_source_label_for_policy;
+pub use crate::trust_policy::file_disposition_summary;
+pub use crate::trust_policy::open_location_button_label_for_report;
+pub use crate::trust_policy::{AppliedFileDisposition, FileDispositionAction};
+pub use crate::trust_policy::{MismatchFilePolicy, TrustPolicyConfig, TrustPolicySnapshot};
+pub use crate::update_candidate::run_update_candidate_contract_selftest;
+pub use crate::update_candidate::run_update_candidate_latest_selftest;
+pub use crate::update_candidate::run_update_candidate_stage_selftest;
+pub use crate::update_candidate::UpdateCandidateEvaluation;
+pub use crate::update_candidate::UpdateCandidateStageStatus;
+pub use crate::update_candidate::UpdateCandidateStatus;
+pub use crate::update_candidate::{UpdateCandidateCheckReport, UpdateCandidateStageReport};
+pub use crate::verification::verification_plan_for_selected_asset;
+pub use crate::verification::verification_source_summary;
+pub use crate::verification::{DownloadVerificationPlan, VerificationAsset};
+pub use crate::verification::{VerificationReport, VerificationStatus, VerificationTrustDecision};
+
+pub type DownloadProgressMessage = (u64, u64, f64, f64);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct DownloadCompletion {
-    pub(crate) original_path: PathBuf,
-    pub(crate) verification: VerificationReport,
-    pub(crate) evidence_path: Option<PathBuf>,
-    pub(crate) policy_snapshot: TrustPolicySnapshot,
-    pub(crate) publisher_key_source_at_decision: String,
-    pub(crate) file_disposition: AppliedFileDisposition,
+pub struct TrustCenterSnapshot {
+    pub downloaded_asset: String,
+    pub hash_status: String,
+    pub file_sha256: String,
+    pub expected_sha256: String,
+    pub source_authenticity: String,
+    pub source_trust_detail: String,
+    pub source_asset: String,
+    pub signature_asset: String,
+    pub publisher_key_fingerprint: String,
+    pub publisher_key_source: String,
+    pub policy_verdict: String,
+    pub policy_at_decision: String,
+    pub evidence_path: String,
+    pub evidence_access: String,
+    pub file_disposition: String,
+    pub final_path: String,
 }
 
-pub(crate) struct DownloadContractInput {
-    pub(crate) effective_url: String,
-    pub(crate) save_path: PathBuf,
-    pub(crate) asset_name: String,
-    pub(crate) verification_plan: Option<DownloadVerificationPlan>,
-    pub(crate) trust_policy: TrustPolicyConfig,
-    pub(crate) publisher_key_source_at_decision: String,
-    pub(crate) history_path: PathBuf,
+pub fn trust_center_snapshot(
+    report: &VerificationReport,
+    evidence_path: Option<&Path>,
+    disposition: &AppliedFileDisposition,
+    policy_snapshot: &TrustPolicySnapshot,
+    publisher_key_source: Option<&str>,
+) -> TrustCenterSnapshot {
+    let snapshot = crate::trust_center::trust_center_snapshot(
+        report,
+        evidence_path,
+        disposition,
+        policy_snapshot,
+        publisher_key_source,
+    );
+
+    TrustCenterSnapshot {
+        downloaded_asset: snapshot.downloaded_asset,
+        hash_status: snapshot.hash_status,
+        file_sha256: snapshot.file_sha256,
+        expected_sha256: snapshot.expected_sha256,
+        source_authenticity: snapshot.source_authenticity,
+        source_trust_detail: snapshot.source_trust_detail,
+        source_asset: snapshot.source_asset,
+        signature_asset: snapshot.signature_asset,
+        publisher_key_fingerprint: snapshot.publisher_key_fingerprint,
+        publisher_key_source: snapshot.publisher_key_source,
+        policy_verdict: snapshot.policy_verdict,
+        policy_at_decision: snapshot.policy_at_decision,
+        evidence_path: snapshot.evidence_path,
+        evidence_access: snapshot.evidence_access,
+        file_disposition: snapshot.file_disposition,
+        final_path: snapshot.final_path,
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DownloadCompletion {
+    pub original_path: PathBuf,
+    pub verification: VerificationReport,
+    pub evidence_path: Option<PathBuf>,
+    pub policy_snapshot: TrustPolicySnapshot,
+    pub publisher_key_source_at_decision: String,
+    pub file_disposition: AppliedFileDisposition,
+}
+
+pub struct DownloadContractInput {
+    pub effective_url: String,
+    pub save_path: PathBuf,
+    pub asset_name: String,
+    pub verification_plan: Option<DownloadVerificationPlan>,
+    pub trust_policy: TrustPolicyConfig,
+    pub publisher_key_source_at_decision: String,
+    pub history_path: PathBuf,
 }
 
 fn log_error(msg: &str) {
@@ -60,13 +144,13 @@ fn log_error(msg: &str) {
     }
 }
 
-pub(crate) struct BackendClientSettings {
-    pub(crate) proxy: String,
-    pub(crate) allow_invalid_certs: bool,
+pub struct BackendClientSettings {
+    proxy: String,
+    allow_invalid_certs: bool,
 }
 
 impl BackendClientSettings {
-    pub(crate) fn new(proxy: String, allow_invalid_certs: bool) -> Self {
+    pub fn new(proxy: String, allow_invalid_certs: bool) -> Self {
         Self {
             proxy,
             allow_invalid_certs,
@@ -78,7 +162,7 @@ impl BackendClientSettings {
     }
 }
 
-pub(crate) fn resolve_release_assets_for_query(
+pub fn resolve_release_assets_for_query(
     settings: &BackendClientSettings,
     query: &ReleaseQuery,
 ) -> Result<ResolvedRelease, String> {
@@ -88,7 +172,7 @@ pub(crate) fn resolve_release_assets_for_query(
     resolve_release_assets(&client, query)
 }
 
-pub(crate) fn import_publisher_key_from_release_asset(
+pub fn import_publisher_key_from_release_asset(
     settings: &BackendClientSettings,
     asset: &ReleaseAsset,
 ) -> Result<ImportedPublisherKeyPin, String> {
@@ -98,7 +182,7 @@ pub(crate) fn import_publisher_key_from_release_asset(
     import_publisher_key_pin_from_release_asset(&client, asset)
 }
 
-pub(crate) fn run_update_candidate_check(
+pub fn run_update_candidate_check(
     settings: &BackendClientSettings,
     current_version: &str,
     source_trust_policy: &SourceTrustPolicyConfig,
@@ -122,7 +206,7 @@ pub(crate) fn run_update_candidate_check(
     }
 }
 
-pub(crate) fn run_update_candidate_stage(
+pub fn run_update_candidate_stage(
     settings: &BackendClientSettings,
     current_version: &str,
     source_trust_policy: &SourceTrustPolicyConfig,
@@ -148,7 +232,7 @@ pub(crate) fn run_update_candidate_stage(
     }
 }
 
-pub(crate) fn run_download_contract(
+pub fn run_download_contract(
     settings: &BackendClientSettings,
     input: DownloadContractInput,
     ctrl: &Arc<DownloadControl>,

@@ -7,22 +7,22 @@ use crate::verification::VerificationReport;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct TrustCenterSnapshot {
-    pub(crate) downloaded_asset: String,
-    pub(crate) hash_status: String,
-    pub(crate) file_sha256: String,
-    pub(crate) expected_sha256: String,
-    pub(crate) source_authenticity: String,
-    pub(crate) source_trust_detail: String,
-    pub(crate) source_asset: String,
-    pub(crate) signature_asset: String,
-    pub(crate) publisher_key_fingerprint: String,
-    pub(crate) publisher_key_source: String,
-    pub(crate) policy_verdict: String,
-    pub(crate) policy_at_decision: String,
-    pub(crate) evidence_path: String,
-    pub(crate) evidence_access: String,
-    pub(crate) file_disposition: String,
-    pub(crate) final_path: String,
+    pub downloaded_asset: String,
+    pub hash_status: String,
+    pub file_sha256: String,
+    pub expected_sha256: String,
+    pub source_authenticity: String,
+    pub source_trust_detail: String,
+    pub source_asset: String,
+    pub signature_asset: String,
+    pub publisher_key_fingerprint: String,
+    pub publisher_key_source: String,
+    pub policy_verdict: String,
+    pub policy_at_decision: String,
+    pub evidence_path: String,
+    pub evidence_access: String,
+    pub file_disposition: String,
+    pub final_path: String,
 }
 
 pub(crate) fn trust_center_snapshot(
@@ -91,7 +91,7 @@ pub(crate) fn trust_center_snapshot(
     }
 }
 
-pub(crate) fn publisher_key_source_label_for_policy(
+pub fn publisher_key_source_label_for_policy(
     trust_policy: &TrustPolicyConfig,
     publisher_key_source: &str,
 ) -> String {

@@ -12,37 +12,37 @@ const VERIFICATION_ASSET_MAX_RETRIES: u32 = 2;
 const VERIFICATION_ASSET_RETRY_DELAY_MS: u64 = 100;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct VerificationAsset {
-    pub(crate) name: String,
-    pub(crate) browser_download_url: String,
-    pub(crate) api_url: Option<String>,
+pub struct VerificationAsset {
+    pub name: String,
+    pub browser_download_url: String,
+    pub api_url: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct DownloadVerificationPlan {
-    pub(crate) asset_name: String,
-    pub(crate) checksum_asset: Option<VerificationAsset>,
-    pub(crate) checksum_signature_asset: Option<VerificationAsset>,
-    pub(crate) provenance_asset: Option<VerificationAsset>,
-    pub(crate) provenance_signature_asset: Option<VerificationAsset>,
+pub struct DownloadVerificationPlan {
+    pub asset_name: String,
+    pub checksum_asset: Option<VerificationAsset>,
+    pub checksum_signature_asset: Option<VerificationAsset>,
+    pub provenance_asset: Option<VerificationAsset>,
+    pub provenance_signature_asset: Option<VerificationAsset>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) enum VerificationStatus {
+pub enum VerificationStatus {
     Verified,
     Mismatch,
     Unknown,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) enum VerificationTrustDecision {
+pub enum VerificationTrustDecision {
     Trusted,
     Block,
     Risk,
 }
 
 impl VerificationStatus {
-    pub(crate) fn as_str(&self) -> &'static str {
+    pub fn as_str(&self) -> &'static str {
         match self {
             Self::Verified => "VERIFIED",
             Self::Mismatch => "MISMATCH",
@@ -61,7 +61,7 @@ impl VerificationStatus {
 }
 
 impl VerificationTrustDecision {
-    pub(crate) fn as_str(&self) -> &'static str {
+    pub fn as_str(&self) -> &'static str {
         match self {
             Self::Trusted => "TRUSTED",
             Self::Block => "BLOCK",
@@ -71,18 +71,18 @@ impl VerificationTrustDecision {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) struct VerificationReport {
-    pub(crate) status: VerificationStatus,
-    pub(crate) asset_name: String,
-    pub(crate) file_sha256: String,
-    pub(crate) expected_sha256: Option<String>,
-    pub(crate) source: Option<String>,
-    pub(crate) source_trust: Option<SourceTrustEvidence>,
-    pub(crate) detail: String,
+pub struct VerificationReport {
+    pub status: VerificationStatus,
+    pub asset_name: String,
+    pub file_sha256: String,
+    pub expected_sha256: Option<String>,
+    pub source: Option<String>,
+    pub source_trust: Option<SourceTrustEvidence>,
+    pub detail: String,
 }
 
 impl VerificationReport {
-    pub(crate) fn effective_trust_decision(&self) -> VerificationTrustDecision {
+    pub fn effective_trust_decision(&self) -> VerificationTrustDecision {
         match self.status {
             VerificationStatus::Mismatch => VerificationTrustDecision::Block,
             VerificationStatus::Unknown => VerificationTrustDecision::Risk,
@@ -101,7 +101,7 @@ impl VerificationReport {
     }
 }
 
-pub(crate) fn verification_plan_for_selected_asset(
+pub fn verification_plan_for_selected_asset(
     release: &ResolvedRelease,
     asset_index: usize,
 ) -> Option<DownloadVerificationPlan> {
@@ -121,7 +121,7 @@ pub(crate) fn verification_plan_for_selected_asset(
     })
 }
 
-pub(crate) fn verification_source_summary(plan: &DownloadVerificationPlan) -> String {
+pub fn verification_source_summary(plan: &DownloadVerificationPlan) -> String {
     let mut sources = Vec::new();
     if let Some(asset) = &plan.checksum_asset {
         let signed = plan

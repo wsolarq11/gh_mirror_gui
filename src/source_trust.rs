@@ -9,9 +9,9 @@ const PUBLISHER_KEY_ASSET_NAME: &str = "publisher-key.ed25519.pub";
 const MAX_PUBLISHER_KEY_ASSET_BYTES: u64 = 16 * 1024;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) struct SourceTrustPolicyConfig {
-    pub(crate) require_trusted_source: bool,
-    pub(crate) trusted_publisher_key: String,
+pub struct SourceTrustPolicyConfig {
+    pub require_trusted_source: bool,
+    pub trusted_publisher_key: String,
 }
 
 impl SourceTrustPolicyConfig {
@@ -31,10 +31,10 @@ impl SourceTrustPolicyConfig {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) struct SourceTrustPolicySnapshot {
-    pub(crate) schema_version: u32,
-    pub(crate) require_trusted_source: bool,
-    pub(crate) trusted_publisher_key_fingerprint_sha256: Option<String>,
+pub struct SourceTrustPolicySnapshot {
+    pub schema_version: u32,
+    pub require_trusted_source: bool,
+    pub trusted_publisher_key_fingerprint_sha256: Option<String>,
 }
 
 impl Default for SourceTrustPolicySnapshot {
@@ -49,7 +49,7 @@ impl Default for SourceTrustPolicySnapshot {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub(crate) enum SourceAuthenticityStatus {
+pub enum SourceAuthenticityStatus {
     TrustedSignature,
     Unsigned,
     MissingSignature,
@@ -59,7 +59,7 @@ pub(crate) enum SourceAuthenticityStatus {
 }
 
 impl SourceAuthenticityStatus {
-    pub(crate) fn as_str(&self) -> &'static str {
+    pub fn as_str(&self) -> &'static str {
         match self {
             Self::TrustedSignature => "TRUSTED_SIGNATURE",
             Self::Unsigned => "UNSIGNED",
@@ -73,7 +73,7 @@ impl SourceAuthenticityStatus {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub(crate) enum SourceTrustDecision {
+pub enum SourceTrustDecision {
     Trusted,
     AllowUnsigned,
     Block,
@@ -81,7 +81,7 @@ pub(crate) enum SourceTrustDecision {
 }
 
 impl SourceTrustDecision {
-    pub(crate) fn as_str(&self) -> &'static str {
+    pub fn as_str(&self) -> &'static str {
         match self {
             Self::Trusted => "TRUSTED",
             Self::AllowUnsigned => "ALLOW_UNSIGNED",
@@ -92,15 +92,15 @@ impl SourceTrustDecision {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) struct SourceTrustEvidence {
-    pub(crate) schema_version: u32,
-    pub(crate) status: SourceAuthenticityStatus,
-    pub(crate) decision: SourceTrustDecision,
-    pub(crate) required: bool,
-    pub(crate) source_asset_name: Option<String>,
-    pub(crate) signature_asset_name: Option<String>,
-    pub(crate) trusted_publisher_key_fingerprint_sha256: Option<String>,
-    pub(crate) detail: String,
+pub struct SourceTrustEvidence {
+    pub schema_version: u32,
+    pub status: SourceAuthenticityStatus,
+    pub decision: SourceTrustDecision,
+    pub required: bool,
+    pub source_asset_name: Option<String>,
+    pub signature_asset_name: Option<String>,
+    pub trusted_publisher_key_fingerprint_sha256: Option<String>,
+    pub detail: String,
 }
 
 impl SourceTrustEvidence {
@@ -118,10 +118,10 @@ impl SourceTrustEvidence {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ImportedPublisherKeyPin {
-    pub(crate) public_key: String,
-    pub(crate) fingerprint_sha256: String,
-    pub(crate) asset_name: String,
+pub struct ImportedPublisherKeyPin {
+    pub public_key: String,
+    pub fingerprint_sha256: String,
+    pub asset_name: String,
 }
 
 pub(crate) fn publisher_key_asset(assets: &[ReleaseAsset]) -> Option<&ReleaseAsset> {
@@ -312,7 +312,7 @@ pub(crate) fn evaluate_source_trust(
     }
 }
 
-pub(crate) fn verify_ed25519_detached(
+pub fn verify_ed25519_detached(
     message: &[u8],
     signature_text: &str,
     public_key_text: &str,
@@ -327,29 +327,26 @@ pub(crate) fn verify_ed25519_detached(
         .map_err(|e| format!("invalid Ed25519 signature: {e}"))
 }
 
-pub(crate) fn sign_ed25519_detached(
-    message: &[u8],
-    private_key_text: &str,
-) -> Result<String, String> {
+pub fn sign_ed25519_detached(message: &[u8], private_key_text: &str) -> Result<String, String> {
     let private_key = decode_hex_array::<32>(private_key_text, "Ed25519 private key seed")?;
     let signing_key = SigningKey::from_bytes(&private_key);
     let signature = signing_key.sign(message);
     Ok(hex_encode_upper(&signature.to_bytes()))
 }
 
-pub(crate) fn public_key_from_private_seed(private_key_text: &str) -> Result<String, String> {
+pub fn public_key_from_private_seed(private_key_text: &str) -> Result<String, String> {
     let private_key = decode_hex_array::<32>(private_key_text, "Ed25519 private key seed")?;
     let signing_key = SigningKey::from_bytes(&private_key);
     Ok(hex_encode_upper(&signing_key.verifying_key().to_bytes()))
 }
 
-pub(crate) fn trusted_key_fingerprint(public_key_text: &str) -> Option<String> {
+pub fn trusted_key_fingerprint(public_key_text: &str) -> Option<String> {
     let public_key = decode_hex_array::<32>(public_key_text, "Ed25519 public key").ok()?;
     let digest = Sha256::digest(public_key);
     Some(hex_encode_upper(&digest))
 }
 
-pub(crate) fn normalize_public_key_pin(public_key_text: &str) -> Result<String, String> {
+pub fn normalize_public_key_pin(public_key_text: &str) -> Result<String, String> {
     let public_key = decode_hex_array::<32>(public_key_text, "Ed25519 public key")?;
     Ok(hex_encode_upper(&public_key))
 }
