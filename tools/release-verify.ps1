@@ -1020,8 +1020,17 @@ function Invoke-GitHubLatestRelease {
     param([string]$Repo)
 
     try {
+        $token = Get-GitHubAccessToken
+        $headers = @{
+            'User-Agent' = 'gh_mirror_gui-release-verify'
+            'Accept'     = 'application/vnd.github+json'
+        }
+        if (![string]::IsNullOrWhiteSpace($token)) {
+            $headers.Authorization = "Bearer $token"
+        }
+
         $release = Invoke-RestMethod `
-            -Headers @{ 'User-Agent' = 'gh_mirror_gui-release-verify' } `
+            -Headers $headers `
             -Uri "https://api.github.com/repos/$Repo/releases/latest"
 
         return [ordered]@{
@@ -1040,6 +1049,7 @@ function Invoke-GitHubLatestRelease {
                     size = $_.size
                     content_type = $contentType
                     digest = $digest
+                    api_url = if ($_.PSObject.Properties.Name -contains 'url') { $_.url } else { $null }
                     browser_download_url = $_.browser_download_url
                 }
             })
@@ -1056,6 +1066,38 @@ function Invoke-GitHubLatestRelease {
             status_code = $status
             error = $_.Exception.Message
         }
+    }
+}
+
+function Get-GitHubAccessToken {
+    if (![string]::IsNullOrWhiteSpace($env:GITHUB_TOKEN)) {
+        return [string]$env:GITHUB_TOKEN
+    }
+    if (![string]::IsNullOrWhiteSpace($env:GH_TOKEN)) {
+        return [string]$env:GH_TOKEN
+    }
+
+    $gh = Get-Command gh -ErrorAction SilentlyContinue
+    if ($null -eq $gh) {
+        return $null
+    }
+
+    $oldErrorActionPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $tokenLines = & gh auth token 2>$null
+        $exitCode = if ($null -eq $LASTEXITCODE) { 0 } else { [int]$LASTEXITCODE }
+        if ($exitCode -ne 0) {
+            return $null
+        }
+        $token = @($tokenLines | ForEach-Object { $_.ToString().Trim() } | Where-Object { $_ }) | Select-Object -First 1
+        if ([string]::IsNullOrWhiteSpace($token)) {
+            return $null
+        }
+        return [string]$token
+    }
+    finally {
+        $ErrorActionPreference = $oldErrorActionPreference
     }
 }
 
@@ -1078,12 +1120,47 @@ function Save-ReleaseAsset {
         [string]$OutFile
     )
 
-    Invoke-WebRequest `
-        -Uri $Asset.browser_download_url `
-        -Headers @{ 'User-Agent' = 'gh_mirror_gui-release-verify' } `
-        -MaximumRedirection 10 `
-        -OutFile $OutFile `
-        -UseBasicParsing | Out-Null
+    $token = Get-GitHubAccessToken
+    $headers = @{
+        'User-Agent' = 'gh_mirror_gui-release-verify'
+    }
+    if (![string]::IsNullOrWhiteSpace($token)) {
+        $headers.Authorization = "Bearer $token"
+    }
+
+    $apiUrl = $null
+    if ($Asset -is [System.Collections.IDictionary]) {
+        if ($Asset.Contains('api_url') -and ![string]::IsNullOrWhiteSpace([string]$Asset['api_url'])) {
+            $apiUrl = [string]$Asset['api_url']
+        }
+    }
+    elseif ($Asset.PSObject.Properties.Name -contains 'api_url') {
+        $apiUrl = [string]$Asset.api_url
+    }
+
+    if (![string]::IsNullOrWhiteSpace($apiUrl)) {
+        $apiHeaders = @{
+            'User-Agent' = $headers.'User-Agent'
+            'Accept'     = 'application/octet-stream'
+        }
+        if ($headers.ContainsKey('Authorization')) {
+            $apiHeaders.Authorization = $headers.Authorization
+        }
+        Invoke-WebRequest `
+            -Uri $apiUrl `
+            -Headers $apiHeaders `
+            -MaximumRedirection 10 `
+            -OutFile $OutFile `
+            -UseBasicParsing | Out-Null
+    }
+    else {
+        Invoke-WebRequest `
+            -Uri $Asset.browser_download_url `
+            -Headers $headers `
+            -MaximumRedirection 10 `
+            -OutFile $OutFile `
+            -UseBasicParsing | Out-Null
+    }
 
     return [ordered]@{
         path = $OutFile
@@ -1734,6 +1811,17 @@ $Receipt.checks.signed_release_staging = Invoke-SignedReleaseStagingSelfTest `
 $Receipt.checks.update_candidate_contract = Invoke-UpdateCandidateContractSelfTest `
     -Exe $exe `
     -JsonFile (Join-Path $EvidenceDir 'update-candidate-contract.json')
+
+# Private repo compatibility:
+# - PowerShell GitHub probes use `Get-GitHubAccessToken` directly.
+# - Rust GitHub resolvers/selftests use `GITHUB_TOKEN` env var (see `src/releases.rs`).
+# We only populate it when missing; the value is never written to receipts/logs/stdout.
+if ([string]::IsNullOrWhiteSpace($env:GITHUB_TOKEN)) {
+    $token = Get-GitHubAccessToken
+    if (![string]::IsNullOrWhiteSpace($token)) {
+        $env:GITHUB_TOKEN = $token
+    }
+}
 
 $originRelease = Invoke-GitHubLatestRelease -Repo 'wsolarq11/gh_mirror_gui'
 $targetRelease = Invoke-GitHubLatestRelease -Repo 'carrot-hu23/dst-admin-go'
