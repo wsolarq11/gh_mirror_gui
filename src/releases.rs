@@ -24,6 +24,7 @@ pub(crate) struct ReleaseAsset {
     pub(crate) size: u64,
     pub(crate) browser_download_url: String,
     pub(crate) content_type: Option<String>,
+    pub(crate) api_url: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -46,6 +47,7 @@ struct GitHubReleaseResponse {
 
 #[derive(serde::Deserialize)]
 struct GitHubAssetResponse {
+    url: Option<String>,
     name: String,
     size: u64,
     browser_download_url: String,
@@ -179,6 +181,7 @@ pub(crate) fn resolve_release_assets_with_base(
                 size: asset.size,
                 browser_download_url: asset.browser_download_url,
                 content_type: asset.content_type,
+                api_url: asset.url,
             })
             .collect(),
     })

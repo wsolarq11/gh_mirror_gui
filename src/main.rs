@@ -58,7 +58,8 @@ use trust_policy::{
 use update_candidate::{
     check_latest_update_candidate, refused_update_candidate_check_report,
     run_update_candidate_contract_selftest, run_update_candidate_latest_selftest,
-    UpdateCandidateCheckConfig, UpdateCandidateCheckReport,
+    stage_latest_update_candidate, UpdateCandidateCheckConfig, UpdateCandidateCheckReport,
+    UpdateCandidateStageConfig, UpdateCandidateStageReport,
 };
 use verification::{
     verification_plan_for_selected_asset, verification_source_summary, verify_downloaded_file,
@@ -317,6 +318,79 @@ fn render_update_candidate_check(ui: &mut egui::Ui, report: &UpdateCandidateChec
     });
 }
 
+fn render_update_candidate_stage(ui: &mut egui::Ui, report: &UpdateCandidateStageReport) {
+    ui.group(|ui| {
+        ui.label(egui::RichText::new("Self-update Stage 2 (staging)").strong());
+        ui.small("No install: stages a verified candidate to a local folder and records evidence.");
+
+        egui::Grid::new("trust_center_update_stage")
+            .num_columns(2)
+            .striped(true)
+            .show(ui, |ui| {
+                ui.label("Status");
+                ui.label(format!("{:?}", report.status).to_lowercase());
+                ui.end_row();
+
+                ui.label("Release");
+                ui.label(format!("{} @ {}", report.repo, report.release_tag));
+                ui.end_row();
+
+                ui.label("Reason");
+                ui.label(&report.reason);
+                ui.end_row();
+
+                ui.label("Publisher fingerprint");
+                ui.label(
+                    report
+                        .publisher_key_fingerprint_sha256
+                        .as_deref()
+                        .unwrap_or("not available"),
+                );
+                ui.end_row();
+
+                ui.label("Stage dir");
+                ui.label(report.stage_dir.as_deref().unwrap_or("not staged"));
+                ui.end_row();
+
+                ui.label("Staged asset");
+                ui.label(report.staged_asset_path.as_deref().unwrap_or("none"));
+                ui.end_row();
+
+                ui.label("Expected SHA256");
+                ui.label(report.expected_sha256.as_deref().unwrap_or("unknown"));
+                ui.end_row();
+
+                ui.label("Staged SHA256");
+                ui.label(report.staged_sha256.as_deref().unwrap_or("unknown"));
+                ui.end_row();
+
+                ui.label("Evidence path");
+                ui.label(report.evidence_path.as_deref().unwrap_or("not recorded"));
+                ui.end_row();
+            });
+
+        if let Some(error) = &report.evidence_write_error {
+            ui.colored_label(
+                egui::Color32::from_rgb(220, 160, 0),
+                format!("Evidence write warning: {error}"),
+            );
+        }
+
+        if let Some(dir) = report.stage_dir.as_deref() {
+            let stage_dir = Path::new(dir);
+            if stage_dir.is_dir() && ui.button("📁 Open stage folder").clicked() {
+                let _ = open::that(stage_dir);
+            }
+        }
+        if let Some(path) = report.evidence_path.as_deref() {
+            let evidence_path = Path::new(path);
+            if evidence_path.is_file() && ui.button("📄 Open stage evidence").clicked() {
+                let _ = open::that(evidence_path);
+            }
+        }
+    });
+}
+
 fn import_publisher_key_pin_from_path(path: &Path) -> Result<String, String> {
     let text = std::fs::read_to_string(path)
         .map_err(|e| format!("Read publisher public key {}: {e}", path.display()))?;
@@ -364,6 +438,7 @@ const MIRRORS: &[(&str, &str)] = &[("Direct (no mirror)", "")];
 type ReleaseLookupMessage = (String, Result<ResolvedRelease, String>);
 type PublisherKeyImportMessage = (String, Result<ImportedPublisherKeyPin, String>);
 type UpdateCandidateCheckMessage = UpdateCandidateCheckReport;
+type UpdateCandidateStageMessage = UpdateCandidateStageReport;
 type DownloadResultMessage = Result<DownloadCompletion, String>;
 
 struct DownloadCompletion {
@@ -443,6 +518,10 @@ struct GhMirrorGui {
     update_candidate_report: Option<UpdateCandidateCheckReport>,
     update_candidate_thread: Option<thread::JoinHandle<()>>,
     update_candidate_rx: Option<mpsc::Receiver<UpdateCandidateCheckMessage>>,
+    update_stage_status: String,
+    update_stage_report: Option<UpdateCandidateStageReport>,
+    update_stage_thread: Option<thread::JoinHandle<()>>,
+    update_stage_rx: Option<mpsc::Receiver<UpdateCandidateStageMessage>>,
     // Persisted state
     download_complete_notified: bool,
     last_download_path: Option<PathBuf>,
@@ -539,6 +618,10 @@ impl GhMirrorGui {
             update_candidate_report: None,
             update_candidate_thread: None,
             update_candidate_rx: None,
+            update_stage_status: String::new(),
+            update_stage_report: None,
+            update_stage_thread: None,
+            update_stage_rx: None,
             download_complete_notified: false,
             last_download_path: None,
             last_verification: None,
@@ -577,6 +660,13 @@ impl GhMirrorGui {
             .parent()
             .map(|path| path.join("update-candidate-evidence"))
             .unwrap_or_else(|| PathBuf::from("update-candidate-evidence"))
+    }
+
+    fn update_candidate_stage_root(&self) -> PathBuf {
+        self.effective_history_path()
+            .parent()
+            .map(|path| path.join("update-candidate-staging"))
+            .unwrap_or_else(|| PathBuf::from("update-candidate-staging"))
     }
 
     fn clear_release_lookup_result(&mut self) {
@@ -621,6 +711,64 @@ impl GhMirrorGui {
                     format!("self-update client build failed: {e}"),
                     &evidence_dir,
                 ),
+            };
+            let _ = tx.send(report);
+        }));
+    }
+
+    fn start_update_candidate_stage(&mut self) {
+        if self.update_stage_thread.is_some() {
+            self.update_stage_status = "Update candidate staging is already running...".to_string();
+            return;
+        }
+
+        let proxy = self.proxy.clone();
+        let allow_invalid_certs = self.allow_invalid_certs;
+        let source_trust_policy = self.trust_policy.source_trust.clone();
+        let evidence_dir = self.update_candidate_evidence_dir();
+        let stage_root = self.update_candidate_stage_root();
+        let (tx, rx) = mpsc::channel::<UpdateCandidateStageMessage>();
+        self.update_stage_status =
+            "Staging latest self-update candidate (no install)...".to_string();
+        self.update_stage_rx = Some(rx);
+        self.update_stage_thread = Some(thread::spawn(move || {
+            let report = match build_client(&proxy, 60, allow_invalid_certs) {
+                Ok(client) => stage_latest_update_candidate(
+                    &client,
+                    UpdateCandidateStageConfig {
+                        current_version: env!("CARGO_PKG_VERSION"),
+                        source_trust_policy: &source_trust_policy,
+                        evidence_dir: &evidence_dir,
+                        stage_root: &stage_root,
+                        api_base: None,
+                    },
+                ),
+                Err(e) => {
+                    let check_report = refused_update_candidate_check_report(
+                        env!("CARGO_PKG_VERSION"),
+                        format!("self-update client build failed: {e}"),
+                        &evidence_dir,
+                    );
+                    UpdateCandidateStageReport {
+                        schema_version: 1,
+                        status: update_candidate::UpdateCandidateStageStatus::Refused,
+                        repo: "wsolarq11/gh_mirror_gui".to_string(),
+                        release_tag: check_report.release_tag.clone(),
+                        release_url: check_report.release_url.clone(),
+                        stage_dir: None,
+                        staged_asset_path: None,
+                        staged_sha256: None,
+                        expected_sha256: None,
+                        publisher_key_fingerprint_sha256: check_report
+                            .publisher_key_fingerprint_sha256()
+                            .map(ToString::to_string),
+                        reason: "self-update client build failed".to_string(),
+                        no_install: true,
+                        check_report,
+                        evidence_path: None,
+                        evidence_write_error: None,
+                    }
+                }
             };
             let _ = tx.send(report);
         }));
@@ -1063,6 +1211,19 @@ impl eframe::App for GhMirrorGui {
                 );
                 self.status = self.update_candidate_status.clone();
                 self.update_candidate_report = Some(report);
+            }
+        }
+
+        // Process self-update Stage 2 staging result. This stage still performs no install:
+        // it only stages a verified candidate to a local directory and records evidence.
+        if let Some(rx) = &self.update_stage_rx {
+            if let Ok(report) = rx.try_recv() {
+                self.update_stage_thread = None;
+                self.update_stage_rx = None;
+                self.update_stage_status =
+                    format!("Self-update stage: {:?} ({})", report.status, report.reason);
+                self.status = self.update_stage_status.clone();
+                self.update_stage_report = Some(report);
             }
         }
 
@@ -1569,6 +1730,28 @@ impl eframe::App for GhMirrorGui {
                 });
                 if let Some(report) = &self.update_candidate_report {
                     render_update_candidate_check(ui, report);
+                }
+            });
+
+            ui.group(|ui| {
+                ui.label(egui::RichText::new("Self-update Stage 2").strong());
+                ui.small("Stages a verified candidate to a local folder (still no install).");
+                ui.horizontal(|ui| {
+                    let running = self.update_stage_thread.is_some();
+                    if ui
+                        .add_enabled(!running, egui::Button::new("Stage latest candidate (no install)"))
+                        .clicked()
+                    {
+                        self.start_update_candidate_stage();
+                    }
+                    if running {
+                        ui.label("⏳ Staging...");
+                    } else if !self.update_stage_status.is_empty() {
+                        ui.label(&self.update_stage_status);
+                    }
+                });
+                if let Some(report) = &self.update_stage_report {
+                    render_update_candidate_stage(ui, report);
                 }
             });
 

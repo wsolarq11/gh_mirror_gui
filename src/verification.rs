@@ -15,6 +15,7 @@ const VERIFICATION_ASSET_RETRY_DELAY_MS: u64 = 100;
 pub(crate) struct VerificationAsset {
     pub(crate) name: String,
     pub(crate) browser_download_url: String,
+    pub(crate) api_url: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -167,7 +168,7 @@ pub(crate) fn verify_downloaded_file(
     let mut notes = Vec::new();
     let mut verified_but_untrusted_source = None;
     if let Some(checksum_asset) = &plan.checksum_asset {
-        match fetch_text_asset(client, &checksum_asset.browser_download_url) {
+        match fetch_text_asset(client, checksum_asset) {
             Ok((text, bytes)) => {
                 if let Some(expected) = expected_sha256_from_checksum_asset(
                     &text,
@@ -220,7 +221,7 @@ pub(crate) fn verify_downloaded_file(
     }
 
     if let Some(provenance_asset) = &plan.provenance_asset {
-        match fetch_text_asset(client, &provenance_asset.browser_download_url) {
+        match fetch_text_asset(client, provenance_asset) {
             Ok((text, bytes)) => {
                 if let Some(expected) = expected_sha256_from_provenance(&text, &plan.asset_name) {
                     let signature_text = fetch_signature_text(
@@ -350,6 +351,7 @@ fn to_verification_asset(asset: &ReleaseAsset) -> VerificationAsset {
     VerificationAsset {
         name: asset.name.clone(),
         browser_download_url: asset.browser_download_url.clone(),
+        api_url: asset.api_url.clone(),
     }
 }
 
@@ -407,8 +409,33 @@ fn provenance_asset_rank(name: &str) -> Option<u8> {
     }
 }
 
-fn fetch_text_asset(client: &Client, url: &str) -> Result<(String, Vec<u8>), String> {
+fn github_token() -> Option<String> {
+    std::env::var("GITHUB_TOKEN")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn is_github_host(url: &str) -> bool {
+    let Ok(parsed) = reqwest::Url::parse(url) else {
+        return false;
+    };
+    matches!(
+        parsed.host_str(),
+        Some("github.com") | Some("api.github.com")
+    )
+}
+
+fn fetch_text_asset(
+    client: &Client,
+    asset: &VerificationAsset,
+) -> Result<(String, Vec<u8>), String> {
     let mut last_retryable_error = None;
+    let token = github_token();
+    let (url, accept_octet_stream) = match (token.is_some(), asset.api_url.as_deref()) {
+        (true, Some(api_url)) => (api_url, true),
+        _ => (asset.browser_download_url.as_str(), false),
+    };
     for attempt in 0..=VERIFICATION_ASSET_MAX_RETRIES {
         if attempt > 0 {
             std::thread::sleep(std::time::Duration::from_millis(
@@ -416,11 +443,19 @@ fn fetch_text_asset(client: &Client, url: &str) -> Result<(String, Vec<u8>), Str
             ));
         }
 
-        let response = match client
+        let mut request = client
             .get(url)
-            .header("User-Agent", "gh_mirror_gui-verifier")
-            .send()
-        {
+            .header("User-Agent", "gh_mirror_gui-verifier");
+        if accept_octet_stream {
+            request = request.header("Accept", "application/octet-stream");
+        }
+        if let Some(token) = token.as_deref() {
+            if accept_octet_stream || is_github_host(url) {
+                request = request.bearer_auth(token);
+            }
+        }
+
+        let response = match request.send() {
             Ok(response) => response,
             Err(e) => {
                 last_retryable_error = Some(format!("verification asset request failed: {e}"));
@@ -474,7 +509,7 @@ fn fetch_signature_text(
     notes: &mut Vec<String>,
 ) -> Option<String> {
     let signature_asset = signature_asset?;
-    match fetch_text_asset(client, &signature_asset.browser_download_url) {
+    match fetch_text_asset(client, signature_asset) {
         Ok((text, _)) => Some(text),
         Err(e) => {
             notes.push(format!("{} could not be read: {e}", signature_asset.name));
@@ -687,6 +722,7 @@ mod tests {
             size: 1,
             browser_download_url: format!("https://example.test/{name}"),
             content_type: None,
+            api_url: None,
         }
     }
 
@@ -1000,6 +1036,7 @@ mod tests {
             checksum_asset: Some(VerificationAsset {
                 name: "SHA256SUMS.txt".to_string(),
                 browser_download_url: checksum_url,
+                api_url: None,
             }),
             checksum_signature_asset: None,
             provenance_asset: None,
@@ -1039,6 +1076,7 @@ mod tests {
             checksum_asset: Some(VerificationAsset {
                 name: "SHA256SUMS.txt".to_string(),
                 browser_download_url: checksum_url,
+                api_url: None,
             }),
             checksum_signature_asset: None,
             provenance_asset: None,
@@ -1085,10 +1123,12 @@ mod tests {
             checksum_asset: Some(VerificationAsset {
                 name: "SHA256SUMS.txt".to_string(),
                 browser_download_url: format!("{base_url}/SHA256SUMS.txt"),
+                api_url: None,
             }),
             checksum_signature_asset: Some(VerificationAsset {
                 name: "SHA256SUMS.txt.sig".to_string(),
                 browser_download_url: format!("{base_url}/SHA256SUMS.txt.sig"),
+                api_url: None,
             }),
             provenance_asset: None,
             provenance_signature_asset: None,
@@ -1140,10 +1180,12 @@ mod tests {
             checksum_asset: Some(VerificationAsset {
                 name: "SHA256SUMS.txt".to_string(),
                 browser_download_url: format!("{base_url}/SHA256SUMS.txt"),
+                api_url: None,
             }),
             checksum_signature_asset: Some(VerificationAsset {
                 name: "SHA256SUMS.txt.sig".to_string(),
                 browser_download_url: format!("{base_url}/SHA256SUMS.txt.sig"),
+                api_url: None,
             }),
             provenance_asset: None,
             provenance_signature_asset: None,
@@ -1186,6 +1228,7 @@ mod tests {
             checksum_asset: Some(VerificationAsset {
                 name: "SHA256SUMS.txt".to_string(),
                 browser_download_url: checksum_url,
+                api_url: None,
             }),
             checksum_signature_asset: None,
             provenance_asset: None,

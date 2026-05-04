@@ -147,8 +147,27 @@ pub(crate) fn import_publisher_key_pin_from_release_asset(
         ));
     }
 
-    let mut response = client
-        .get(&asset.browser_download_url)
+    let token = std::env::var("GITHUB_TOKEN")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let (url, accept_octet_stream) = match (token.is_some(), asset.api_url.as_deref()) {
+        (true, Some(api_url)) => (api_url, true),
+        _ => (asset.browser_download_url.as_str(), false),
+    };
+    let mut request = client
+        .get(url)
+        .header("User-Agent", "gh_mirror_gui-source-trust");
+    if accept_octet_stream {
+        request = request.header("Accept", "application/octet-stream");
+    }
+    if let Some(token) = token.as_deref() {
+        if accept_octet_stream {
+            request = request.bearer_auth(token);
+        }
+    }
+
+    let mut response = request
         .send()
         .map_err(|e| format!("Download {} failed: {e}", asset.name))?;
     let status = response.status();
@@ -456,6 +475,7 @@ mod tests {
             size: body.len() as u64,
             browser_download_url: format!("{base_url}/{PUBLISHER_KEY_ASSET_NAME}"),
             content_type: Some("text/plain".to_string()),
+            api_url: None,
         };
         let client = Client::builder()
             .timeout(Duration::from_secs(5))
@@ -489,6 +509,7 @@ mod tests {
             size: MAX_PUBLISHER_KEY_ASSET_BYTES + 1,
             browser_download_url: "http://127.0.0.1:9/publisher-key.ed25519.pub".to_string(),
             content_type: Some("text/plain".to_string()),
+            api_url: None,
         };
 
         let err = import_publisher_key_pin_from_release_asset(&client, &asset).unwrap_err();

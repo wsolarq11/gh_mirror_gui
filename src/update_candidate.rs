@@ -19,6 +19,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const UPDATE_CANDIDATE_SCHEMA_VERSION: u32 = 1;
 const UPDATE_CANDIDATE_EVIDENCE_SCHEMA_VERSION: u32 = 1;
+const UPDATE_CANDIDATE_STAGE_SCHEMA_VERSION: u32 = 1;
+const UPDATE_CANDIDATE_STAGE_EVIDENCE_SCHEMA_VERSION: u32 = 1;
 const SELF_UPDATE_OWNER: &str = "wsolarq11";
 const SELF_UPDATE_REPO: &str = "gh_mirror_gui";
 const SELF_UPDATE_ASSET_NAME: &str = "gh_mirror_gui.exe";
@@ -30,6 +32,41 @@ pub(crate) struct UpdateCandidateCheckConfig<'a> {
     pub(crate) source_trust_policy: &'a SourceTrustPolicyConfig,
     pub(crate) evidence_dir: &'a Path,
     pub(crate) api_base: Option<&'a str>,
+}
+
+pub(crate) struct UpdateCandidateStageConfig<'a> {
+    pub(crate) current_version: &'a str,
+    pub(crate) source_trust_policy: &'a SourceTrustPolicyConfig,
+    pub(crate) evidence_dir: &'a Path,
+    pub(crate) stage_root: &'a Path,
+    pub(crate) api_base: Option<&'a str>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub(crate) enum UpdateCandidateStageStatus {
+    Staged,
+    NoUpdate,
+    Refused,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct UpdateCandidateStageReport {
+    pub(crate) schema_version: u32,
+    pub(crate) status: UpdateCandidateStageStatus,
+    pub(crate) repo: String,
+    pub(crate) release_tag: String,
+    pub(crate) release_url: String,
+    pub(crate) stage_dir: Option<String>,
+    pub(crate) staged_asset_path: Option<String>,
+    pub(crate) staged_sha256: Option<String>,
+    pub(crate) expected_sha256: Option<String>,
+    pub(crate) publisher_key_fingerprint_sha256: Option<String>,
+    pub(crate) reason: String,
+    pub(crate) no_install: bool,
+    pub(crate) check_report: UpdateCandidateCheckReport,
+    pub(crate) evidence_path: Option<String>,
+    pub(crate) evidence_write_error: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -161,6 +198,101 @@ pub(crate) fn check_latest_update_candidate(
     };
 
     evaluate_resolved_latest_release(client, config, repo, release)
+}
+
+pub(crate) fn stage_latest_update_candidate(
+    client: &Client,
+    config: UpdateCandidateStageConfig<'_>,
+) -> UpdateCandidateStageReport {
+    let repo = format!("{SELF_UPDATE_OWNER}/{SELF_UPDATE_REPO}");
+    let check_report = check_latest_update_candidate(
+        client,
+        UpdateCandidateCheckConfig {
+            current_version: config.current_version,
+            source_trust_policy: config.source_trust_policy,
+            evidence_dir: config.evidence_dir,
+            api_base: config.api_base,
+        },
+    );
+
+    let publisher_key_fingerprint = check_report
+        .publisher_key_fingerprint_sha256()
+        .map(|v| v.to_string());
+
+    match check_report.evaluation.status {
+        UpdateCandidateStatus::NoUpdate => UpdateCandidateStageReport {
+            schema_version: UPDATE_CANDIDATE_STAGE_SCHEMA_VERSION,
+            status: UpdateCandidateStageStatus::NoUpdate,
+            repo,
+            release_tag: check_report.release_tag.clone(),
+            release_url: check_report.release_url.clone(),
+            stage_dir: None,
+            staged_asset_path: None,
+            staged_sha256: None,
+            expected_sha256: None,
+            publisher_key_fingerprint_sha256: publisher_key_fingerprint,
+            reason: check_report.evaluation.reason.clone(),
+            no_install: true,
+            check_report,
+            evidence_path: None,
+            evidence_write_error: None,
+        },
+        UpdateCandidateStatus::Refused => UpdateCandidateStageReport {
+            schema_version: UPDATE_CANDIDATE_STAGE_SCHEMA_VERSION,
+            status: UpdateCandidateStageStatus::Refused,
+            repo,
+            release_tag: check_report.release_tag.clone(),
+            release_url: check_report.release_url.clone(),
+            stage_dir: None,
+            staged_asset_path: None,
+            staged_sha256: None,
+            expected_sha256: None,
+            publisher_key_fingerprint_sha256: publisher_key_fingerprint,
+            reason: check_report.evaluation.reason.clone(),
+            no_install: true,
+            check_report,
+            evidence_path: None,
+            evidence_write_error: None,
+        },
+        UpdateCandidateStatus::Candidate => {
+            let stage_dir = config
+                .stage_root
+                .join(sanitize_evidence_component(&check_report.release_tag));
+            let evidence_path = stage_dir.join("update-candidate-stage.json");
+
+            let mut report = match stage_candidate_from_check_report(
+                client,
+                &check_report,
+                &stage_dir,
+                config.api_base,
+            ) {
+                Ok(staged) => staged,
+                Err(e) => UpdateCandidateStageReport {
+                    schema_version: UPDATE_CANDIDATE_STAGE_SCHEMA_VERSION,
+                    status: UpdateCandidateStageStatus::Refused,
+                    repo,
+                    release_tag: check_report.release_tag.clone(),
+                    release_url: check_report.release_url.clone(),
+                    stage_dir: Some(stage_dir.display().to_string()),
+                    staged_asset_path: None,
+                    staged_sha256: None,
+                    expected_sha256: None,
+                    publisher_key_fingerprint_sha256: publisher_key_fingerprint.clone(),
+                    reason: e,
+                    no_install: true,
+                    check_report: check_report.clone(),
+                    evidence_path: Some(evidence_path.display().to_string()),
+                    evidence_write_error: None,
+                },
+            };
+
+            report.evidence_path = Some(evidence_path.display().to_string());
+            if let Err(e) = write_update_candidate_stage_evidence(&evidence_path, &report) {
+                report.evidence_write_error = Some(e);
+            }
+            report
+        }
+    }
 }
 
 pub(crate) fn refused_update_candidate_check_report(
@@ -571,9 +703,26 @@ fn download_release_asset_to_path(
     if let Some(parent) = output.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("Create update candidate temp dir: {e}"))?;
     }
-    let mut response = client
-        .get(&asset.browser_download_url)
-        .header("User-Agent", UPDATE_CANDIDATE_USER_AGENT)
+    let token = std::env::var("GITHUB_TOKEN")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let (url, accept_octet_stream) = match (token.is_some(), asset.api_url.as_deref()) {
+        (true, Some(api_url)) => (api_url, true),
+        _ => (asset.browser_download_url.as_str(), false),
+    };
+    let mut request = client
+        .get(url)
+        .header("User-Agent", UPDATE_CANDIDATE_USER_AGENT);
+    if accept_octet_stream {
+        request = request.header("Accept", "application/octet-stream");
+    }
+    if let Some(token) = token.as_deref() {
+        if accept_octet_stream {
+            request = request.bearer_auth(token);
+        }
+    }
+    let mut response = request
         .send()
         .map_err(|e| format!("Download update candidate {} failed: {e}", asset.name))?;
     let status = response.status();
@@ -744,6 +893,130 @@ fn write_update_candidate_evidence(
         "release_publisher_key_fingerprint_sha256": &report.release_publisher_key_fingerprint_sha256,
         "evaluation": &report.evaluation,
         "verification_report": &report.verification_report,
+    });
+    let pretty =
+        serde_json::to_string_pretty(&record).map_err(|e| format!("Serialize evidence: {e}"))?;
+    fs::write(path, format!("{pretty}\n")).map_err(|e| format!("Write evidence: {e}"))
+}
+
+fn stage_candidate_from_check_report(
+    client: &Client,
+    check_report: &UpdateCandidateCheckReport,
+    stage_dir: &Path,
+    api_base: Option<&str>,
+) -> Result<UpdateCandidateStageReport, String> {
+    if check_report.evaluation.status != UpdateCandidateStatus::Candidate {
+        return Err("stage requires a CANDIDATE check report".to_string());
+    }
+    let verification = check_report
+        .verification_report
+        .as_ref()
+        .ok_or_else(|| "stage requires a verification report".to_string())?;
+    if verification.status != VerificationStatus::Verified {
+        return Err(format!(
+            "stage requires a VERIFIED candidate, got {}",
+            verification.status.as_str()
+        ));
+    }
+
+    fs::create_dir_all(stage_dir).map_err(|e| format!("Create stage dir: {e}"))?;
+
+    let query = ReleaseQuery {
+        owner: SELF_UPDATE_OWNER.to_string(),
+        repo: SELF_UPDATE_REPO.to_string(),
+        kind: ReleaseQueryKind::Tag(check_report.release_tag.clone()),
+    };
+    let release = match api_base {
+        Some(api_base) => resolve_release_assets_with_base(client, api_base, &query),
+        None => resolve_release_assets(client, &query),
+    }
+    .map_err(|e| format!("Stage candidate release lookup failed: {e}"))?;
+
+    let Some(asset_index) = self_update_asset_index(&release) else {
+        return Err(format!(
+            "stage candidate release {} missing required asset {}",
+            release.tag_name, SELF_UPDATE_ASSET_NAME
+        ));
+    };
+    let asset = release.assets[asset_index].clone();
+
+    let tmp_path = stage_dir.join(format!("{}.staging.tmp", asset.name));
+    download_release_asset_to_path(client, &asset, &tmp_path)?;
+    let sha256 = crate::download::sha256_file(&tmp_path)?;
+    if let Some(expected) = verification.expected_sha256.as_deref() {
+        if sha256 != expected.to_ascii_uppercase() {
+            let _ = fs::remove_file(&tmp_path);
+            return Err(format!(
+                "staged candidate sha256 {sha256} did not match expected {expected}"
+            ));
+        }
+    }
+
+    let staged_path = stage_dir.join(&asset.name);
+    fs::rename(&tmp_path, &staged_path)
+        .or_else(|_| {
+            fs::copy(&tmp_path, &staged_path)
+                .map(|_| ())
+                .and_then(|_| fs::remove_file(&tmp_path))
+        })
+        .map_err(|e| format!("Finalize staged candidate file: {e}"))?;
+
+    for name in [
+        "publisher-key.ed25519.pub",
+        "SHA256SUMS.txt",
+        "SHA256SUMS.txt.sig",
+        "release-provenance.json",
+        "release-provenance.json.sig",
+    ] {
+        if let Some(asset) = release.assets.iter().find(|asset| asset.name == name) {
+            let out = stage_dir.join(name);
+            download_release_asset_to_path(client, asset, &out)?;
+        }
+    }
+
+    Ok(UpdateCandidateStageReport {
+        schema_version: UPDATE_CANDIDATE_STAGE_SCHEMA_VERSION,
+        status: UpdateCandidateStageStatus::Staged,
+        repo: format!("{SELF_UPDATE_OWNER}/{SELF_UPDATE_REPO}"),
+        release_tag: check_report.release_tag.clone(),
+        release_url: check_report.release_url.clone(),
+        stage_dir: Some(stage_dir.display().to_string()),
+        staged_asset_path: Some(staged_path.display().to_string()),
+        staged_sha256: Some(sha256),
+        expected_sha256: verification.expected_sha256.clone(),
+        publisher_key_fingerprint_sha256: check_report
+            .publisher_key_fingerprint_sha256()
+            .map(|v| v.to_string()),
+        reason: "staged verified candidate (no install)".to_string(),
+        no_install: true,
+        check_report: check_report.clone(),
+        evidence_path: None,
+        evidence_write_error: None,
+    })
+}
+
+fn write_update_candidate_stage_evidence(
+    path: &Path,
+    report: &UpdateCandidateStageReport,
+) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("Create update candidate stage evidence dir: {e}"))?;
+    }
+    let record = serde_json::json!({
+        "schema_version": UPDATE_CANDIDATE_STAGE_EVIDENCE_SCHEMA_VERSION,
+        "no_install": true,
+        "repo": &report.repo,
+        "release_tag": &report.release_tag,
+        "release_url": &report.release_url,
+        "status": report.status,
+        "reason": &report.reason,
+        "publisher_key_fingerprint_sha256": &report.publisher_key_fingerprint_sha256,
+        "stage_dir": &report.stage_dir,
+        "staged_asset_path": &report.staged_asset_path,
+        "staged_sha256": &report.staged_sha256,
+        "expected_sha256": &report.expected_sha256,
+        "check_report": &report.check_report,
     });
     let pretty =
         serde_json::to_string_pretty(&record).map_err(|e| format!("Serialize evidence: {e}"))?;
@@ -1156,6 +1429,14 @@ mod tests {
                 },
             ),
             (
+                format!("/repos/{SELF_UPDATE_OWNER}/{SELF_UPDATE_REPO}/releases/tags/{tag}"),
+                RouteResponse {
+                    status: "200 OK",
+                    content_type: "application/json",
+                    body: serde_json::to_vec(&api_body).unwrap(),
+                },
+            ),
+            (
                 format!("/{SELF_UPDATE_ASSET_NAME}"),
                 RouteResponse {
                     status: "200 OK",
@@ -1273,6 +1554,68 @@ mod tests {
             .iter()
             .any(|request| request.starts_with("GET /gh_mirror_gui.exe ")));
         let _ = std::fs::remove_dir_all(evidence_dir);
+    }
+
+    #[test]
+    fn latest_update_stage_stages_newer_signed_candidate_to_local_directory() {
+        let public_key = public_key_from_private_seed(TEST_PRIVATE_KEY).unwrap();
+        let expected_fingerprint = trusted_key_fingerprint(&public_key).unwrap();
+        let exe_body = b"new trusted candidate binary for staging";
+        let (api_base, server) = serve_routes(10, |base| {
+            signed_release_routes(base, "v0.1.4", exe_body, &public_key)
+        });
+        let evidence_dir = unique_evidence_dir("stage_evidence");
+        let stage_root = unique_evidence_dir("stage_root");
+        let policy = SourceTrustPolicyConfig {
+            require_trusted_source: false,
+            trusted_publisher_key: public_key,
+        };
+
+        let report = stage_latest_update_candidate(
+            &test_client(),
+            UpdateCandidateStageConfig {
+                current_version: "0.1.3",
+                source_trust_policy: &policy,
+                evidence_dir: &evidence_dir,
+                stage_root: &stage_root,
+                api_base: Some(&api_base),
+            },
+        );
+        let requests = server.join().unwrap();
+
+        assert_eq!(report.status, UpdateCandidateStageStatus::Staged);
+        assert!(report.no_install);
+        assert_eq!(report.release_tag, "v0.1.4");
+        assert_eq!(
+            report.publisher_key_fingerprint_sha256.as_deref(),
+            Some(expected_fingerprint.as_str())
+        );
+        let stage_dir = PathBuf::from(report.stage_dir.as_ref().unwrap());
+        assert!(stage_dir.is_dir());
+        let staged_asset = PathBuf::from(report.staged_asset_path.as_ref().unwrap());
+        assert!(staged_asset.is_file());
+        assert!(stage_dir.join("SHA256SUMS.txt").is_file());
+        assert!(stage_dir.join("SHA256SUMS.txt.sig").is_file());
+        assert!(stage_dir.join("publisher-key.ed25519.pub").is_file());
+        assert!(stage_dir.join("update-candidate-stage.json").is_file());
+        assert_eq!(
+            report.staged_sha256.as_deref(),
+            report.expected_sha256.as_deref()
+        );
+        let expected_sha = sha256_hex(exe_body);
+        assert_eq!(report.staged_sha256.as_deref(), Some(expected_sha.as_str()));
+        assert!(requests.iter().any(|request| request
+            .starts_with("GET /repos/wsolarq11/gh_mirror_gui/releases/tags/v0.1.4 ")));
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|request| request.starts_with("GET /gh_mirror_gui.exe "))
+                .count(),
+            2
+        );
+
+        let _ = std::fs::remove_dir_all(evidence_dir);
+        let _ = std::fs::remove_dir_all(stage_root);
     }
 
     #[test]

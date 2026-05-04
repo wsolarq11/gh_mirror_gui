@@ -205,6 +205,10 @@ verdict (`candidate`, `no-update`, or `refused`), `refusal_reason`, publisher
 fingerprint, and evidence path. This stage does not install, replace the exe,
 write system persistence, create tags, or publish releases.
 
+**Self-update Stage 2** stages a verified candidate to a local folder and
+records stage evidence. It still performs no install, exe replacement, or
+system persistence; the UI only displays backend/core verdicts.
+
 ## Release automation
 
 `v0.1.3` is the first public signed release with `.sig` assets and

@@ -150,6 +150,10 @@ Evidence must remain reviewable and machine-readable:
   reports only `candidate`, `no-update`, or `refused`, records evidence, and
   never installs, replaces the executable, writes system persistence, mutates
   tags, publishes releases, or touches secrets
+- Self-update Stage 2 candidate staging: backend stages a verified candidate to
+  a local folder and records stage evidence. It still does not install,
+  replace the executable, write system persistence, mutate tags, publish
+  releases, or touch secrets.
 - network smoke
 - benchmark
 - GUI launch smoke

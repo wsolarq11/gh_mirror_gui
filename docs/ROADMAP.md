@@ -99,10 +99,16 @@ Deliverables:
   `no-update`, or `refused`, plus `refusal_reason`, publisher fingerprint, and
   evidence path; it still performs no install, exe replacement, system
   persistence, tag mutation, release publication, or secret access.
+- Self-update Stage 2 stages a verified candidate to a local folder and
+  records stage evidence. It still performs no install, exe replacement, or
+  system persistence; it only downloads the candidate and required
+  checksum/provenance assets to a staging directory and verifies the staged
+  binary SHA256 matches the expected signed checksum/provenance value.
 
 Stop condition: release verification receipt reports public signature
-verification `ok=true`, update candidate contract `ok=true`, and no tag,
-release, secret, install, or executable replacement mutation occurred.
+verification `ok=true`, update candidate contract `ok=true`, Stage 2 staging is
+covered by tests/receipt gates, and no tag/release/secret/install/executable
+replacement mutation occurred.
 
 ## Phase 2: Trust Center UI
 

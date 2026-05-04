@@ -352,6 +352,7 @@ fn staged_release_metadata(release_dir: &Path, base_url: &str) -> Result<Resolve
                 size,
                 browser_download_url: format!("{base_url}/{name}"),
                 content_type: None,
+                api_url: None,
             })
         })
         .collect::<Result<Vec<_>, String>>()?;

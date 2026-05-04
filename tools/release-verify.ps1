@@ -1730,7 +1730,7 @@ $Receipt.checks.trust_policy_contract = [ordered]@{
 }
 $Receipt.checks.update_candidate_unit_tests = [ordered]@{
     ok = $true
-    contract = 'no-mutation self-update candidate must be newer, gh_mirror_gui.exe, hash VERIFIED, trusted signed source, and pinned publisher policy'
+    contract = 'self-update candidate/staging: newer-only, gh_mirror_gui.exe only, hash VERIFIED, trusted signed source with pinned publisher key; Stage 2 stages locally but does not install/replace'
     covered_by = Assert-CommandLogContains `
         -CommandName 'cargo-test-all-targets' `
         -RequiredPatterns @(
@@ -1741,7 +1741,8 @@ $Receipt.checks.update_candidate_unit_tests = [ordered]@{
             'update_candidate_refuses_unsigned_required_source',
             'latest_update_check_reports_no_update_without_downloading_candidate',
             'latest_update_check_accepts_newer_signed_candidate_with_pinned_key',
-            'latest_update_check_refuses_newer_candidate_without_pinned_key_before_download'
+            'latest_update_check_refuses_newer_candidate_without_pinned_key_before_download',
+            'latest_update_stage_stages_newer_signed_candidate_to_local_directory'
         )
 }
 Invoke-LoggedNative -Name 'cargo-clippy-all-targets' -Exe 'cargo' -Arguments @('clippy', '--all-targets', '--locked', '--', '-D', 'warnings')
