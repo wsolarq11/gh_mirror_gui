@@ -1,10 +1,11 @@
-# gh_mirror_gui v0.1.5 Release Notes
+# gh_mirror_gui v0.1.6 Release Notes
 
 ## Highlights
 
-- Ships **Self-update Stage 2 (staging)**: stage a verified update candidate into a local folder and record reviewable stage evidence (still no install, no exe replacement, no persistence).
-- Adds a Stage 2 runtime selftest wired into the single delivery judge: `tools\release-verify.ps1 + receipt.json` now proves Stage 2 behavior end-to-end.
-- Improves private-repo compatibility for release asset fetches by preferring the GitHub API asset URL (with token) when available.
+- Minimal validation release to exercise **Self-update Stage 2 (staging)** against a newer public signed release.
+- Extends `--update-candidate-stage-selftest` with:
+  - `--current-version` override (simulate an older running version)
+  - `--trusted-publisher-key-file` (simulate a pinned publisher key)
 - Preserves `v0.1.2` unchanged and keeps all trust-critical decisions in backend/core contracts; the UI only displays verdicts.
 
 ## Verification
@@ -18,7 +19,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\release-verify.ps1 -
 No-publish signing preflight:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\release-signing-bootstrap.ps1 -Action Preflight -TargetTag v0.1.5
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\release-signing-bootstrap.ps1 -Action Preflight -TargetTag v0.1.6
 ```
 
 The release assets include:
@@ -39,4 +40,4 @@ Get-Content .\SHA256SUMS.txt
 
 ## Notes
 
-This release continues the trust-first self-update route: Stage 2 only stages a verified candidate and writes evidence. Installation/replacement remains out of scope until the same contract can prove rollback and no silent mutation.
+This release keeps the trust-first self-update route: Stage 2 only stages a verified candidate and writes evidence. Installation/replacement remains out of scope until the same contract can prove rollback and no silent mutation.
