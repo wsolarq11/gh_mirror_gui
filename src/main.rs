@@ -10,25 +10,25 @@ mod trust_policy;
 mod update_candidate;
 mod verification;
 
-use backend_contract::BackendClientSettings;
+use backend_contract::{BackendClientSettings, DownloadCompletion};
+#[cfg(test)]
+use bench::choose_history_backed_strategy;
 #[cfg(test)]
 use bench::parse_bench_config;
-use bench::{choose_history_backed_strategy, run_bench_download};
+use bench::run_bench_download;
 use directories::UserDirs;
-use download::{
-    build_client, build_effective_url, download_with_strategy, extract_filename, format_speed,
-    probe_download, sha256_file, DownloadControl, DownloadProbe,
-};
+#[cfg(test)]
+use download::{build_client, probe_download, DownloadProbe};
+use download::{build_effective_url, extract_filename, format_speed, sha256_file, DownloadControl};
 #[cfg(test)]
 use download::{
     download_segmented, download_single, SegmentedDownloadConfig, SEGMENT_CONCURRENCY, SEGMENT_SIZE,
 };
 use eframe::egui;
 use eframe::Storage;
+use history::default_history_path;
 #[cfg(test)]
 use history::BenchHistoryEntry;
-use history::VerificationHistoryContext;
-use history::{append_download_history, default_history_path, load_bench_history};
 use notify_rust::Notification;
 use releases::{
     asset_picker_label, is_github_release_asset_download_url, parse_release_query, ResolvedRelease,
@@ -52,17 +52,16 @@ use trust_center::{
 #[cfg(test)]
 use trust_policy::FileDispositionAction;
 use trust_policy::{
-    apply_file_disposition, file_disposition_summary, open_location_button_label_for_report,
-    plan_file_disposition_for_report, AppliedFileDisposition, MismatchFilePolicy,
-    TrustPolicyConfig, TrustPolicySnapshot,
+    file_disposition_summary, open_location_button_label_for_report, AppliedFileDisposition,
+    MismatchFilePolicy, TrustPolicyConfig, TrustPolicySnapshot,
 };
 use update_candidate::{
     run_update_candidate_contract_selftest, run_update_candidate_latest_selftest,
     run_update_candidate_stage_selftest, UpdateCandidateCheckReport, UpdateCandidateStageReport,
 };
 use verification::{
-    verification_plan_for_selected_asset, verification_source_summary, verify_downloaded_file,
-    DownloadVerificationPlan, VerificationReport, VerificationStatus,
+    verification_plan_for_selected_asset, verification_source_summary, DownloadVerificationPlan,
+    VerificationReport, VerificationStatus,
 };
 
 const RELEASE_PRIVATE_KEY_ENV: &str = "RELEASE_ED25519_PRIVATE_KEY_HEX";
@@ -73,21 +72,6 @@ const SHA256SUMS_SIGNATURE_ASSET: &str = "SHA256SUMS.txt.sig";
 const PROVENANCE_ASSET: &str = "release-provenance.json";
 const PROVENANCE_SIGNATURE_ASSET: &str = "release-provenance.json.sig";
 const SIGNATURE_FORMAT: &str = "ed25519-detached-hex";
-
-fn log_error(msg: &str) {
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open("download_error.log")
-    {
-        use std::io::Write;
-        let ts = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        let _ = writeln!(f, "[{}] {}", ts, msg);
-    }
-}
 
 fn format_download_completion_status(
     report: &VerificationReport,
@@ -439,15 +423,6 @@ type PublisherKeyImportMessage = (String, Result<ImportedPublisherKeyPin, String
 type UpdateCandidateCheckMessage = UpdateCandidateCheckReport;
 type UpdateCandidateStageMessage = UpdateCandidateStageReport;
 type DownloadResultMessage = Result<DownloadCompletion, String>;
-
-struct DownloadCompletion {
-    original_path: PathBuf,
-    verification: VerificationReport,
-    evidence_path: Option<PathBuf>,
-    policy_snapshot: TrustPolicySnapshot,
-    publisher_key_source_at_decision: String,
-    file_disposition: AppliedFileDisposition,
-}
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct SavedState {
@@ -908,107 +883,23 @@ impl GhMirrorGui {
             .unwrap_or_else(|| String::from("Starting download... verification will be UNKNOWN"));
 
         self.download_thread = Some(thread::spawn(move || {
-            let client = match build_client(&proxy, 3600, allow_invalid_certs) {
-                Ok(c) => c,
-                Err(e) => {
-                    log_error(&format!("build_client error: {}", e));
-                    let _ = progress_tx.send((0, 0, 0.0, 0.0));
-                    let _ = result_tx.send(Err(format!("Client build error: {e}")));
-                    return;
-                }
-            };
-
-            let probe = match probe_download(&client, &effective_url) {
-                Ok(probe) => probe,
-                Err(e) => {
-                    log_error(&format!("probe_download error: {}", e));
-                    DownloadProbe {
-                        total: 0,
-                        range_supported: false,
-                        etag: None,
-                        last_modified: None,
-                    }
-                }
-            };
-            let total = probe.total;
-            let history = load_bench_history(&Some(history_path.clone()), &effective_url, &probe);
-            let strategy = choose_history_backed_strategy(&probe, &history);
-            let save_path_str = save_path.to_string_lossy().to_string();
-            let download_start = Instant::now();
-
-            match download_with_strategy(
-                &client,
-                &effective_url,
-                &save_path_str,
-                &probe,
-                &strategy,
+            let settings = BackendClientSettings::new(proxy, allow_invalid_certs);
+            let result = backend_contract::run_download_contract(
+                &settings,
+                backend_contract::DownloadContractInput {
+                    effective_url,
+                    save_path,
+                    asset_name,
+                    verification_plan,
+                    trust_policy,
+                    publisher_key_source_at_decision,
+                    history_path,
+                },
                 &ctrl,
                 &progress_tx,
-            ) {
-                Ok(()) => {
-                    let verification = match verify_downloaded_file(
-                        &client,
-                        &save_path,
-                        &asset_name,
-                        verification_plan.as_ref(),
-                        &trust_policy.source_trust,
-                    ) {
-                        Ok(report) => report,
-                        Err(e) => {
-                            log_error(&format!("verify_downloaded_file error: {}", e));
-                            let _ = result_tx.send(Err(format!(
-                                "Download completed but SHA256 verification failed: {e}"
-                            )));
-                            return;
-                        }
-                    };
-                    let disposition_plan =
-                        plan_file_disposition_for_report(&save_path, &verification, &trust_policy);
-                    let evidence_path = match append_download_history(
-                        &Some(history_path.clone()),
-                        &effective_url,
-                        &save_path,
-                        &probe,
-                        &strategy,
-                        download_start.elapsed(),
-                        Some(VerificationHistoryContext {
-                            report: &verification,
-                            policy: &trust_policy,
-                            file_disposition: &disposition_plan,
-                        }),
-                    ) {
-                        Ok(evidence_path) => evidence_path,
-                        Err(e) => {
-                            log_error(&format!("append_download_history error: {}", e));
-                            None
-                        }
-                    };
-                    let file_disposition = match apply_file_disposition(&disposition_plan) {
-                        Ok(disposition) => disposition,
-                        Err(e) => {
-                            log_error(&format!("apply_file_disposition error: {}", e));
-                            let _ = result_tx.send(Err(format!(
-                                "Download completed but trust policy file disposition failed: {e}"
-                            )));
-                            return;
-                        }
-                    };
-                    let _ = progress_tx.send((total, total, 0.0, 0.0));
-                    let _ = result_tx.send(Ok(DownloadCompletion {
-                        original_path: save_path,
-                        verification,
-                        evidence_path,
-                        policy_snapshot: trust_policy.snapshot(),
-                        publisher_key_source_at_decision,
-                        file_disposition,
-                    }));
-                }
-                Err(e) => {
-                    log_error(&format!("download_file error: {}", e));
-                    let _ = progress_tx.send((0, 0, 0.0, 0.0));
-                    let _ = result_tx.send(Err(e));
-                }
-            }
+            );
+
+            let _ = result_tx.send(result);
         }));
 
         self.control = Some(control);
