@@ -1,3 +1,4 @@
+mod backend_contract;
 mod bench;
 mod download;
 mod history;
@@ -9,6 +10,7 @@ mod trust_policy;
 mod update_candidate;
 mod verification;
 
+use backend_contract::BackendClientSettings;
 #[cfg(test)]
 use bench::parse_bench_config;
 use bench::{choose_history_backed_strategy, run_bench_download};
@@ -29,8 +31,7 @@ use history::VerificationHistoryContext;
 use history::{append_download_history, default_history_path, load_bench_history};
 use notify_rust::Notification;
 use releases::{
-    asset_picker_label, is_github_release_asset_download_url, parse_release_query,
-    resolve_release_assets, ResolvedRelease,
+    asset_picker_label, is_github_release_asset_download_url, parse_release_query, ResolvedRelease,
 };
 use reqwest::blocking::Client;
 use rfd::FileDialog;
@@ -56,11 +57,8 @@ use trust_policy::{
     TrustPolicyConfig, TrustPolicySnapshot,
 };
 use update_candidate::{
-    check_latest_update_candidate, refused_update_candidate_check_report,
-    refused_update_candidate_stage_report, run_update_candidate_contract_selftest,
-    run_update_candidate_latest_selftest, run_update_candidate_stage_selftest,
-    stage_latest_update_candidate, UpdateCandidateCheckConfig, UpdateCandidateCheckReport,
-    UpdateCandidateStageConfig, UpdateCandidateStageReport,
+    run_update_candidate_contract_selftest, run_update_candidate_latest_selftest,
+    run_update_candidate_stage_selftest, UpdateCandidateCheckReport, UpdateCandidateStageReport,
 };
 use verification::{
     verification_plan_for_selected_asset, verification_source_summary, verify_downloaded_file,
@@ -697,22 +695,13 @@ impl GhMirrorGui {
             "Checking latest self-update candidate (no install)...".to_string();
         self.update_candidate_rx = Some(rx);
         self.update_candidate_thread = Some(thread::spawn(move || {
-            let report = match build_client(&proxy, 60, allow_invalid_certs) {
-                Ok(client) => check_latest_update_candidate(
-                    &client,
-                    UpdateCandidateCheckConfig {
-                        current_version: env!("CARGO_PKG_VERSION"),
-                        source_trust_policy: &source_trust_policy,
-                        evidence_dir: &evidence_dir,
-                        api_base: None,
-                    },
-                ),
-                Err(e) => refused_update_candidate_check_report(
-                    env!("CARGO_PKG_VERSION"),
-                    format!("self-update client build failed: {e}"),
-                    &evidence_dir,
-                ),
-            };
+            let settings = BackendClientSettings::new(proxy, allow_invalid_certs);
+            let report = backend_contract::run_update_candidate_check(
+                &settings,
+                env!("CARGO_PKG_VERSION"),
+                &source_trust_policy,
+                &evidence_dir,
+            );
             let _ = tx.send(report);
         }));
     }
@@ -733,23 +722,14 @@ impl GhMirrorGui {
             "Staging latest self-update candidate (no install)...".to_string();
         self.update_stage_rx = Some(rx);
         self.update_stage_thread = Some(thread::spawn(move || {
-            let report = match build_client(&proxy, 60, allow_invalid_certs) {
-                Ok(client) => stage_latest_update_candidate(
-                    &client,
-                    UpdateCandidateStageConfig {
-                        current_version: env!("CARGO_PKG_VERSION"),
-                        source_trust_policy: &source_trust_policy,
-                        evidence_dir: &evidence_dir,
-                        stage_root: &stage_root,
-                        api_base: None,
-                    },
-                ),
-                Err(e) => refused_update_candidate_stage_report(
-                    env!("CARGO_PKG_VERSION"),
-                    format!("self-update client build failed: {e}"),
-                    &evidence_dir,
-                ),
-            };
+            let settings = BackendClientSettings::new(proxy, allow_invalid_certs);
+            let report = backend_contract::run_update_candidate_stage(
+                &settings,
+                env!("CARGO_PKG_VERSION"),
+                &source_trust_policy,
+                &evidence_dir,
+                &stage_root,
+            );
             let _ = tx.send(report);
         }));
     }
@@ -788,10 +768,8 @@ impl GhMirrorGui {
         self.release_lookup_input = Some(input.clone());
         self.release_lookup_rx = Some(rx);
         self.release_lookup_thread = Some(thread::spawn(move || {
-            let result = match build_client(&proxy, 30, allow_invalid_certs) {
-                Ok(client) => resolve_release_assets(&client, &query),
-                Err(e) => Err(format!("Release resolver client error: {e}")),
-            };
+            let settings = BackendClientSettings::new(proxy, allow_invalid_certs);
+            let result = backend_contract::resolve_release_assets_for_query(&settings, &query);
             let _ = tx.send((input, result));
         }));
     }
@@ -856,12 +834,9 @@ impl GhMirrorGui {
         self.publisher_key_import_source_label = Some(source_label);
         self.publisher_key_import_rx = Some(rx);
         self.publisher_key_import_thread = Some(thread::spawn(move || {
-            let result = match build_client(&proxy, 30, allow_invalid_certs) {
-                Ok(client) => {
-                    source_trust::import_publisher_key_pin_from_release_asset(&client, &asset)
-                }
-                Err(e) => Err(format!("Publisher key import client error: {e}")),
-            };
+            let settings = BackendClientSettings::new(proxy, allow_invalid_certs);
+            let result =
+                backend_contract::import_publisher_key_from_release_asset(&settings, &asset);
             let _ = tx.send((asset_url, result));
         }));
         self.status = format!("Importing Ed25519 publisher key from {asset_name}...");
