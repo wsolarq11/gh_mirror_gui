@@ -1,6 +1,6 @@
 [package]
 name = "gh_mirror_gui"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2021"
 license = "MIT"
 
@@ -21,3 +21,4 @@ rfd = "0.14"
 arboard = "3"
 notify-rust = "4"
 directories = "5"
+
