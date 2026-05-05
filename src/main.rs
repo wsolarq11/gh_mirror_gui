@@ -1353,76 +1353,82 @@ impl eframe::App for GhMirrorGui {
             }
 
             // Mirror selector + speed test
-            ui.horizontal(|ui| {
-                ui.label("Mirror:");
-                egui::ComboBox::from_id_salt("mirror_select")
-                    .selected_text(&self.mirrors[self.selected_mirror])
-                    .show_ui(ui, |ui| {
-                        for (i, name) in self.mirrors.iter().enumerate() {
-                            if ui.selectable_label(false, name).clicked() {
-                                self.selected_mirror = i;
-                            }
-                        }
-                    });
-                if ui.button("🔄 Retest").clicked() {
-                    self.retest_mirrors();
-                }
-            });
-
-            // Speed test progress
-            if self.speed_test_thread.is_some() || self.speed_test_completed > 0 {
-                ui.separator();
-                if self.speed_test_thread.is_some() {
-                    ui.label("⏳ Testing mirrors...");
-                } else {
-                    ui.label(egui::RichText::new(&self.speed_test_status).strong());
-                }
-                // Show per-mirror results with color
-                let tested = self.speed_test_completed.min(self.mirrors.len());
-                if tested > 0 {
-                    let pct = (tested as f32) / (self.mirrors.len() as f32);
-                    ui.add(egui::ProgressBar::new(pct).text(format!(
-                        "{}/{}",
-                        tested,
-                        self.mirrors.len()
-                    )));
-                }
-                egui::ScrollArea::vertical()
-                    .max_height(120.0)
-                    .show(ui, |ui| {
-                        for (i, name) in self.mirrors.iter().enumerate() {
-                            match &self.speed_test_results[i] {
-                                Some(dur) => {
-                                    let ms = dur.as_secs_f64() * 1000.0;
-                                    let color = latency_color(ms);
-                                    let mark = if self.selected_mirror == i
-                                        && self.speed_test_thread.is_none()
-                                    {
-                                        "⭐"
-                                    } else {
-                                        "  "
-                                    };
-                                    ui.label(
-                                        egui::RichText::new(format!(
-                                            "{} {} {:.0} ms",
-                                            mark, name, ms
-                                        ))
-                                        .color(color),
-                                    );
+            //
+            // Route guardrail: this project is not a mirror-list aggregator.
+            // Today we ship "Direct (no mirror)" only. Keep the mirror UX hidden unless
+            // we intentionally introduce multiple entries again under the same guardrails.
+            if self.mirrors.len() > 1 {
+                ui.horizontal(|ui| {
+                    ui.label("Mirror:");
+                    egui::ComboBox::from_id_salt("mirror_select")
+                        .selected_text(&self.mirrors[self.selected_mirror])
+                        .show_ui(ui, |ui| {
+                            for (i, name) in self.mirrors.iter().enumerate() {
+                                if ui.selectable_label(false, name).clicked() {
+                                    self.selected_mirror = i;
                                 }
-                                None => {
-                                    if i < self.speed_test_completed {
-                                        ui.label(format!("  {} ❌ timeout", name));
-                                    } else {
-                                        ui.label(format!("  {} ⏳", name));
+                            }
+                        });
+                    if ui.button("🔄 Retest").clicked() {
+                        self.retest_mirrors();
+                    }
+                });
+
+                // Speed test progress
+                if self.speed_test_thread.is_some() || self.speed_test_completed > 0 {
+                    ui.separator();
+                    if self.speed_test_thread.is_some() {
+                        ui.label("⏳ Testing mirrors...");
+                    } else {
+                        ui.label(egui::RichText::new(&self.speed_test_status).strong());
+                    }
+                    // Show per-mirror results with color
+                    let tested = self.speed_test_completed.min(self.mirrors.len());
+                    if tested > 0 {
+                        let pct = (tested as f32) / (self.mirrors.len() as f32);
+                        ui.add(egui::ProgressBar::new(pct).text(format!(
+                            "{}/{}",
+                            tested,
+                            self.mirrors.len()
+                        )));
+                    }
+                    egui::ScrollArea::vertical()
+                        .max_height(120.0)
+                        .show(ui, |ui| {
+                            for (i, name) in self.mirrors.iter().enumerate() {
+                                match &self.speed_test_results[i] {
+                                    Some(dur) => {
+                                        let ms = dur.as_secs_f64() * 1000.0;
+                                        let color = latency_color(ms);
+                                        let mark = if self.selected_mirror == i
+                                            && self.speed_test_thread.is_none()
+                                        {
+                                            "⭐"
+                                        } else {
+                                            "  "
+                                        };
+                                        ui.label(
+                                            egui::RichText::new(format!(
+                                                "{} {} {:.0} ms",
+                                                mark, name, ms
+                                            ))
+                                            .color(color),
+                                        );
+                                    }
+                                    None => {
+                                        if i < self.speed_test_completed {
+                                            ui.label(format!("  {} ❌ timeout", name));
+                                        } else {
+                                            ui.label(format!("  {} ⏳", name));
+                                        }
                                     }
                                 }
                             }
-                        }
-                    });
-            }
+                        });
+                }
 
-            ui.separator();
+                ui.separator();
+            }
 
             // Save directory
             ui.horizontal(|ui| {
