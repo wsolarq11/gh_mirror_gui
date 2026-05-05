@@ -66,7 +66,7 @@ pub enum IntentDTO {
     },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TrustCenterSnapshot {
     pub downloaded_asset: String,
     pub hash_status: String,
