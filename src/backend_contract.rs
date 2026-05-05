@@ -340,6 +340,12 @@ pub fn run_download_contract(
     let verification_plan = match (verification_release.as_ref(), verification_asset_index) {
         (None, None) => None,
         (Some(release), Some(idx)) => {
+            if release.assets.get(idx).is_none() {
+                return Err(format!(
+                    "Download verification context is invalid: asset index {idx} is out of range (assets={})",
+                    release.assets.len()
+                ));
+            }
             crate::verification::verification_plan_for_selected_asset(release, idx)
         }
         _ => {
