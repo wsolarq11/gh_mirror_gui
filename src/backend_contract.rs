@@ -23,7 +23,6 @@ use std::time::Instant;
 pub use crate::bench::run_bench_download;
 pub use crate::download::DownloadControl;
 pub use crate::history::default_history_path;
-pub use crate::releases::{is_github_release_asset_download_url, parse_release_query};
 pub use crate::releases::{ReleaseAsset, ReleaseQuery, ReleaseQueryKind, ResolvedRelease};
 pub use crate::source_trust::public_key_from_private_seed;
 pub use crate::source_trust::sign_ed25519_detached;
@@ -134,31 +133,6 @@ pub fn trust_center_snapshot(
 }
 
 pub fn resolve_download_intent(input: &str) -> IntentDTO {
-    let trimmed = input.trim();
-    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
-        if let Ok(url) = reqwest::Url::parse(trimmed) {
-            let host = url
-                .host_str()
-                .unwrap_or_default()
-                .trim_start_matches("www.")
-                .to_string();
-            if host != "github.com" && host != "raw.githubusercontent.com" {
-                let filename = url
-                    .path_segments()
-                    .and_then(|mut segments| segments.next_back())
-                    .filter(|s| !s.is_empty())
-                    .map(|s| s.to_string());
-                return IntentDTO::DirectDownload {
-                    spec: DownloadSpec {
-                        url: url.as_str().to_string(),
-                        filename,
-                    },
-                    human_readable_label: format!("direct url: {host}"),
-                };
-            }
-        }
-    }
-
     match parse_github_intent(input) {
         ParsedGithubIntent::DirectDownload {
             url,
@@ -178,6 +152,20 @@ pub fn resolve_download_intent(input: &str) -> IntentDTO {
             reason,
             suggested_examples,
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_download_intent_rejects_non_github_hosts() {
+        let intent = resolve_download_intent("https://example.com/file.zip");
+        assert!(
+            matches!(intent, IntentDTO::Unsupported { .. }),
+            "expected Unsupported, got: {intent:?}"
+        );
     }
 }
 

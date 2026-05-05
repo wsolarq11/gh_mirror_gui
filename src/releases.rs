@@ -67,7 +67,8 @@ impl ReleaseQuery {
     }
 }
 
-pub fn parse_release_query(input: &str) -> Result<ReleaseQuery, String> {
+#[cfg(test)]
+pub(crate) fn parse_release_query(input: &str) -> Result<ReleaseQuery, String> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
         return Err("Enter a GitHub repository or release URL first".to_string());
@@ -85,7 +86,8 @@ pub fn parse_release_query(input: &str) -> Result<ReleaseQuery, String> {
     parse_repo_slug(trimmed)
 }
 
-pub fn is_github_release_asset_download_url(input: &str) -> bool {
+#[cfg(test)]
+pub(crate) fn is_github_release_asset_download_url(input: &str) -> bool {
     let trimmed = input.trim();
     if !looks_like_github_url(trimmed) {
         return false;
@@ -195,6 +197,7 @@ fn github_release_api_url(api_base: &str, query: &ReleaseQuery) -> Result<Url, S
     Ok(url)
 }
 
+#[cfg(test)]
 fn parse_repo_slug(input: &str) -> Result<ReleaseQuery, String> {
     let trimmed = input.trim().trim_matches('/');
     let parts = trimmed.split('/').collect::<Vec<_>>();
@@ -213,6 +216,7 @@ fn parse_repo_slug(input: &str) -> Result<ReleaseQuery, String> {
     })
 }
 
+#[cfg(test)]
 fn parse_github_url(input: &str) -> Result<ReleaseQuery, String> {
     let url = Url::parse(input).map_err(|e| format!("Invalid GitHub URL: {e}"))?;
     if !is_github_host(url.host_str()) {
@@ -252,6 +256,7 @@ fn parse_github_url(input: &str) -> Result<ReleaseQuery, String> {
     Ok(ReleaseQuery { owner, repo, kind })
 }
 
+#[cfg(test)]
 fn release_tag_from_segments(segments: &[String]) -> Result<ReleaseQueryKind, String> {
     if segments.is_empty() {
         return Err("GitHub release tag URL is missing the tag name".to_string());
@@ -259,6 +264,7 @@ fn release_tag_from_segments(segments: &[String]) -> Result<ReleaseQueryKind, St
     Ok(ReleaseQueryKind::Tag(segments.join("/")))
 }
 
+#[cfg(test)]
 fn clean_repo_part(part: &str) -> Result<String, String> {
     let value = part.trim().trim_end_matches(".git");
     if value.is_empty()
@@ -272,6 +278,7 @@ fn clean_repo_part(part: &str) -> Result<String, String> {
     Ok(value.to_string())
 }
 
+#[cfg(test)]
 fn looks_like_github_url(input: &str) -> bool {
     input.starts_with("http://")
         || input.starts_with("https://")
@@ -279,6 +286,7 @@ fn looks_like_github_url(input: &str) -> bool {
         || input.starts_with("www.github.com/")
 }
 
+#[cfg(test)]
 fn is_github_host(host: Option<&str>) -> bool {
     matches!(
         host.map(|h| h.trim_start_matches("www.")),
@@ -286,6 +294,7 @@ fn is_github_host(host: Option<&str>) -> bool {
     )
 }
 
+#[cfg(test)]
 fn url_segments(url: &Url) -> Vec<String> {
     url.path_segments()
         .map(|segments| {
