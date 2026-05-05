@@ -1,4 +1,5 @@
 use crate::download::DownloadProbe;
+use crate::download::SelectedDownloadStrategy;
 use crate::evidence_ledger::{EvidenceLedger, FileSystemEvidenceLedger};
 use crate::releases::{ReleaseQuery, ResolvedRelease};
 use crate::source_adapter::{GitHubReleaseAdapter, SourceAdapter};
@@ -7,6 +8,7 @@ use crate::verification::{DownloadVerificationPlan, VerificationReport};
 use crate::verifier_adapter::{GitHubReleaseVerifierAdapter, VerifierAdapter};
 use reqwest::blocking::Client;
 use std::path::Path;
+use std::path::PathBuf;
 
 /// Core runtime orchestrator.
 ///
@@ -92,6 +94,17 @@ impl CoreRuntime {
                 Some(e),
             ),
         }
+    }
+
+    pub(crate) fn choose_download_strategy(
+        &self,
+        history_path: Option<&PathBuf>,
+        url: &str,
+        probe: &DownloadProbe,
+    ) -> SelectedDownloadStrategy {
+        let history_path = history_path.cloned();
+        let history = crate::history::load_bench_history(&history_path, url, probe);
+        crate::bench::choose_history_backed_strategy(probe, &history)
     }
 
     pub(crate) fn verify_downloaded_file(

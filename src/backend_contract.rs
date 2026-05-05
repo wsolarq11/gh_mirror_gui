@@ -1,8 +1,7 @@
-use crate::bench::choose_history_backed_strategy;
 use crate::core_runtime::CoreRuntime;
 use crate::download::{build_client, download_with_strategy};
 use crate::github_intent::{parse_github_intent, ParsedGithubIntent};
-use crate::history::{append_download_history, load_bench_history, VerificationHistoryContext};
+use crate::history::{append_download_history, VerificationHistoryContext};
 use crate::source_trust::import_publisher_key_pin_from_release_asset;
 use crate::trust_policy::{apply_file_disposition, plan_file_disposition_for_report};
 use crate::update_candidate::{
@@ -335,8 +334,7 @@ pub fn run_download_contract(
         log_error(&format!("probe_download error: {e}"));
     }
 
-    let history = load_bench_history(&Some(history_path.clone()), effective_url, &probe);
-    let strategy = choose_history_backed_strategy(&probe, &history);
+    let strategy = runtime.choose_download_strategy(Some(&history_path), effective_url, &probe);
     let save_path_str = save_path.to_string_lossy().to_string();
     let download_start = Instant::now();
 
