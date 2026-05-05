@@ -292,6 +292,36 @@ pub fn open_location_button_label_for_report(
     }
 }
 
+pub fn open_location_button_label_for_facts(
+    hash_status: &str,
+    policy_verdict: &str,
+    disposition: &AppliedFileDisposition,
+    policy: &TrustPolicyConfig,
+) -> Option<&'static str> {
+    match policy_verdict {
+        "TRUSTED" if disposition.final_path.is_some() => Some("📂 Open Folder"),
+        "RISK"
+            if hash_status == "UNKNOWN"
+                && policy.unknown_keep_file
+                && policy.unknown_allow_open
+                && disposition.final_path.is_some() =>
+        {
+            Some("📂 Open Folder")
+        }
+        "BLOCK"
+            if disposition.action == FileDispositionAction::Quarantine
+                && disposition.final_path.is_some() =>
+        {
+            if hash_status == "VERIFIED" {
+                Some("📦 Open Untrusted Source")
+            } else {
+                Some("📦 Open Quarantine")
+            }
+        }
+        _ => None,
+    }
+}
+
 pub fn file_disposition_summary(disposition: &AppliedFileDisposition) -> String {
     match disposition.action {
         FileDispositionAction::Keep => "file kept".to_string(),

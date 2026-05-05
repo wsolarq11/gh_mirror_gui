@@ -1,8 +1,7 @@
 use backend_contract::{
     AppliedFileDisposition, DownloadControl, DownloadVerificationPlan, ImportedPublisherKeyPin,
     MismatchFilePolicy, ResolvedRelease, TrustCenterSnapshot, TrustPolicyConfig,
-    TrustPolicySnapshot, UpdateCandidateCheckReport, UpdateCandidateStageReport,
-    VerificationReport, VerificationStatus, VerificationTrustDecision,
+    UpdateCandidateCheckReport, UpdateCandidateStageReport,
 };
 use directories::UserDirs;
 use eframe::egui;
@@ -30,85 +29,85 @@ const PROVENANCE_SIGNATURE_ASSET: &str = "release-provenance.json.sig";
 const SIGNATURE_FORMAT: &str = "ed25519-detached-hex";
 
 fn format_download_completion_status(
-    report: &VerificationReport,
+    snapshot: &TrustCenterSnapshot,
     disposition: &AppliedFileDisposition,
 ) -> String {
-    let short_hash = report.file_sha256.chars().take(12).collect::<String>();
+    let short_hash = snapshot.file_sha256.chars().take(12).collect::<String>();
     let disposition_summary = backend_contract::file_disposition_summary(disposition);
-    let source_trust = source_trust_status_summary(report);
-    match (report.status.clone(), report.effective_trust_decision()) {
-        (VerificationStatus::Verified, VerificationTrustDecision::Block) => format!(
+    let source_trust = source_trust_status_summary(snapshot);
+    match (snapshot.hash_status.as_str(), snapshot.policy_verdict.as_str()) {
+        ("VERIFIED", "BLOCK") => format!(
             "❌ Verification BLOCKED · SHA256 matched {} but source authenticity is {} · {} · {}",
-            report.source.as_deref().unwrap_or("verification asset"),
+            snapshot.source_asset.as_str(),
             source_trust,
             disposition_summary,
             "retry or open evidence before trusting this file"
         ),
-        (VerificationStatus::Verified, _) => format!(
+        ("VERIFIED", _) => format!(
             "✅ Download complete · VERIFIED SHA256={} via {} · source {} · {}",
             short_hash,
-            report.source.as_deref().unwrap_or("verification asset"),
+            snapshot.source_asset.as_str(),
             source_trust,
             disposition_summary
         ),
-        (VerificationStatus::Mismatch, _) => format!(
+        ("MISMATCH", _) => format!(
             "❌ Verification BLOCKED · MISMATCH SHA256={} expected {} via {} · {} · retry or open evidence before trusting this file",
             short_hash,
-            report
+            snapshot
                 .expected_sha256
-                .as_deref()
-                .map(|hash| hash.chars().take(12).collect::<String>())
-                .unwrap_or_else(|| "unknown".to_string()),
-            report.source.as_deref().unwrap_or("verification asset"),
+                .as_str()
+                .chars()
+                .take(12)
+                .collect::<String>(),
+            snapshot.source_asset.as_str(),
             disposition_summary
         ),
-        (VerificationStatus::Unknown, _) => format!(
+        ("UNKNOWN", _) => format!(
             "⚠ Verification UNKNOWN risk · SHA256={} · {} · {}",
-            short_hash, report.detail, disposition_summary
+            short_hash,
+            "no matching checksum/provenance could verify this file",
+            disposition_summary
+        ),
+        (other, decision) => format!(
+            "⚠ Verification {} ({}) · SHA256={} · {}",
+            other, decision, short_hash, disposition_summary
         ),
     }
 }
 
-fn format_download_notification_status(report: &VerificationReport) -> String {
-    match (report.status.clone(), report.effective_trust_decision()) {
-        (VerificationStatus::Verified, VerificationTrustDecision::Block) => {
-            "Download blocked (UNTRUSTED SOURCE)".to_string()
-        }
-        (VerificationStatus::Verified, _) => "Download complete (VERIFIED)".to_string(),
-        (VerificationStatus::Mismatch, _) => "Download blocked (MISMATCH)".to_string(),
-        (VerificationStatus::Unknown, _) => {
-            "Download saved with UNKNOWN verification risk".to_string()
-        }
+fn format_download_notification_status(snapshot: &TrustCenterSnapshot) -> String {
+    match (
+        snapshot.hash_status.as_str(),
+        snapshot.policy_verdict.as_str(),
+    ) {
+        ("VERIFIED", "BLOCK") => "Download blocked (UNTRUSTED SOURCE)".to_string(),
+        ("VERIFIED", _) => "Download complete (VERIFIED)".to_string(),
+        ("MISMATCH", _) => "Download blocked (MISMATCH)".to_string(),
+        ("UNKNOWN", _) => "Download saved with UNKNOWN verification risk".to_string(),
+        _ => "Download completed with UNKNOWN verification risk".to_string(),
     }
 }
 
-fn source_trust_status_summary(report: &VerificationReport) -> String {
-    report
-        .source_trust
-        .as_ref()
-        .map(|trust| {
-            let signature = trust
-                .signature_asset_name
-                .as_deref()
-                .map(|asset| format!(" via {asset}"))
-                .unwrap_or_default();
-            let pin = trust
-                .trusted_publisher_key_fingerprint_sha256
-                .as_deref()
-                .map(|fingerprint| {
-                    let short = fingerprint.chars().take(12).collect::<String>();
-                    format!(" key={short}")
-                })
-                .unwrap_or_default();
-            format!(
-                "{} decision={}{}{}",
-                trust.status.as_str(),
-                trust.decision.as_str(),
-                signature,
-                pin
-            )
-        })
-        .unwrap_or_else(|| "NOT_APPLICABLE".to_string())
+fn source_trust_status_summary(snapshot: &TrustCenterSnapshot) -> String {
+    let signature = if snapshot.signature_asset != "none" {
+        format!(" via {}", snapshot.signature_asset)
+    } else {
+        String::new()
+    };
+    let pin = if snapshot.publisher_key_fingerprint != "not pinned" {
+        let short = snapshot
+            .publisher_key_fingerprint
+            .chars()
+            .take(12)
+            .collect::<String>();
+        format!(" key={short}")
+    } else {
+        String::new()
+    };
+    format!(
+        "{} decision={}{}{}",
+        snapshot.source_authenticity, snapshot.policy_verdict, signature, pin
+    )
 }
 
 fn render_trust_center_snapshot(ui: &mut egui::Ui, snapshot: &TrustCenterSnapshot) {
@@ -455,10 +454,8 @@ struct GhMirrorGui {
     // Persisted state
     download_complete_notified: bool,
     last_download_path: Option<PathBuf>,
-    last_verification: Option<VerificationReport>,
+    last_trust_center_snapshot: Option<TrustCenterSnapshot>,
     last_verification_evidence_path: Option<PathBuf>,
-    last_trust_policy_snapshot: Option<TrustPolicySnapshot>,
-    last_publisher_key_source_at_decision: Option<String>,
     last_file_disposition: Option<AppliedFileDisposition>,
 }
 
@@ -554,10 +551,8 @@ impl GhMirrorGui {
             update_stage_rx: None,
             download_complete_notified: false,
             last_download_path: None,
-            last_verification: None,
+            last_trust_center_snapshot: None,
             last_verification_evidence_path: None,
-            last_trust_policy_snapshot: None,
-            last_publisher_key_source_at_decision: None,
             last_file_disposition: None,
         }
     }
@@ -833,10 +828,8 @@ impl GhMirrorGui {
 
         self.download_complete_notified = false;
         self.last_download_path = None;
-        self.last_verification = None;
+        self.last_trust_center_snapshot = None;
         self.last_verification_evidence_path = None;
-        self.last_trust_policy_snapshot = None;
-        self.last_publisher_key_source_at_decision = None;
         self.last_file_disposition = None;
         let control = DownloadControl::new();
         let ctrl = control.clone();
@@ -1097,15 +1090,12 @@ impl eframe::App for GhMirrorGui {
             match rx.try_recv() {
                 Ok(Ok(completion)) => {
                     self.status = format_download_completion_status(
-                        &completion.verification,
+                        &completion.trust_center,
                         &completion.file_disposition,
                     );
                     self.last_download_path = completion.file_disposition.final_path.clone();
-                    self.last_verification = Some(completion.verification.clone());
+                    self.last_trust_center_snapshot = Some(completion.trust_center.clone());
                     self.last_verification_evidence_path = completion.evidence_path.clone();
-                    self.last_trust_policy_snapshot = Some(completion.policy_snapshot.clone());
-                    self.last_publisher_key_source_at_decision =
-                        Some(completion.publisher_key_source_at_decision.clone());
                     self.last_file_disposition = Some(completion.file_disposition.clone());
                     self.download_thread = None;
                     self.control = None;
@@ -1119,7 +1109,7 @@ impl eframe::App for GhMirrorGui {
                             .unwrap_or(&completion.original_path)
                             .to_string_lossy()
                             .to_string();
-                        let status = format_download_notification_status(&completion.verification);
+                        let status = format_download_notification_status(&completion.trust_center);
                         thread::spawn(move || {
                             let _ = Notification::new()
                                 .summary("gh_mirror_gui")
@@ -1622,13 +1612,10 @@ impl eframe::App for GhMirrorGui {
                 }
             });
 
-            if let Some(report) = self.last_verification.clone() {
+            if let Some(snapshot) = self.last_trust_center_snapshot.clone() {
                 ui.horizontal(|ui| {
-                    match (report.status.clone(), report.effective_trust_decision()) {
-                        (
-                            VerificationStatus::Verified,
-                            VerificationTrustDecision::Block,
-                        ) => {
+                    match (snapshot.hash_status.as_str(), snapshot.policy_verdict.as_str()) {
+                        ("VERIFIED", "BLOCK") => {
                             ui.colored_label(
                                 egui::Color32::from_rgb(220, 70, 70),
                                 "Blocked: checksum matched, but verification source signature is not trusted.",
@@ -1639,7 +1626,7 @@ impl eframe::App for GhMirrorGui {
                                 self.start_download();
                             }
                         }
-                        (VerificationStatus::Mismatch, _) => {
+                        ("MISMATCH", _) => {
                             ui.colored_label(
                                 egui::Color32::from_rgb(220, 70, 70),
                                 "Blocked: downloaded file does not match trusted checksum.",
@@ -1650,18 +1637,19 @@ impl eframe::App for GhMirrorGui {
                                 self.start_download();
                             }
                         }
-                        (VerificationStatus::Unknown, _) => {
+                        ("UNKNOWN", _) => {
                             ui.colored_label(
                                 egui::Color32::from_rgb(220, 160, 0),
                                 "Risk: no matching checksum/provenance could verify this file.",
                             );
                         }
-                        (VerificationStatus::Verified, _) => {
+                        ("VERIFIED", _) => {
                             ui.colored_label(
                                 egui::Color32::from_rgb(0, 180, 0),
                                 "Trusted: checksum/provenance hash and source policy passed.",
                             );
                         }
+                        _ => {}
                     }
 
                     if let Some(evidence_path) = &self.last_verification_evidence_path {
@@ -1680,8 +1668,9 @@ impl eframe::App for GhMirrorGui {
                     if let (Some(download_path), Some(disposition)) =
                         (&self.last_download_path, &self.last_file_disposition)
                     {
-                        if let Some(label) = backend_contract::open_location_button_label_for_report(
-                            &report,
+                        if let Some(label) = backend_contract::open_location_button_label_for_facts(
+                            snapshot.hash_status.as_str(),
+                            snapshot.policy_verdict.as_str(),
                             disposition,
                             &self.trust_policy,
                         ) {
@@ -1696,21 +1685,10 @@ impl eframe::App for GhMirrorGui {
                 });
                 ui.small(format!(
                     "Source authenticity: {}",
-                    source_trust_status_summary(&report)
+                    source_trust_status_summary(&snapshot)
                 ));
                 if let Some(disposition) = &self.last_file_disposition {
                     ui.small(backend_contract::file_disposition_summary(disposition));
-                    let policy_snapshot = self
-                        .last_trust_policy_snapshot
-                        .clone()
-                        .unwrap_or_else(|| self.trust_policy.snapshot());
-                    let snapshot = backend_contract::trust_center_snapshot(
-                        &report,
-                        self.last_verification_evidence_path.as_deref(),
-                        disposition,
-                        &policy_snapshot,
-                        self.last_publisher_key_source_at_decision.as_deref(),
-                    );
                     render_trust_center_snapshot(ui, &snapshot);
                 }
             }
@@ -2461,35 +2439,43 @@ mod tests {
     #[test]
     fn completion_status_makes_mismatch_blocking_and_unknown_risky() {
         let hash = "A9BDB5AE91B153ED8E04513CA9322B4445A91D3BE8DD2695A8F1C206C9937CCC";
-        let verified = VerificationReport {
-            status: VerificationStatus::Verified,
-            asset_name: "app.exe".to_string(),
-            file_sha256: hash.to_string(),
-            expected_sha256: Some(hash.to_string()),
-            source: Some("SHA256SUMS.txt".to_string()),
-            source_trust: None,
-            detail: "SHA256 matched SHA256SUMS.txt".to_string(),
-        };
-        let mismatch = VerificationReport {
-            status: VerificationStatus::Mismatch,
-            asset_name: "app.exe".to_string(),
-            file_sha256: hash.to_string(),
-            expected_sha256: Some(
-                "B9BDB5AE91B153ED8E04513CA9322B4445A91D3BE8DD2695A8F1C206C9937CCC".to_string(),
-            ),
-            source: Some("SHA256SUMS.txt".to_string()),
-            source_trust: None,
-            detail: "SHA256 mismatch against SHA256SUMS.txt".to_string(),
-        };
-        let unknown = VerificationReport {
-            status: VerificationStatus::Unknown,
-            asset_name: "app.exe".to_string(),
-            file_sha256: hash.to_string(),
-            expected_sha256: None,
-            source: None,
-            source_trust: None,
-            detail: "No checksum/provenance assets were detected".to_string(),
-        };
+
+        fn mk_snapshot(
+            hash: &str,
+            hash_status: &str,
+            policy_verdict: &str,
+            expected_sha256: &str,
+            source_authenticity: &str,
+        ) -> TrustCenterSnapshot {
+            TrustCenterSnapshot {
+                downloaded_asset: "app.exe".to_string(),
+                hash_status: hash_status.to_string(),
+                file_sha256: hash.to_string(),
+                expected_sha256: expected_sha256.to_string(),
+                source_authenticity: source_authenticity.to_string(),
+                source_trust_detail: "n/a".to_string(),
+                source_asset: "SHA256SUMS.txt".to_string(),
+                signature_asset: "none".to_string(),
+                publisher_key_fingerprint: "not pinned".to_string(),
+                publisher_key_source: "not recorded".to_string(),
+                policy_verdict: policy_verdict.to_string(),
+                policy_at_decision: "n/a".to_string(),
+                evidence_path: "not recorded".to_string(),
+                evidence_access: "not recorded".to_string(),
+                file_disposition: "n/a".to_string(),
+                final_path: "n/a".to_string(),
+            }
+        }
+
+        let verified = mk_snapshot(hash, "VERIFIED", "TRUSTED", hash, "NOT_APPLICABLE");
+        let mismatch = mk_snapshot(
+            hash,
+            "MISMATCH",
+            "BLOCK",
+            "B9BDB5AE91B153ED8E04513CA9322B4445A91D3BE8DD2695A8F1C206C9937CCC",
+            "NOT_APPLICABLE",
+        );
+        let unknown = mk_snapshot(hash, "UNKNOWN", "RISK", "not available", "NOT_APPLICABLE");
         let kept = AppliedFileDisposition {
             action: FileDispositionAction::Keep,
             original_path: PathBuf::from("app.exe"),
@@ -2519,23 +2505,23 @@ mod tests {
     #[test]
     fn completion_status_blocks_untrusted_signed_source() {
         let hash = "A9BDB5AE91B153ED8E04513CA9322B4445A91D3BE8DD2695A8F1C206C9937CCC";
-        let report = VerificationReport {
-            status: VerificationStatus::Verified,
-            asset_name: "app.exe".to_string(),
+        let report = TrustCenterSnapshot {
+            downloaded_asset: "app.exe".to_string(),
+            hash_status: "VERIFIED".to_string(),
             file_sha256: hash.to_string(),
-            expected_sha256: Some(hash.to_string()),
-            source: Some("SHA256SUMS.txt".to_string()),
-            source_trust: Some(backend_contract::SourceTrustEvidence {
-                schema_version: 1,
-                status: backend_contract::SourceAuthenticityStatus::BadSignature,
-                decision: backend_contract::SourceTrustDecision::Block,
-                required: false,
-                source_asset_name: Some("SHA256SUMS.txt".to_string()),
-                signature_asset_name: Some("SHA256SUMS.txt.sig".to_string()),
-                trusted_publisher_key_fingerprint_sha256: Some("ABCDEF".to_string()),
-                detail: "bad signature".to_string(),
-            }),
-            detail: "SHA256 matched SHA256SUMS.txt".to_string(),
+            expected_sha256: hash.to_string(),
+            source_authenticity: "BAD_SIGNATURE".to_string(),
+            source_trust_detail: "bad signature".to_string(),
+            source_asset: "SHA256SUMS.txt".to_string(),
+            signature_asset: "SHA256SUMS.txt.sig".to_string(),
+            publisher_key_fingerprint: "ABCDEF".to_string(),
+            publisher_key_source: "n/a".to_string(),
+            policy_verdict: "BLOCK".to_string(),
+            policy_at_decision: "n/a".to_string(),
+            evidence_path: "not recorded".to_string(),
+            evidence_access: "not recorded".to_string(),
+            file_disposition: "n/a".to_string(),
+            final_path: "n/a".to_string(),
         };
         let quarantined = AppliedFileDisposition {
             action: FileDispositionAction::Quarantine,

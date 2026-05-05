@@ -36,6 +36,7 @@ pub use crate::source_trust::{normalize_public_key_pin, trusted_key_fingerprint}
 pub use crate::staged_release::run_staged_release_download_selftest;
 pub use crate::trust_center::publisher_key_source_label_for_policy;
 pub use crate::trust_policy::file_disposition_summary;
+pub use crate::trust_policy::open_location_button_label_for_facts;
 pub use crate::trust_policy::open_location_button_label_for_report;
 pub use crate::trust_policy::{AppliedFileDisposition, FileDispositionAction};
 pub use crate::trust_policy::{MismatchFilePolicy, TrustPolicyConfig, TrustPolicySnapshot};
@@ -168,10 +169,8 @@ mod tests {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DownloadCompletion {
     pub original_path: PathBuf,
-    pub verification: VerificationReport,
+    pub trust_center: TrustCenterSnapshot,
     pub evidence_path: Option<PathBuf>,
-    pub policy_snapshot: TrustPolicySnapshot,
-    pub publisher_key_source_at_decision: String,
     pub file_disposition: AppliedFileDisposition,
 }
 
@@ -406,12 +405,24 @@ pub fn run_download_contract(
         }
     };
 
+    let policy_snapshot = trust_policy.snapshot();
+    let publisher_key_source = if publisher_key_source_at_decision.trim().is_empty() {
+        None
+    } else {
+        Some(publisher_key_source_at_decision.as_str())
+    };
+    let trust_center = trust_center_snapshot(
+        &verification,
+        evidence_path.as_deref(),
+        &file_disposition,
+        &policy_snapshot,
+        publisher_key_source,
+    );
+
     Ok(DownloadCompletion {
         original_path: save_path,
-        verification,
+        trust_center,
         evidence_path,
-        policy_snapshot: trust_policy.snapshot(),
-        publisher_key_source_at_decision,
         file_disposition,
     })
 }
