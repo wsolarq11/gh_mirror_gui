@@ -37,6 +37,16 @@ pub(crate) struct DownloadWithStrategyContractInput<'a> {
     pub(crate) progress_tx: &'a mpsc::Sender<(u64, u64, f64, f64)>,
 }
 
+pub(crate) struct AppendDownloadHistoryInput<'a> {
+    pub(crate) history_path: &'a PathBuf,
+    pub(crate) url: &'a str,
+    pub(crate) output: &'a PathBuf,
+    pub(crate) probe: &'a DownloadProbe,
+    pub(crate) strategy: &'a SelectedDownloadStrategy,
+    pub(crate) download_elapsed: std::time::Duration,
+    pub(crate) verification: Option<crate::history::VerificationHistoryContext<'a>>,
+}
+
 impl Default for CoreRuntime {
     fn default() -> Self {
         Self {
@@ -191,5 +201,43 @@ impl CoreRuntime {
 
     pub(crate) fn append_line(&self, path: &Path, line: &str) -> Result<(), String> {
         self.evidence_ledger.append_line(path, line)
+    }
+
+    pub(crate) fn append_download_history_best_effort(
+        &self,
+        input: AppendDownloadHistoryInput<'_>,
+    ) -> Option<PathBuf> {
+        let AppendDownloadHistoryInput {
+            history_path,
+            url,
+            output,
+            probe,
+            strategy,
+            download_elapsed,
+            verification,
+        } = input;
+
+        match crate::history::append_download_history(
+            &Some(history_path.clone()),
+            url,
+            output,
+            probe,
+            strategy,
+            download_elapsed,
+            verification,
+        ) {
+            Ok(evidence_path) => evidence_path,
+            Err(e) => {
+                let ts = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                let _ = self.append_line(
+                    Path::new("download_error.log"),
+                    &format!("[{ts}] append_download_history error: {e}"),
+                );
+                None
+            }
+        }
     }
 }

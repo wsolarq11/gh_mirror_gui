@@ -1,7 +1,9 @@
-use crate::core_runtime::{CoreRuntime, DownloadWithStrategyContractInput};
+use crate::core_runtime::{
+    AppendDownloadHistoryInput, CoreRuntime, DownloadWithStrategyContractInput,
+};
 use crate::download::build_client;
 use crate::github_intent::{parse_github_intent, ParsedGithubIntent};
-use crate::history::{append_download_history, VerificationHistoryContext};
+use crate::history::VerificationHistoryContext;
 use crate::source_trust::import_publisher_key_pin_from_release_asset;
 use crate::trust_policy::{apply_file_disposition, plan_file_disposition_for_report};
 use crate::update_candidate::{
@@ -370,25 +372,19 @@ pub fn run_download_contract(
 
     let disposition_plan =
         plan_file_disposition_for_report(&save_path, &verification, &trust_policy);
-    let evidence_path = match append_download_history(
-        &Some(history_path.clone()),
-        effective_url,
-        &save_path,
-        &probe,
-        &strategy,
-        download_start.elapsed(),
-        Some(VerificationHistoryContext {
+    let evidence_path = runtime.append_download_history_best_effort(AppendDownloadHistoryInput {
+        history_path: &history_path,
+        url: effective_url,
+        output: &save_path,
+        probe: &probe,
+        strategy: &strategy,
+        download_elapsed: download_start.elapsed(),
+        verification: Some(VerificationHistoryContext {
             report: &verification,
             policy: &trust_policy,
             file_disposition: &disposition_plan,
         }),
-    ) {
-        Ok(evidence_path) => evidence_path,
-        Err(e) => {
-            log_error(&format!("append_download_history error: {e}"));
-            None
-        }
-    };
+    });
 
     let file_disposition = match apply_file_disposition(&disposition_plan) {
         Ok(disposition) => disposition,
