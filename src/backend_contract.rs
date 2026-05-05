@@ -1,5 +1,6 @@
 use crate::bench::choose_history_backed_strategy;
 use crate::download::{build_client, download_with_strategy, probe_download, DownloadProbe};
+use crate::github_intent::{parse_github_intent, ParsedGithubIntent};
 use crate::history::{append_download_history, load_bench_history, VerificationHistoryContext};
 use crate::releases::resolve_release_assets;
 use crate::source_trust::import_publisher_key_pin_from_release_asset;
@@ -54,6 +55,29 @@ pub use crate::verification::{VerificationReport, VerificationStatus, Verificati
 
 pub type DownloadProgressMessage = (u64, u64, f64, f64);
 
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct DownloadSpec {
+    pub url: String,
+    pub filename: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type", content = "data", rename_all = "snake_case")]
+pub enum IntentDTO {
+    DirectDownload {
+        spec: DownloadSpec,
+        human_readable_label: String,
+    },
+    NeedsAssetPick {
+        query: ReleaseQuery,
+        picker_hint: Option<String>,
+    },
+    Unsupported {
+        reason: String,
+        suggested_examples: Vec<String>,
+    },
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TrustCenterSnapshot {
     pub downloaded_asset: String,
@@ -106,6 +130,54 @@ pub fn trust_center_snapshot(
         evidence_access: snapshot.evidence_access,
         file_disposition: snapshot.file_disposition,
         final_path: snapshot.final_path,
+    }
+}
+
+pub fn resolve_download_intent(input: &str) -> IntentDTO {
+    let trimmed = input.trim();
+    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+        if let Ok(url) = reqwest::Url::parse(trimmed) {
+            let host = url
+                .host_str()
+                .unwrap_or_default()
+                .trim_start_matches("www.")
+                .to_string();
+            if host != "github.com" && host != "raw.githubusercontent.com" {
+                let filename = url
+                    .path_segments()
+                    .and_then(|mut segments| segments.next_back())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string());
+                return IntentDTO::DirectDownload {
+                    spec: DownloadSpec {
+                        url: url.as_str().to_string(),
+                        filename,
+                    },
+                    human_readable_label: format!("direct url: {host}"),
+                };
+            }
+        }
+    }
+
+    match parse_github_intent(input) {
+        ParsedGithubIntent::DirectDownload {
+            url,
+            filename,
+            label,
+        } => IntentDTO::DirectDownload {
+            spec: DownloadSpec { url, filename },
+            human_readable_label: label,
+        },
+        ParsedGithubIntent::ReleaseQuery { query, picker_hint } => {
+            IntentDTO::NeedsAssetPick { query, picker_hint }
+        }
+        ParsedGithubIntent::Unsupported {
+            reason,
+            suggested_examples,
+        } => IntentDTO::Unsupported {
+            reason,
+            suggested_examples,
+        },
     }
 }
 

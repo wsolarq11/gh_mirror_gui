@@ -5,13 +5,13 @@ use reqwest::Url;
 const DEFAULT_GITHUB_API_BASE: &str = "https://api.github.com";
 const RELEASE_RESOLVER_USER_AGENT: &str = "gh_mirror_gui-release-resolver";
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ReleaseQueryKind {
     Latest,
     Tag(String),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ReleaseQuery {
     pub owner: String,
     pub repo: String,

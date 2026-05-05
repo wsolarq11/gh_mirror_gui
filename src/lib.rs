@@ -2,6 +2,7 @@
 
 mod bench;
 mod download;
+mod github_intent;
 mod history;
 mod releases;
 mod source_trust;

@@ -673,15 +673,15 @@ impl GhMirrorGui {
         }
 
         let input = self.url.trim().to_string();
-        let query = match backend_contract::parse_release_query(&input) {
-            Ok(query) => query,
-            Err(e) => {
-                self.release = None;
-                self.selected_release_asset = None;
-                self.release_status = format!("❌ {e}");
-                self.status = self.release_status.clone();
-                return;
-            }
+        let backend_contract::IntentDTO::NeedsAssetPick { query, .. } =
+            backend_contract::resolve_download_intent(&input)
+        else {
+            self.release = None;
+            self.selected_release_asset = None;
+            self.release_status =
+                "❌ GitHub intent did not resolve to a release asset picker input".to_string();
+            self.status = self.release_status.clone();
+            return;
         };
 
         let proxy = self.proxy.clone();
@@ -709,8 +709,10 @@ impl GhMirrorGui {
     }
 
     fn input_requires_release_asset_choice(&self) -> bool {
-        backend_contract::parse_release_query(&self.url).is_ok()
-            && !backend_contract::is_github_release_asset_download_url(&self.url)
+        matches!(
+            backend_contract::resolve_download_intent(&self.url),
+            backend_contract::IntentDTO::NeedsAssetPick { .. }
+        )
     }
 
     fn selected_release_verification_plan(&self) -> Option<DownloadVerificationPlan> {
@@ -788,6 +790,19 @@ impl GhMirrorGui {
         if self.download_thread.is_some() {
             self.status = String::from("Download already in progress");
             return;
+        }
+
+        match backend_contract::resolve_download_intent(&self.url) {
+            backend_contract::IntentDTO::DirectDownload { spec, .. } => {
+                if spec.url != self.url {
+                    self.url = spec.url;
+                }
+            }
+            backend_contract::IntentDTO::NeedsAssetPick { .. } => {}
+            backend_contract::IntentDTO::Unsupported { reason, .. } => {
+                self.status = format!("❌ {reason}");
+                return;
+            }
         }
         if self.input_requires_release_asset_choice() {
             if self.release_lookup_thread.is_some() {
@@ -1155,7 +1170,10 @@ impl eframe::App for GhMirrorGui {
                 }
                 if url_response.lost_focus()
                     && ui.input(|i| i.key_pressed(egui::Key::Enter))
-                    && backend_contract::parse_release_query(&self.url).is_ok()
+                    && matches!(
+                        backend_contract::resolve_download_intent(&self.url),
+                        backend_contract::IntentDTO::NeedsAssetPick { .. }
+                    )
                 {
                     self.start_release_lookup();
                 }
@@ -1164,7 +1182,10 @@ impl eframe::App for GhMirrorGui {
                         if let Ok(text) = clipboard.get_text() {
                             self.url = text;
                             self.clear_release_lookup_result();
-                            if backend_contract::parse_release_query(&self.url).is_ok() {
+                            if matches!(
+                                backend_contract::resolve_download_intent(&self.url),
+                                backend_contract::IntentDTO::NeedsAssetPick { .. }
+                            ) {
                                 self.start_release_lookup();
                             }
                         }
@@ -2104,6 +2125,43 @@ fn run_verify_verification_source(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+fn run_resolve_download_intent(args: &[String]) -> Result<(), String> {
+    let mut input = None;
+    let mut json_out = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--input" => {
+                i += 1;
+                input = args.get(i).cloned();
+            }
+            "--json" => {
+                i += 1;
+                json_out = Some(
+                    args.get(i)
+                        .map(PathBuf::from)
+                        .ok_or_else(|| "--json requires a path".to_string())?,
+                );
+            }
+            other if input.is_none() && !other.starts_with("--") => {
+                input = Some(other.to_string());
+            }
+            other => return Err(format!("unknown --resolve-download-intent option: {other}")),
+        }
+        i += 1;
+    }
+
+    let input = input.ok_or_else(|| "--input is required".to_string())?;
+    let intent = backend_contract::resolve_download_intent(&input);
+    let pretty = serde_json::to_string_pretty(&intent)
+        .map_err(|e| format!("Serialize intent JSON error: {e}"))?;
+    if let Some(path) = json_out {
+        write_text_file(&path, &format!("{pretty}\n"))?;
+    }
+    println!("{pretty}");
+    Ok(())
+}
+
 fn main() -> Result<(), eframe::Error> {
     let args = env::args().skip(1).collect::<Vec<_>>();
     if args.first().map(|s| s.as_str()) == Some("--release-signing-doctor") {
@@ -2117,6 +2175,14 @@ fn main() -> Result<(), eframe::Error> {
     if args.first().map(|s| s.as_str()) == Some("--sign-verification-source") {
         if let Err(e) = run_sign_verification_source(&args[1..]) {
             eprintln!("sign verification source failed: {e}");
+            std::process::exit(2);
+        }
+        return Ok(());
+    }
+
+    if args.first().map(|s| s.as_str()) == Some("--resolve-download-intent") {
+        if let Err(e) = run_resolve_download_intent(&args[1..]) {
+            eprintln!("resolve download intent failed: {e}");
             std::process::exit(2);
         }
         return Ok(());
