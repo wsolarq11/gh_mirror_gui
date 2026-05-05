@@ -1,9 +1,12 @@
 use reqwest::blocking::Client;
 use reqwest::header::{ACCEPT, USER_AGENT};
 use reqwest::Url;
+use std::time::Duration;
 
 const DEFAULT_GITHUB_API_BASE: &str = "https://api.github.com";
 const RELEASE_RESOLVER_USER_AGENT: &str = "gh_mirror_gui-release-resolver";
+const RELEASE_LOOKUP_MAX_RETRIES: u32 = 3;
+const RELEASE_LOOKUP_RETRY_DELAY_MS: u64 = 800;
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ReleaseQueryKind {
@@ -120,57 +123,89 @@ pub(crate) fn resolve_release_assets_with_base(
     query: &ReleaseQuery,
 ) -> Result<ResolvedRelease, String> {
     let endpoint = github_release_api_url(api_base, query)?;
-    let mut request = client
-        .get(endpoint)
-        .header(USER_AGENT, RELEASE_RESOLVER_USER_AGENT)
-        .header(ACCEPT, "application/vnd.github+json");
+    let token = std::env::var("GITHUB_TOKEN")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
 
-    if let Ok(token) = std::env::var("GITHUB_TOKEN") {
-        let token = token.trim();
-        if !token.is_empty() {
+    let mut last_retryable_error = None;
+    for attempt in 0..=RELEASE_LOOKUP_MAX_RETRIES {
+        if attempt > 0 {
+            std::thread::sleep(Duration::from_millis(
+                RELEASE_LOOKUP_RETRY_DELAY_MS * attempt as u64,
+            ));
+        }
+
+        let mut request = client
+            .get(endpoint.clone())
+            .header(USER_AGENT, RELEASE_RESOLVER_USER_AGENT)
+            .header(ACCEPT, "application/vnd.github+json");
+        if let Some(token) = token.as_deref() {
             request = request.bearer_auth(token);
         }
+
+        let response = match request.send() {
+            Ok(response) => response,
+            Err(e) => {
+                last_retryable_error = Some(format!("GitHub release lookup request failed: {e}"));
+                continue;
+            }
+        };
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().unwrap_or_default();
+            let detail = compact_error_body(&body);
+            let error = format!(
+                "GitHub release lookup failed for {} {}: HTTP {}{}",
+                query.repo_slug(),
+                query.selector_label(),
+                status.as_u16(),
+                detail
+            );
+
+            if is_retryable_release_lookup_status(status) && attempt < RELEASE_LOOKUP_MAX_RETRIES {
+                last_retryable_error = Some(error);
+                continue;
+            }
+
+            return Err(error);
+        }
+
+        let body = response
+            .text()
+            .map_err(|e| format!("GitHub release response body could not be read: {e}"))?;
+        let release = serde_json::from_str::<GitHubReleaseResponse>(&body)
+            .map_err(|e| format!("GitHub release response was not valid JSON: {e}"))?;
+        return Ok(ResolvedRelease {
+            owner: query.owner.clone(),
+            repo: query.repo.clone(),
+            tag_name: release.tag_name,
+            name: release.name,
+            html_url: release.html_url,
+            assets: release
+                .assets
+                .into_iter()
+                .map(|asset| ReleaseAsset {
+                    name: asset.name,
+                    size: asset.size,
+                    browser_download_url: asset.browser_download_url,
+                    content_type: asset.content_type,
+                    api_url: asset.url,
+                })
+                .collect(),
+        });
     }
 
-    let response = request
-        .send()
-        .map_err(|e| format!("GitHub release lookup request failed: {e}"))?;
-    let status = response.status();
-    if !status.is_success() {
-        let body = response.text().unwrap_or_default();
-        let detail = compact_error_body(&body);
-        return Err(format!(
-            "GitHub release lookup failed for {} {}: HTTP {}{}",
-            query.repo_slug(),
-            query.selector_label(),
-            status.as_u16(),
-            detail
-        ));
-    }
+    Err(format!(
+        "GitHub release lookup failed after {} attempts: {}",
+        RELEASE_LOOKUP_MAX_RETRIES + 1,
+        last_retryable_error.unwrap_or_else(|| "unknown transient error".to_string())
+    ))
+}
 
-    let body = response
-        .text()
-        .map_err(|e| format!("GitHub release response body could not be read: {e}"))?;
-    let release = serde_json::from_str::<GitHubReleaseResponse>(&body)
-        .map_err(|e| format!("GitHub release response was not valid JSON: {e}"))?;
-    Ok(ResolvedRelease {
-        owner: query.owner.clone(),
-        repo: query.repo.clone(),
-        tag_name: release.tag_name,
-        name: release.name,
-        html_url: release.html_url,
-        assets: release
-            .assets
-            .into_iter()
-            .map(|asset| ReleaseAsset {
-                name: asset.name,
-                size: asset.size,
-                browser_download_url: asset.browser_download_url,
-                content_type: asset.content_type,
-                api_url: asset.url,
-            })
-            .collect(),
-    })
+fn is_retryable_release_lookup_status(status: reqwest::StatusCode) -> bool {
+    status.is_server_error() || status.as_u16() == 429
 }
 
 fn github_release_api_url(api_base: &str, query: &ReleaseQuery) -> Result<Url, String> {
