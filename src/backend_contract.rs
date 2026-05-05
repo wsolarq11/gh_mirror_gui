@@ -32,7 +32,6 @@ pub use crate::source_trust::SourceAuthenticityStatus;
 pub use crate::source_trust::SourceTrustDecision;
 pub use crate::source_trust::SourceTrustEvidence;
 pub use crate::source_trust::SourceTrustPolicyConfig;
-pub use crate::source_trust::SourceTrustPolicySnapshot;
 pub use crate::source_trust::{normalize_public_key_pin, trusted_key_fingerprint};
 pub use crate::staged_release::run_staged_release_download_selftest;
 pub use crate::trust_center::publisher_key_source_label_for_policy;
@@ -43,13 +42,10 @@ pub use crate::trust_policy::{MismatchFilePolicy, TrustPolicyConfig, TrustPolicy
 pub use crate::update_candidate::run_update_candidate_contract_selftest;
 pub use crate::update_candidate::run_update_candidate_latest_selftest;
 pub use crate::update_candidate::run_update_candidate_stage_selftest;
-pub use crate::update_candidate::UpdateCandidateEvaluation;
-pub use crate::update_candidate::UpdateCandidateStageStatus;
-pub use crate::update_candidate::UpdateCandidateStatus;
 pub use crate::update_candidate::{UpdateCandidateCheckReport, UpdateCandidateStageReport};
 pub use crate::verification::verification_plan_for_selected_asset;
 pub use crate::verification::verification_source_summary;
-pub use crate::verification::{DownloadVerificationPlan, VerificationAsset};
+pub use crate::verification::DownloadVerificationPlan;
 pub use crate::verification::{VerificationReport, VerificationStatus, VerificationTrustDecision};
 
 pub type DownloadProgressMessage = (u64, u64, f64, f64);
