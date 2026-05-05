@@ -10,6 +10,7 @@ pub(crate) trait SourceAdapter {
     fn resolve_release_assets(
         &self,
         client: &Client,
+        api_base: Option<&str>,
         query: &ReleaseQuery,
     ) -> Result<ResolvedRelease, String>;
 }
@@ -20,8 +21,12 @@ impl SourceAdapter for GitHubReleaseAdapter {
     fn resolve_release_assets(
         &self,
         client: &Client,
+        api_base: Option<&str>,
         query: &ReleaseQuery,
     ) -> Result<ResolvedRelease, String> {
-        crate::releases::resolve_release_assets(client, query)
+        match api_base {
+            Some(base) => crate::releases::resolve_release_assets_with_base(client, base, query),
+            None => crate::releases::resolve_release_assets(client, query),
+        }
     }
 }

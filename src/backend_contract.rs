@@ -245,7 +245,7 @@ pub fn resolve_release_assets_for_query(
     let client = settings
         .client(30)
         .map_err(|e| format!("Release resolver client error: {e}"))?;
-    GitHubReleaseAdapter.resolve_release_assets(&client, query)
+    GitHubReleaseAdapter.resolve_release_assets(&client, None, query)
 }
 
 pub fn import_publisher_key_from_release_asset(
