@@ -373,6 +373,14 @@ const SPEED_TEST_TIMEOUT_SECS: u64 = 5;
 
 /// Known mirror sites.  First entry must be "Direct (no mirror)"
 const MIRRORS: &[(&str, &str)] = &[("Direct (no mirror)", "")];
+
+fn normalize_mirror_index(index: usize) -> usize {
+    if index < MIRRORS.len() {
+        index
+    } else {
+        0
+    }
+}
 type ReleaseLookupMessage = (String, Result<ResolvedRelease, String>);
 type PublisherKeyImportMessage = (String, Result<ImportedPublisherKeyPin, String>);
 type UpdateCandidateCheckMessage = UpdateCandidateCheckReport;
@@ -498,13 +506,44 @@ impl GhMirrorGui {
             }
         }
 
-        let (final_tx, final_rx) = mpsc::channel();
-        let (progress_tx, progress_rx) = mpsc::channel();
-        let test_urls = urls.clone();
-        let handle = thread::spawn(move || {
-            let best = run_speed_test(&test_urls, &progress_tx);
-            let _ = final_tx.send(best);
-        });
+        // Persisted states from older versions might point to a mirror index that no longer exists.
+        // Prefer resetting to "Direct (no mirror)" instead of crashing (index out of range).
+        selected_mirror = normalize_mirror_index(selected_mirror);
+
+        let (
+            speed_test_status,
+            speed_test_thread,
+            speed_test_rx,
+            speed_test_progress_rx,
+            speed_test_results,
+            speed_test_completed,
+        ) = if MIRRORS.len() <= 1 {
+            (
+                "Direct (no mirror)".to_string(),
+                None,
+                None,
+                None,
+                vec![None; MIRRORS.len()],
+                MIRRORS.len(),
+            )
+        } else {
+            let (final_tx, final_rx) = mpsc::channel();
+            let (progress_tx, progress_rx) = mpsc::channel();
+            let test_urls = urls.clone();
+            let handle = thread::spawn(move || {
+                let best = run_speed_test(&test_urls, &progress_tx);
+                let _ = final_tx.send(best);
+            });
+
+            (
+                "Testing mirrors...".to_string(),
+                Some(handle),
+                Some(final_rx),
+                Some(progress_rx),
+                vec![None; MIRRORS.len()],
+                0,
+            )
+        };
 
         Self {
             url: String::new(),
@@ -525,12 +564,12 @@ impl GhMirrorGui {
             mirrors: names,
             mirror_urls: urls,
             selected_mirror,
-            speed_test_status: String::from("Testing mirrors..."),
-            speed_test_thread: Some(handle),
-            speed_test_rx: Some(final_rx),
-            speed_test_progress_rx: Some(progress_rx),
-            speed_test_results: vec![None; MIRRORS.len()],
-            speed_test_completed: 0,
+            speed_test_status,
+            speed_test_thread,
+            speed_test_rx,
+            speed_test_progress_rx,
+            speed_test_results,
+            speed_test_completed,
             release_status: String::new(),
             release: None,
             selected_release_asset: None,
@@ -559,6 +598,17 @@ impl GhMirrorGui {
 
     fn retest_mirrors(&mut self) {
         if self.speed_test_thread.is_some() {
+            return;
+        }
+        if MIRRORS.len() <= 1 {
+            // No mirrors to test. Keep the UI stable and avoid unnecessary network calls.
+            self.selected_mirror = 0;
+            self.speed_test_status = "Direct (no mirror)".to_string();
+            self.speed_test_thread = None;
+            self.speed_test_rx = None;
+            self.speed_test_progress_rx = None;
+            self.speed_test_results = vec![None; MIRRORS.len()];
+            self.speed_test_completed = MIRRORS.len();
             return;
         }
         let (final_tx, final_rx) = mpsc::channel();
@@ -2340,6 +2390,16 @@ mod tests {
             build_effective_url("https://mirror.example/", "https://github.com/owner/repo"),
             "https://mirror.example/https://github.com/owner/repo"
         );
+    }
+
+    #[test]
+    fn normalize_mirror_index_resets_out_of_range_to_direct() {
+        assert_eq!(normalize_mirror_index(0), 0);
+        if MIRRORS.len() > 1 {
+            assert_eq!(normalize_mirror_index(1), 1);
+        }
+        assert_eq!(normalize_mirror_index(MIRRORS.len()), 0);
+        assert_eq!(normalize_mirror_index(usize::MAX), 0);
     }
 
     #[test]
