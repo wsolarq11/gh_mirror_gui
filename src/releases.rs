@@ -229,6 +229,7 @@ fn github_release_api_url(api_base: &str, query: &ReleaseQuery) -> Result<Url, S
             }
         }
     }
+    crate::url_policy::validate_https_github_official_url(&url, "GitHub release API URL")?;
     Ok(url)
 }
 

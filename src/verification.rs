@@ -436,6 +436,10 @@ fn fetch_text_asset(
         (true, Some(api_url)) => (api_url, true),
         _ => (asset.browser_download_url.as_str(), false),
     };
+    let url = crate::url_policy::parse_and_validate_https_github_official_url(
+        url,
+        "verification asset url",
+    )?;
 
     for attempt in 0..=VERIFICATION_ASSET_MAX_RETRIES {
         if attempt > 0 {
@@ -445,13 +449,13 @@ fn fetch_text_asset(
         }
 
         let mut request = client
-            .get(url)
+            .get(url.clone())
             .header("User-Agent", "gh_mirror_gui-verifier");
         if accept_octet_stream {
             request = request.header("Accept", "application/octet-stream");
         }
         if let Some(token) = token.as_deref() {
-            if accept_octet_stream || is_github_host(url) {
+            if accept_octet_stream || is_github_host(url.as_str()) {
                 request = request.bearer_auth(token);
             }
         }
