@@ -1,4 +1,15 @@
 use reqwest::Url;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+static ALLOW_LOOPBACK_ASSET_HOSTS: AtomicBool = AtomicBool::new(false);
+
+pub(crate) fn enable_loopback_for_selftests() {
+    ALLOW_LOOPBACK_ASSET_HOSTS.store(true, Ordering::Relaxed);
+}
+
+fn allow_loopback_hosts() -> bool {
+    ALLOW_LOOPBACK_ASSET_HOSTS.load(Ordering::Relaxed)
+}
 
 const OFFICIAL_GITHUB_ARTIFACT_HOSTS: &[&str] = &[
     "github.com",
@@ -22,8 +33,7 @@ pub(crate) fn is_github_official_artifact_host(host: &str) -> bool {
         .any(|allowed| host.eq_ignore_ascii_case(allowed))
 }
 
-#[cfg(test)]
-fn is_local_test_host(host: &str) -> bool {
+fn is_loopback_host(host: &str) -> bool {
     let host = host.trim();
     matches!(host, "127.0.0.1" | "localhost" | "::1" | "[::1]")
 }
@@ -34,20 +44,17 @@ pub(crate) fn validate_https_github_official_url(url: &Url, context: &str) -> Re
         .ok_or_else(|| format!("{context}: URL is missing a host"))?;
 
     if url.scheme() != "https" {
-        #[cfg(test)]
+        if url.scheme() == "http"
+            && is_loopback_host(host)
+            && (cfg!(test) || allow_loopback_hosts())
         {
-            if url.scheme() == "http" && is_local_test_host(host) {
-                return Ok(());
-            }
+            return Ok(());
         }
         return Err(format!("{context}: only https:// URLs are supported"));
     }
     if !is_github_official_artifact_host(host) {
-        #[cfg(test)]
-        {
-            if is_local_test_host(host) {
-                return Ok(());
-            }
+        if is_loopback_host(host) && (cfg!(test) || allow_loopback_hosts()) {
+            return Ok(());
         }
         return Err(format!("{context}: unsupported host: {host}"));
     }

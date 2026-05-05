@@ -56,6 +56,10 @@ impl StaticServer {
 }
 
 pub fn run_staged_release_download_selftest(args: &[String]) -> Result<(), String> {
+    // This command spins up a local static HTTP server for deterministic, offline-ish selftests.
+    // Keep production network policy strict (GitHub official domains only), but allow loopback
+    // URLs inside this selftest harness.
+    crate::url_policy::enable_loopback_for_selftests();
     let config = parse_staged_release_selftest_config(args)?;
     let report = run_staged_release_selftest(&config)?;
     let pretty_report = serde_json::to_string_pretty(&report)
