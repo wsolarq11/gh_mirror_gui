@@ -1,3 +1,4 @@
+use crate::download::DownloadProbe;
 use crate::evidence_ledger::{EvidenceLedger, FileSystemEvidenceLedger};
 use crate::releases::{ReleaseQuery, ResolvedRelease};
 use crate::source_adapter::{GitHubReleaseAdapter, SourceAdapter};
@@ -70,6 +71,25 @@ impl CoreRuntime {
             _ => Err(
                 "Download verification context is inconsistent (release + asset index must be both set or both absent)"
                     .to_string(),
+            ),
+        }
+    }
+
+    pub(crate) fn probe_download_best_effort(
+        &self,
+        client: &Client,
+        url: &str,
+    ) -> (DownloadProbe, Option<String>) {
+        match crate::download::probe_download(client, url) {
+            Ok(probe) => (probe, None),
+            Err(e) => (
+                DownloadProbe {
+                    total: 0,
+                    range_supported: false,
+                    etag: None,
+                    last_modified: None,
+                },
+                Some(e),
             ),
         }
     }

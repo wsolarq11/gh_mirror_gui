@@ -1,6 +1,6 @@
 use crate::bench::choose_history_backed_strategy;
 use crate::core_runtime::CoreRuntime;
-use crate::download::{build_client, download_with_strategy, probe_download, DownloadProbe};
+use crate::download::{build_client, download_with_strategy};
 use crate::github_intent::{parse_github_intent, ParsedGithubIntent};
 use crate::history::{append_download_history, load_bench_history, VerificationHistoryContext};
 use crate::source_trust::import_publisher_key_pin_from_release_asset;
@@ -330,18 +330,10 @@ pub fn run_download_contract(
     };
     let runtime = CoreRuntime::default();
 
-    let probe = match probe_download(&client, effective_url) {
-        Ok(probe) => probe,
-        Err(e) => {
-            log_error(&format!("probe_download error: {e}"));
-            DownloadProbe {
-                total: 0,
-                range_supported: false,
-                etag: None,
-                last_modified: None,
-            }
-        }
-    };
+    let (probe, probe_error) = runtime.probe_download_best_effort(&client, effective_url);
+    if let Some(e) = probe_error {
+        log_error(&format!("probe_download error: {e}"));
+    }
 
     let history = load_bench_history(&Some(history_path.clone()), effective_url, &probe);
     let strategy = choose_history_backed_strategy(&probe, &history);
