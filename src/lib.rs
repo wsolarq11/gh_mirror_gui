@@ -1,6 +1,7 @@
 #![deny(unreachable_pub)]
 
 mod bench;
+mod core_runtime;
 mod download;
 mod evidence_ledger;
 mod github_intent;

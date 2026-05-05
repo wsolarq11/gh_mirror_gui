@@ -1,15 +1,14 @@
 use crate::bench::choose_history_backed_strategy;
+use crate::core_runtime::CoreRuntime;
 use crate::download::{build_client, download_with_strategy, probe_download, DownloadProbe};
 use crate::github_intent::{parse_github_intent, ParsedGithubIntent};
 use crate::history::{append_download_history, load_bench_history, VerificationHistoryContext};
-use crate::source_adapter::{GitHubReleaseAdapter, SourceAdapter};
 use crate::source_trust::import_publisher_key_pin_from_release_asset;
 use crate::trust_policy::{apply_file_disposition, plan_file_disposition_for_report};
 use crate::update_candidate::{
     check_latest_update_candidate, refused_update_candidate_check_report,
     refused_update_candidate_stage_report, stage_latest_update_candidate,
 };
-use crate::verifier_adapter::{GitHubReleaseVerifierAdapter, VerifierAdapter};
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
@@ -198,7 +197,7 @@ pub fn verification_source_summary_for_release_asset(
     release: &ResolvedRelease,
     asset_index: usize,
 ) -> String {
-    GitHubReleaseVerifierAdapter
+    CoreRuntime::default()
         .verification_plan_for_selected_asset(release, asset_index)
         .map(|plan| crate::verification::verification_source_summary(&plan))
         .unwrap_or_else(|| {
@@ -246,7 +245,7 @@ pub fn resolve_release_assets_for_query(
     let client = settings
         .client(30)
         .map_err(|e| format!("Release resolver client error: {e}"))?;
-    GitHubReleaseAdapter.resolve_release_assets(&client, None, query)
+    CoreRuntime::default().resolve_release_assets(&client, None, query)
 }
 
 pub fn import_publisher_key_from_release_asset(
@@ -334,6 +333,7 @@ pub fn run_download_contract(
             return Err(format!("Client build error: {e}"));
         }
     };
+    let runtime = CoreRuntime::default();
 
     let probe = match probe_download(&client, effective_url) {
         Ok(probe) => probe,
@@ -362,7 +362,7 @@ pub fn run_download_contract(
                     release.assets.len()
                 ));
             }
-            GitHubReleaseVerifierAdapter.verification_plan_for_selected_asset(release, idx)
+            runtime.verification_plan_for_selected_asset(release, idx)
         }
         _ => {
             return Err(
@@ -399,7 +399,7 @@ pub fn run_download_contract(
     };
     let _ = progress_tx.send((done_total, done_total, 0.0, 0.0));
 
-    let verification = match GitHubReleaseVerifierAdapter.verify_downloaded_file(
+    let verification = match runtime.verify_downloaded_file(
         &client,
         &save_path,
         &asset_name,

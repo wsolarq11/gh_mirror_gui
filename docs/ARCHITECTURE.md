@@ -24,6 +24,7 @@ UI Shell
 - `src/bench.rs`: headless benchmark and adaptive strategy evaluation.
 - `src/verification.rs`: checksum/provenance parsing, source selection, hash verification, and source-trust attachment.
 - `src/verifier_adapter.rs`: verification adapter seam (Phase 5); today it wraps GitHub Release checksum/provenance verification.
+- `src/core_runtime.rs`: internal composition point that wires adapters behind a stable `backend_contract` front door.
 - `src/source_trust.rs`: Ed25519 detached signature verification/signing, publisher key pinning, and `source_trust` evidence.
 - `src/trust_policy.rs`: trust policy, file disposition, quarantine/delete/open-location decisions.
 - `src/trust_center.rs`: UI-framework-free Trust Center snapshot contract built from backend/core verification reports, policy snapshots, and evidence paths.
