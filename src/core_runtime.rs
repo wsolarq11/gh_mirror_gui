@@ -1,3 +1,4 @@
+use crate::download::DownloadControl;
 use crate::download::DownloadProbe;
 use crate::download::SelectedDownloadStrategy;
 use crate::evidence_ledger::{EvidenceLedger, FileSystemEvidenceLedger};
@@ -9,6 +10,8 @@ use crate::verifier_adapter::{GitHubReleaseVerifierAdapter, VerifierAdapter};
 use reqwest::blocking::Client;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::mpsc;
+use std::sync::Arc;
 
 /// Core runtime orchestrator.
 ///
@@ -22,6 +25,16 @@ pub(crate) struct CoreRuntime {
     source_adapter: GitHubReleaseAdapter,
     verifier_adapter: GitHubReleaseVerifierAdapter,
     evidence_ledger: FileSystemEvidenceLedger,
+}
+
+pub(crate) struct DownloadWithStrategyContractInput<'a> {
+    pub(crate) client: &'a Client,
+    pub(crate) url: &'a str,
+    pub(crate) save_path: &'a str,
+    pub(crate) probe: &'a DownloadProbe,
+    pub(crate) strategy: &'a SelectedDownloadStrategy,
+    pub(crate) ctrl: &'a Arc<DownloadControl>,
+    pub(crate) progress_tx: &'a mpsc::Sender<(u64, u64, f64, f64)>,
 }
 
 impl Default for CoreRuntime {
@@ -105,6 +118,42 @@ impl CoreRuntime {
         let history_path = history_path.cloned();
         let history = crate::history::load_bench_history(&history_path, url, probe);
         crate::bench::choose_history_backed_strategy(probe, &history)
+    }
+
+    pub(crate) fn download_with_strategy_contract(
+        &self,
+        input: DownloadWithStrategyContractInput<'_>,
+    ) -> Result<(), String> {
+        let DownloadWithStrategyContractInput {
+            client,
+            url,
+            save_path,
+            probe,
+            strategy,
+            ctrl,
+            progress_tx,
+        } = input;
+        if let Err(e) = crate::download::download_with_strategy(
+            client,
+            url,
+            save_path,
+            probe,
+            strategy,
+            ctrl,
+            progress_tx,
+        ) {
+            let ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            let _ = self.append_line(
+                Path::new("download_error.log"),
+                &format!("[{ts}] download_with_strategy error: {e}"),
+            );
+            let _ = progress_tx.send((0, 0, 0.0, 0.0));
+            return Err(e);
+        }
+        Ok(())
     }
 
     pub(crate) fn verify_downloaded_file(

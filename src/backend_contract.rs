@@ -1,5 +1,5 @@
-use crate::core_runtime::CoreRuntime;
-use crate::download::{build_client, download_with_strategy};
+use crate::core_runtime::{CoreRuntime, DownloadWithStrategyContractInput};
+use crate::download::build_client;
 use crate::github_intent::{parse_github_intent, ParsedGithubIntent};
 use crate::history::{append_download_history, VerificationHistoryContext};
 use crate::source_trust::import_publisher_key_pin_from_release_asset;
@@ -343,19 +343,15 @@ pub fn run_download_contract(
         verification_asset_index,
     )?;
 
-    if let Err(e) = download_with_strategy(
-        &client,
-        effective_url,
-        &save_path_str,
-        &probe,
-        &strategy,
+    runtime.download_with_strategy_contract(DownloadWithStrategyContractInput {
+        client: &client,
+        url: effective_url,
+        save_path: &save_path_str,
+        probe: &probe,
+        strategy: &strategy,
         ctrl,
         progress_tx,
-    ) {
-        log_error(&format!("download_file error: {e}"));
-        let _ = progress_tx.send((0, 0, 0.0, 0.0));
-        return Err(e);
-    }
+    })?;
 
     // Ensure the UI sees a non-error completion progress event even when the probe could
     // not determine a total size (probe.total == 0). Otherwise the (0,0) sentinel would
