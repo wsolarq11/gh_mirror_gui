@@ -187,11 +187,18 @@ to end.
 
 For public releases, the receipt also records
 `checks.origin_release_verification.source_signature_verification`: it downloads
-the latest public `gh_mirror_gui.exe`, `SHA256SUMS.txt`,
-`SHA256SUMS.txt.sig`, `release-provenance.json`,
-`release-provenance.json.sig`, and `publisher-key.ed25519.pub`; verifies both
-detached source signatures against the public key; and checks that the publisher
-fingerprint matches `release-provenance.json`.
+the latest public signed-source assets (`SHA256SUMS.txt`,
+`SHA256SUMS.txt.sig`, `release-provenance.json`, `release-provenance.json.sig`,
+and `publisher-key.ed25519.pub`), verifies both detached source signatures
+against the public key, and checks the publisher fingerprint matches
+`release-provenance.json`. When GitHub provides an asset digest for
+`gh_mirror_gui.exe`, the receipt also cross-checks that digest against the
+expected `SHA256SUMS.txt` value.
+
+The real-world *binary download + hash verification* for public releases is
+covered by `checks.post_publish_self_update_stage2`: it stages the latest
+verified `gh_mirror_gui.exe` into a local folder (no install / no exe
+replacement) and proves the staged SHA256 matches the expected signed checksum.
 
 `checks.update_candidate_contract` is a no-mutation self-update gate. It proves
 that candidate evaluation can accept only a newer trusted signed
