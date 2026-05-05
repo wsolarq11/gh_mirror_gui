@@ -1460,6 +1460,31 @@ impl eframe::App for GhMirrorGui {
             });
 
             ui.group(|ui| {
+                ui.label(egui::RichText::new("Network policy").strong());
+                ui.small("Outbound HTTP(S) requests are restricted to GitHub official artifact hosts (https only).");
+                let hosts = backend_contract::official_github_artifact_hosts();
+                ui.horizontal(|ui| {
+                    if ui.button("Copy allowlist").clicked() {
+                        let mut text = String::new();
+                        for (i, host) in hosts.iter().enumerate() {
+                            if i > 0 {
+                                text.push('\n');
+                            }
+                            text.push_str(host);
+                        }
+                        ui.ctx().copy_text(text);
+                        self.status = "Copied official artifact host allowlist to clipboard".to_string();
+                    }
+                    ui.small(format!("{} hosts", hosts.len()));
+                });
+                ui.collapsing("Show allowlist", |ui| {
+                    for host in hosts {
+                        ui.monospace(*host);
+                    }
+                });
+            });
+
+            ui.group(|ui| {
                 ui.label(egui::RichText::new("Trust policy").strong());
                 ui.checkbox(
                     &mut self.trust_policy.unknown_keep_file,
