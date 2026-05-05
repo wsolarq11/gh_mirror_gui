@@ -12,14 +12,14 @@ const VERIFICATION_ASSET_MAX_RETRIES: u32 = 2;
 const VERIFICATION_ASSET_RETRY_DELAY_MS: u64 = 100;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct VerificationAsset {
+pub(crate) struct VerificationAsset {
     pub name: String,
     pub browser_download_url: String,
     pub api_url: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct DownloadVerificationPlan {
+pub(crate) struct DownloadVerificationPlan {
     pub asset_name: String,
     pub checksum_asset: Option<VerificationAsset>,
     pub checksum_signature_asset: Option<VerificationAsset>,
@@ -101,7 +101,7 @@ impl VerificationReport {
     }
 }
 
-pub fn verification_plan_for_selected_asset(
+pub(crate) fn verification_plan_for_selected_asset(
     release: &ResolvedRelease,
     asset_index: usize,
 ) -> Option<DownloadVerificationPlan> {
@@ -121,7 +121,7 @@ pub fn verification_plan_for_selected_asset(
     })
 }
 
-pub fn verification_source_summary(plan: &DownloadVerificationPlan) -> String {
+pub(crate) fn verification_source_summary(plan: &DownloadVerificationPlan) -> String {
     let mut sources = Vec::new();
     if let Some(asset) = &plan.checksum_asset {
         let signed = plan

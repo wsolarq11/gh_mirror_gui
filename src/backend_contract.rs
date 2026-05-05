@@ -40,9 +40,6 @@ pub use crate::update_candidate::run_update_candidate_contract_selftest;
 pub use crate::update_candidate::run_update_candidate_latest_selftest;
 pub use crate::update_candidate::run_update_candidate_stage_selftest;
 pub use crate::update_candidate::{UpdateCandidateCheckReport, UpdateCandidateStageReport};
-pub use crate::verification::verification_plan_for_selected_asset;
-pub use crate::verification::verification_source_summary;
-pub use crate::verification::DownloadVerificationPlan;
 
 pub type DownloadProgressMessage = (u64, u64, f64, f64);
 
@@ -173,10 +170,24 @@ pub struct DownloadContractInput {
     pub effective_url: String,
     pub save_path: PathBuf,
     pub asset_name: String,
-    pub verification_plan: Option<DownloadVerificationPlan>,
+    /// Optional GitHub release context that enables checksum/provenance discovery for verification.
+    /// When absent, verification will be UNKNOWN.
+    pub verification_release: Option<ResolvedRelease>,
+    pub verification_asset_index: Option<usize>,
     pub trust_policy: TrustPolicyConfig,
     pub publisher_key_source_at_decision: String,
     pub history_path: PathBuf,
+}
+
+pub fn verification_source_summary_for_release_asset(
+    release: &ResolvedRelease,
+    asset_index: usize,
+) -> String {
+    crate::verification::verification_plan_for_selected_asset(release, asset_index)
+        .map(|plan| crate::verification::verification_source_summary(&plan))
+        .unwrap_or_else(|| {
+            "No checksum/provenance assets detected; result will be UNKNOWN".to_string()
+        })
 }
 
 fn log_error(msg: &str) {
@@ -291,7 +302,8 @@ pub fn run_download_contract(
     let effective_url = input.effective_url.as_str();
     let save_path = input.save_path;
     let asset_name = input.asset_name;
-    let verification_plan = input.verification_plan;
+    let verification_release = input.verification_release;
+    let verification_asset_index = input.verification_asset_index;
     let trust_policy = input.trust_policy;
     let publisher_key_source_at_decision = input.publisher_key_source_at_decision;
     let history_path = input.history_path;
@@ -324,6 +336,19 @@ pub fn run_download_contract(
     let strategy = choose_history_backed_strategy(&probe, &history);
     let save_path_str = save_path.to_string_lossy().to_string();
     let download_start = Instant::now();
+
+    let verification_plan = match (verification_release.as_ref(), verification_asset_index) {
+        (None, None) => None,
+        (Some(release), Some(idx)) => {
+            crate::verification::verification_plan_for_selected_asset(release, idx)
+        }
+        _ => {
+            return Err(
+                "Download verification context is inconsistent (release + asset index must be both set or both absent)"
+                    .to_string(),
+            );
+        }
+    };
 
     if let Err(e) = download_with_strategy(
         &client,

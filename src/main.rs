@@ -1,7 +1,7 @@
 use backend_contract::{
-    AppliedFileDisposition, DownloadControl, DownloadVerificationPlan, ImportedPublisherKeyPin,
-    MismatchFilePolicy, ResolvedRelease, TrustCenterSnapshot, TrustPolicyConfig,
-    UpdateCandidateCheckReport, UpdateCandidateStageReport,
+    AppliedFileDisposition, DownloadControl, ImportedPublisherKeyPin, MismatchFilePolicy,
+    ResolvedRelease, TrustCenterSnapshot, TrustPolicyConfig, UpdateCandidateCheckReport,
+    UpdateCandidateStageReport,
 };
 use directories::UserDirs;
 use eframe::egui;
@@ -710,12 +710,6 @@ impl GhMirrorGui {
         )
     }
 
-    fn selected_release_verification_plan(&self) -> Option<DownloadVerificationPlan> {
-        let release = self.release.as_ref()?;
-        let asset_index = self.selected_release_asset?;
-        backend_contract::verification_plan_for_selected_asset(release, asset_index)
-    }
-
     fn apply_selected_release_asset(&mut self) -> bool {
         let selected = self
             .release
@@ -819,10 +813,26 @@ impl GhMirrorGui {
             Some(p) => p,
             None => return,
         };
-        let verification_plan = self.selected_release_verification_plan();
-        let asset_name = verification_plan
+
+        let (verification_release, verification_asset_index) =
+            match (self.release.clone(), self.selected_release_asset) {
+                (Some(release), Some(idx))
+                    if release
+                        .assets
+                        .get(idx)
+                        .is_some_and(|asset| asset.browser_download_url == self.url) =>
+                {
+                    (Some(release), Some(idx))
+                }
+                _ => (None, None),
+            };
+
+        let asset_name = verification_release
             .as_ref()
-            .map(|plan| plan.asset_name.clone())
+            .and_then(|release| {
+                verification_asset_index
+                    .and_then(|idx| release.assets.get(idx).map(|asset| asset.name.clone()))
+            })
             .or_else(|| extract_filename(&self.url))
             .unwrap_or_else(|| String::from("download"));
 
@@ -851,14 +861,14 @@ impl GhMirrorGui {
         self.progress = 0.0;
         self.speed_text.clear();
         self.elapsed_text.clear();
-        self.status = verification_plan
+        self.status = verification_release
             .as_ref()
-            .map(|plan| {
-                format!(
-                    "Starting download... {}",
-                    backend_contract::verification_source_summary(plan)
-                )
+            .and_then(|release| {
+                verification_asset_index.map(|idx| {
+                    backend_contract::verification_source_summary_for_release_asset(release, idx)
+                })
             })
+            .map(|summary| format!("Starting download... {summary}"))
             .unwrap_or_else(|| String::from("Starting download... verification will be UNKNOWN"));
 
         self.download_thread = Some(thread::spawn(move || {
@@ -869,7 +879,8 @@ impl GhMirrorGui {
                     effective_url,
                     save_path,
                     asset_name,
-                    verification_plan,
+                    verification_release,
+                    verification_asset_index,
                     trust_policy,
                     publisher_key_source_at_decision,
                     history_path,
@@ -1281,13 +1292,10 @@ impl eframe::App for GhMirrorGui {
                                 .as_deref()
                                 .unwrap_or("unknown content type");
                             ui.label(format!("{} · {}", asset_picker_label(asset), content_type));
-                            if let Some(plan) = backend_contract::verification_plan_for_selected_asset(
+                            ui.label(backend_contract::verification_source_summary_for_release_asset(
                                 &release,
                                 selected_idx,
-                            )
-                            {
-                                ui.label(backend_contract::verification_source_summary(&plan));
-                            }
+                            ));
                             ui.monospace(&asset.browser_download_url);
                         }
                     }
