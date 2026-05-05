@@ -49,7 +49,7 @@ impl Default for SourceTrustPolicySnapshot {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum SourceAuthenticityStatus {
+pub(crate) enum SourceAuthenticityStatus {
     TrustedSignature,
     Unsigned,
     MissingSignature,
@@ -59,7 +59,7 @@ pub enum SourceAuthenticityStatus {
 }
 
 impl SourceAuthenticityStatus {
-    pub fn as_str(&self) -> &'static str {
+    pub(crate) fn as_str(&self) -> &'static str {
         match self {
             Self::TrustedSignature => "TRUSTED_SIGNATURE",
             Self::Unsigned => "UNSIGNED",
@@ -73,7 +73,7 @@ impl SourceAuthenticityStatus {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum SourceTrustDecision {
+pub(crate) enum SourceTrustDecision {
     Trusted,
     AllowUnsigned,
     Block,
@@ -81,7 +81,7 @@ pub enum SourceTrustDecision {
 }
 
 impl SourceTrustDecision {
-    pub fn as_str(&self) -> &'static str {
+    pub(crate) fn as_str(&self) -> &'static str {
         match self {
             Self::Trusted => "TRUSTED",
             Self::AllowUnsigned => "ALLOW_UNSIGNED",
@@ -92,15 +92,15 @@ impl SourceTrustDecision {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct SourceTrustEvidence {
-    pub schema_version: u32,
-    pub status: SourceAuthenticityStatus,
-    pub decision: SourceTrustDecision,
-    pub required: bool,
-    pub source_asset_name: Option<String>,
-    pub signature_asset_name: Option<String>,
-    pub trusted_publisher_key_fingerprint_sha256: Option<String>,
-    pub detail: String,
+pub(crate) struct SourceTrustEvidence {
+    pub(crate) schema_version: u32,
+    pub(crate) status: SourceAuthenticityStatus,
+    pub(crate) decision: SourceTrustDecision,
+    pub(crate) required: bool,
+    pub(crate) source_asset_name: Option<String>,
+    pub(crate) signature_asset_name: Option<String>,
+    pub(crate) trusted_publisher_key_fingerprint_sha256: Option<String>,
+    pub(crate) detail: String,
 }
 
 impl SourceTrustEvidence {
