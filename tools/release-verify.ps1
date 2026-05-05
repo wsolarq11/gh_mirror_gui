@@ -529,7 +529,7 @@ function Assert-TrustCenterBackendContract {
         -Text $mainText `
         -Label $mainRelativePath `
         -RequiredPatterns @(
-            'mod trust_center;',
+            'gh_mirror_gui::backend_contract',
             'trust_center_snapshot',
             'render_trust_center_snapshot'
         )
@@ -1957,6 +1957,19 @@ $Receipt.checks.download_engine_contract = [ordered]@{
             'download_single_restarts_when_resume_range_is_ignored',
             'download_single_resumes_existing_part_file_with_range_request',
             'download_segmented_writes_all_ranges_and_removes_resume_meta'
+        )
+}
+$Receipt.checks.github_url_intent_router_contract = [ordered]@{
+    ok = $true
+    contract = 'Router is pure (no network IO) and classifies GitHub official artifact URLs into intent DTOs'
+    covered_by = Assert-CommandLogContains `
+        -CommandName 'cargo-test-all-targets' `
+        -RequiredPatterns @(
+            'router_classifies_release_asset_download_url',
+            'router_classifies_release_page_urls',
+            'router_maps_blob_to_raw_download_spec',
+            'router_accepts_raw_githubusercontent_urls',
+            'router_rejects_non_artifact_github_urls'
         )
 }
 $Receipt.checks.trust_policy_contract = [ordered]@{

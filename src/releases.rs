@@ -1,40 +1,43 @@
 use reqwest::blocking::Client;
 use reqwest::header::{ACCEPT, USER_AGENT};
 use reqwest::Url;
+use std::time::Duration;
 
 const DEFAULT_GITHUB_API_BASE: &str = "https://api.github.com";
 const RELEASE_RESOLVER_USER_AGENT: &str = "gh_mirror_gui-release-resolver";
+const RELEASE_LOOKUP_MAX_RETRIES: u32 = 3;
+const RELEASE_LOOKUP_RETRY_DELAY_MS: u64 = 800;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum ReleaseQueryKind {
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum ReleaseQueryKind {
     Latest,
     Tag(String),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ReleaseQuery {
-    pub(crate) owner: String,
-    pub(crate) repo: String,
-    pub(crate) kind: ReleaseQueryKind,
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ReleaseQuery {
+    pub owner: String,
+    pub repo: String,
+    pub kind: ReleaseQueryKind,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ReleaseAsset {
-    pub(crate) name: String,
-    pub(crate) size: u64,
-    pub(crate) browser_download_url: String,
-    pub(crate) content_type: Option<String>,
-    pub(crate) api_url: Option<String>,
+pub struct ReleaseAsset {
+    pub name: String,
+    pub size: u64,
+    pub browser_download_url: String,
+    pub content_type: Option<String>,
+    pub api_url: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ResolvedRelease {
-    pub(crate) owner: String,
-    pub(crate) repo: String,
-    pub(crate) tag_name: String,
-    pub(crate) name: Option<String>,
-    pub(crate) html_url: String,
-    pub(crate) assets: Vec<ReleaseAsset>,
+pub struct ResolvedRelease {
+    pub owner: String,
+    pub repo: String,
+    pub tag_name: String,
+    pub name: Option<String>,
+    pub html_url: String,
+    pub assets: Vec<ReleaseAsset>,
 }
 
 #[derive(serde::Deserialize)]
@@ -67,6 +70,7 @@ impl ReleaseQuery {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn parse_release_query(input: &str) -> Result<ReleaseQuery, String> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
@@ -85,6 +89,7 @@ pub(crate) fn parse_release_query(input: &str) -> Result<ReleaseQuery, String> {
     parse_repo_slug(trimmed)
 }
 
+#[cfg(test)]
 pub(crate) fn is_github_release_asset_download_url(input: &str) -> bool {
     let trimmed = input.trim();
     if !looks_like_github_url(trimmed) {
@@ -112,79 +117,95 @@ pub(crate) fn resolve_release_assets(
     resolve_release_assets_with_base(client, DEFAULT_GITHUB_API_BASE, query)
 }
 
-pub(crate) fn format_asset_size(bytes: u64) -> String {
-    if bytes >= 1024 * 1024 * 1024 {
-        format!("{:.2} GiB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
-    } else if bytes >= 1024 * 1024 {
-        format!("{:.1} MiB", bytes as f64 / (1024.0 * 1024.0))
-    } else if bytes >= 1024 {
-        format!("{:.1} KiB", bytes as f64 / 1024.0)
-    } else {
-        format!("{bytes} B")
-    }
-}
-
-pub(crate) fn asset_picker_label(asset: &ReleaseAsset) -> String {
-    format!("{} ({})", asset.name, format_asset_size(asset.size))
-}
-
 pub(crate) fn resolve_release_assets_with_base(
     client: &Client,
     api_base: &str,
     query: &ReleaseQuery,
 ) -> Result<ResolvedRelease, String> {
     let endpoint = github_release_api_url(api_base, query)?;
-    let mut request = client
-        .get(endpoint)
-        .header(USER_AGENT, RELEASE_RESOLVER_USER_AGENT)
-        .header(ACCEPT, "application/vnd.github+json");
+    let token = std::env::var("GITHUB_TOKEN")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
 
-    if let Ok(token) = std::env::var("GITHUB_TOKEN") {
-        let token = token.trim();
-        if !token.is_empty() {
+    let mut last_retryable_error = None;
+    for attempt in 0..=RELEASE_LOOKUP_MAX_RETRIES {
+        if attempt > 0 {
+            std::thread::sleep(Duration::from_millis(
+                RELEASE_LOOKUP_RETRY_DELAY_MS * attempt as u64,
+            ));
+        }
+
+        let mut request = client
+            .get(endpoint.clone())
+            .header(USER_AGENT, RELEASE_RESOLVER_USER_AGENT)
+            .header(ACCEPT, "application/vnd.github+json");
+        if let Some(token) = token.as_deref() {
             request = request.bearer_auth(token);
         }
+
+        let response = match request.send() {
+            Ok(response) => response,
+            Err(e) => {
+                last_retryable_error = Some(format!("GitHub release lookup request failed: {e}"));
+                continue;
+            }
+        };
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().unwrap_or_default();
+            let detail = compact_error_body(&body);
+            let error = format!(
+                "GitHub release lookup failed for {} {}: HTTP {}{}",
+                query.repo_slug(),
+                query.selector_label(),
+                status.as_u16(),
+                detail
+            );
+
+            if is_retryable_release_lookup_status(status) && attempt < RELEASE_LOOKUP_MAX_RETRIES {
+                last_retryable_error = Some(error);
+                continue;
+            }
+
+            return Err(error);
+        }
+
+        let body = response
+            .text()
+            .map_err(|e| format!("GitHub release response body could not be read: {e}"))?;
+        let release = serde_json::from_str::<GitHubReleaseResponse>(&body)
+            .map_err(|e| format!("GitHub release response was not valid JSON: {e}"))?;
+        return Ok(ResolvedRelease {
+            owner: query.owner.clone(),
+            repo: query.repo.clone(),
+            tag_name: release.tag_name,
+            name: release.name,
+            html_url: release.html_url,
+            assets: release
+                .assets
+                .into_iter()
+                .map(|asset| ReleaseAsset {
+                    name: asset.name,
+                    size: asset.size,
+                    browser_download_url: asset.browser_download_url,
+                    content_type: asset.content_type,
+                    api_url: asset.url,
+                })
+                .collect(),
+        });
     }
 
-    let response = request
-        .send()
-        .map_err(|e| format!("GitHub release lookup request failed: {e}"))?;
-    let status = response.status();
-    if !status.is_success() {
-        let body = response.text().unwrap_or_default();
-        let detail = compact_error_body(&body);
-        return Err(format!(
-            "GitHub release lookup failed for {} {}: HTTP {}{}",
-            query.repo_slug(),
-            query.selector_label(),
-            status.as_u16(),
-            detail
-        ));
-    }
+    Err(format!(
+        "GitHub release lookup failed after {} attempts: {}",
+        RELEASE_LOOKUP_MAX_RETRIES + 1,
+        last_retryable_error.unwrap_or_else(|| "unknown transient error".to_string())
+    ))
+}
 
-    let body = response
-        .text()
-        .map_err(|e| format!("GitHub release response body could not be read: {e}"))?;
-    let release = serde_json::from_str::<GitHubReleaseResponse>(&body)
-        .map_err(|e| format!("GitHub release response was not valid JSON: {e}"))?;
-    Ok(ResolvedRelease {
-        owner: query.owner.clone(),
-        repo: query.repo.clone(),
-        tag_name: release.tag_name,
-        name: release.name,
-        html_url: release.html_url,
-        assets: release
-            .assets
-            .into_iter()
-            .map(|asset| ReleaseAsset {
-                name: asset.name,
-                size: asset.size,
-                browser_download_url: asset.browser_download_url,
-                content_type: asset.content_type,
-                api_url: asset.url,
-            })
-            .collect(),
-    })
+fn is_retryable_release_lookup_status(status: reqwest::StatusCode) -> bool {
+    status.is_server_error() || status.as_u16() == 429
 }
 
 fn github_release_api_url(api_base: &str, query: &ReleaseQuery) -> Result<Url, String> {
@@ -211,6 +232,7 @@ fn github_release_api_url(api_base: &str, query: &ReleaseQuery) -> Result<Url, S
     Ok(url)
 }
 
+#[cfg(test)]
 fn parse_repo_slug(input: &str) -> Result<ReleaseQuery, String> {
     let trimmed = input.trim().trim_matches('/');
     let parts = trimmed.split('/').collect::<Vec<_>>();
@@ -229,6 +251,7 @@ fn parse_repo_slug(input: &str) -> Result<ReleaseQuery, String> {
     })
 }
 
+#[cfg(test)]
 fn parse_github_url(input: &str) -> Result<ReleaseQuery, String> {
     let url = Url::parse(input).map_err(|e| format!("Invalid GitHub URL: {e}"))?;
     if !is_github_host(url.host_str()) {
@@ -268,6 +291,7 @@ fn parse_github_url(input: &str) -> Result<ReleaseQuery, String> {
     Ok(ReleaseQuery { owner, repo, kind })
 }
 
+#[cfg(test)]
 fn release_tag_from_segments(segments: &[String]) -> Result<ReleaseQueryKind, String> {
     if segments.is_empty() {
         return Err("GitHub release tag URL is missing the tag name".to_string());
@@ -275,6 +299,7 @@ fn release_tag_from_segments(segments: &[String]) -> Result<ReleaseQueryKind, St
     Ok(ReleaseQueryKind::Tag(segments.join("/")))
 }
 
+#[cfg(test)]
 fn clean_repo_part(part: &str) -> Result<String, String> {
     let value = part.trim().trim_end_matches(".git");
     if value.is_empty()
@@ -288,6 +313,7 @@ fn clean_repo_part(part: &str) -> Result<String, String> {
     Ok(value.to_string())
 }
 
+#[cfg(test)]
 fn looks_like_github_url(input: &str) -> bool {
     input.starts_with("http://")
         || input.starts_with("https://")
@@ -295,6 +321,7 @@ fn looks_like_github_url(input: &str) -> bool {
         || input.starts_with("www.github.com/")
 }
 
+#[cfg(test)]
 fn is_github_host(host: Option<&str>) -> bool {
     matches!(
         host.map(|h| h.trim_start_matches("www.")),
@@ -302,6 +329,7 @@ fn is_github_host(host: Option<&str>) -> bool {
     )
 }
 
+#[cfg(test)]
 fn url_segments(url: &Url) -> Vec<String> {
     url.path_segments()
         .map(|segments| {
@@ -443,7 +471,6 @@ mod tests {
         assert_eq!(release.assets.len(), 1);
         assert_eq!(release.assets[0].name, "app.zip");
         assert_eq!(release.assets[0].size, 1_048_576);
-        assert_eq!(asset_picker_label(&release.assets[0]), "app.zip (1.0 MiB)");
     }
 
     #[test]

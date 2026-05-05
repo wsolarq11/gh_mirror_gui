@@ -50,7 +50,7 @@ pub(crate) struct BenchHistoryEntry {
     pub(crate) recorded_at_epoch_secs: u64,
 }
 
-pub(crate) fn default_history_path() -> PathBuf {
+pub fn default_history_path() -> PathBuf {
     ProjectDirs::from("com", "gh_mirror_gui", "gh_mirror_gui")
         .map(|dirs| dirs.data_local_dir().join("bench-history.jsonl"))
         .unwrap_or_else(|| PathBuf::from("target").join("bench-history.jsonl"))

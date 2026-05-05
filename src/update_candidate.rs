@@ -44,34 +44,34 @@ pub(crate) struct UpdateCandidateStageConfig<'a> {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub(crate) enum UpdateCandidateStageStatus {
+pub enum UpdateCandidateStageStatus {
     Staged,
     NoUpdate,
     Refused,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) struct UpdateCandidateStageReport {
-    pub(crate) schema_version: u32,
-    pub(crate) status: UpdateCandidateStageStatus,
-    pub(crate) repo: String,
-    pub(crate) release_tag: String,
-    pub(crate) release_url: String,
-    pub(crate) stage_dir: Option<String>,
-    pub(crate) staged_asset_path: Option<String>,
-    pub(crate) staged_sha256: Option<String>,
-    pub(crate) expected_sha256: Option<String>,
-    pub(crate) publisher_key_fingerprint_sha256: Option<String>,
-    pub(crate) reason: String,
-    pub(crate) no_install: bool,
-    pub(crate) check_report: UpdateCandidateCheckReport,
-    pub(crate) evidence_path: Option<String>,
-    pub(crate) evidence_write_error: Option<String>,
+pub struct UpdateCandidateStageReport {
+    pub schema_version: u32,
+    pub status: UpdateCandidateStageStatus,
+    pub repo: String,
+    pub release_tag: String,
+    pub release_url: String,
+    pub stage_dir: Option<String>,
+    pub staged_asset_path: Option<String>,
+    pub staged_sha256: Option<String>,
+    pub expected_sha256: Option<String>,
+    pub publisher_key_fingerprint_sha256: Option<String>,
+    pub reason: String,
+    pub no_install: bool,
+    pub check_report: UpdateCandidateCheckReport,
+    pub evidence_path: Option<String>,
+    pub evidence_write_error: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub(crate) enum UpdateCandidateStatus {
+pub enum UpdateCandidateStatus {
     Candidate,
     NoUpdate,
     Refused,
@@ -88,37 +88,39 @@ impl UpdateCandidateStatus {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) struct UpdateCandidateEvaluation {
-    pub(crate) schema_version: u32,
-    pub(crate) status: UpdateCandidateStatus,
-    pub(crate) current_version: String,
-    pub(crate) candidate_version: String,
-    pub(crate) release_tag: String,
-    pub(crate) asset_name: String,
-    pub(crate) reason: String,
-    pub(crate) verification_status: String,
-    pub(crate) source_authenticity_status: Option<String>,
-    pub(crate) source_trust_decision: Option<String>,
-    pub(crate) publisher_key_fingerprint_sha256: Option<String>,
-    pub(crate) evidence_path: Option<String>,
-    pub(crate) no_mutation: bool,
+pub struct UpdateCandidateEvaluation {
+    pub schema_version: u32,
+    pub status: UpdateCandidateStatus,
+    pub current_version: String,
+    pub candidate_version: String,
+    pub release_tag: String,
+    pub asset_name: String,
+    pub reason: String,
+    pub verification_status: String,
+    pub file_sha256: Option<String>,
+    pub expected_sha256: Option<String>,
+    pub verification_source: Option<String>,
+    pub source_authenticity_status: Option<String>,
+    pub source_trust_decision: Option<String>,
+    pub publisher_key_fingerprint_sha256: Option<String>,
+    pub evidence_path: Option<String>,
+    pub no_mutation: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) struct UpdateCandidateCheckReport {
-    pub(crate) schema_version: u32,
-    pub(crate) repo: String,
-    pub(crate) release_tag: String,
-    pub(crate) release_url: String,
-    pub(crate) asset_name: String,
-    pub(crate) release_publisher_key_fingerprint_sha256: Option<String>,
-    pub(crate) evaluation: UpdateCandidateEvaluation,
-    pub(crate) verification_report: Option<VerificationReport>,
-    pub(crate) evidence_write_error: Option<String>,
+pub struct UpdateCandidateCheckReport {
+    pub schema_version: u32,
+    pub repo: String,
+    pub release_tag: String,
+    pub release_url: String,
+    pub asset_name: String,
+    pub release_publisher_key_fingerprint_sha256: Option<String>,
+    pub evaluation: UpdateCandidateEvaluation,
+    pub evidence_write_error: Option<String>,
 }
 
 impl UpdateCandidateCheckReport {
-    pub(crate) fn status_display(&self) -> &'static str {
+    pub fn status_display(&self) -> &'static str {
         match self.evaluation.status {
             UpdateCandidateStatus::Candidate => "candidate",
             UpdateCandidateStatus::NoUpdate => "no-update",
@@ -126,7 +128,7 @@ impl UpdateCandidateCheckReport {
         }
     }
 
-    pub(crate) fn refusal_reason(&self) -> Option<&str> {
+    pub fn refusal_reason(&self) -> Option<&str> {
         if self.evaluation.status == UpdateCandidateStatus::Refused {
             Some(self.evaluation.reason.as_str())
         } else {
@@ -134,7 +136,7 @@ impl UpdateCandidateCheckReport {
         }
     }
 
-    pub(crate) fn publisher_key_fingerprint_sha256(&self) -> Option<&str> {
+    pub fn publisher_key_fingerprint_sha256(&self) -> Option<&str> {
         self.evaluation
             .publisher_key_fingerprint_sha256
             .as_deref()
@@ -190,7 +192,6 @@ pub(crate) fn check_latest_update_candidate(
                 asset_name: SELF_UPDATE_ASSET_NAME.to_string(),
                 release_publisher_key_fingerprint_sha256: None,
                 evaluation,
-                verification_report: None,
                 evidence_write_error: None,
             };
             return finish_update_candidate_check_report(report, evidence_path);
@@ -320,13 +321,53 @@ pub(crate) fn refused_update_candidate_check_report(
         asset_name: SELF_UPDATE_ASSET_NAME.to_string(),
         release_publisher_key_fingerprint_sha256: None,
         evaluation,
-        verification_report: None,
         evidence_write_error: None,
     };
     finish_update_candidate_check_report(report, evidence_path)
 }
 
-pub(crate) fn run_update_candidate_latest_selftest(args: &[String]) -> Result<(), String> {
+pub(crate) fn refused_update_candidate_stage_report(
+    current_version: &str,
+    reason: impl Into<String>,
+    evidence_dir: &Path,
+) -> UpdateCandidateStageReport {
+    let reason = reason.into();
+    let check_report =
+        refused_update_candidate_check_report(current_version, reason.clone(), evidence_dir);
+    let publisher_key_fingerprint = check_report
+        .publisher_key_fingerprint_sha256()
+        .map(|v| v.to_string());
+
+    let mut report = UpdateCandidateStageReport {
+        schema_version: UPDATE_CANDIDATE_STAGE_SCHEMA_VERSION,
+        status: UpdateCandidateStageStatus::Refused,
+        repo: format!("{SELF_UPDATE_OWNER}/{SELF_UPDATE_REPO}"),
+        release_tag: check_report.release_tag.clone(),
+        release_url: check_report.release_url.clone(),
+        stage_dir: None,
+        staged_asset_path: None,
+        staged_sha256: None,
+        expected_sha256: None,
+        publisher_key_fingerprint_sha256: publisher_key_fingerprint,
+        reason,
+        no_install: true,
+        check_report,
+        evidence_path: None,
+        evidence_write_error: None,
+    };
+
+    if let Some(evidence_path) =
+        allocate_update_candidate_evidence_path(evidence_dir, "stage-runtime-refused")
+    {
+        report.evidence_path = Some(evidence_path.display().to_string());
+        if let Err(e) = write_update_candidate_stage_evidence(&evidence_path, &report) {
+            report.evidence_write_error = Some(e);
+        }
+    }
+    report
+}
+
+pub fn run_update_candidate_latest_selftest(args: &[String]) -> Result<(), String> {
     let mut json_out: Option<PathBuf> = None;
     let mut i = 0;
     while i < args.len() {
@@ -396,7 +437,7 @@ pub(crate) fn run_update_candidate_latest_selftest(args: &[String]) -> Result<()
     }
 }
 
-pub(crate) fn run_update_candidate_stage_selftest(args: &[String]) -> Result<(), String> {
+pub fn run_update_candidate_stage_selftest(args: &[String]) -> Result<(), String> {
     let mut json_out: Option<PathBuf> = None;
     let mut current_version_override: Option<String> = None;
     let mut trusted_publisher_key_file: Option<PathBuf> = None;
@@ -554,6 +595,9 @@ pub(crate) fn evaluate_update_candidate(
         asset_name: input.asset_name.to_string(),
         reason: String::new(),
         verification_status: input.verification_report.status.as_str().to_string(),
+        file_sha256: Some(input.verification_report.file_sha256.clone()),
+        expected_sha256: input.verification_report.expected_sha256.clone(),
+        verification_source: input.verification_report.source.clone(),
         source_authenticity_status: input
             .verification_report
             .source_trust
@@ -679,7 +723,6 @@ fn evaluate_resolved_latest_release(
             asset_name: SELF_UPDATE_ASSET_NAME.to_string(),
             release_publisher_key_fingerprint_sha256: release_publisher_key_fingerprint,
             evaluation,
-            verification_report: None,
             evidence_write_error: None,
         };
         return finish_update_candidate_check_report(report, evidence_path);
@@ -709,7 +752,6 @@ fn evaluate_resolved_latest_release(
             asset_name: asset.name,
             release_publisher_key_fingerprint_sha256: release_publisher_key_fingerprint,
             evaluation,
-            verification_report: Some(verification_report),
             evidence_write_error: None,
         };
         return finish_update_candidate_check_report(report, evidence_path);
@@ -735,7 +777,6 @@ fn evaluate_resolved_latest_release(
             asset_name: asset.name,
             release_publisher_key_fingerprint_sha256: release_publisher_key_fingerprint,
             evaluation,
-            verification_report: None,
             evidence_write_error: None,
         };
         return finish_update_candidate_check_report(report, evidence_path);
@@ -757,7 +798,6 @@ fn evaluate_resolved_latest_release(
             asset_name: asset.name,
             release_publisher_key_fingerprint_sha256: release_publisher_key_fingerprint,
             evaluation,
-            verification_report: None,
             evidence_write_error: None,
         };
         return finish_update_candidate_check_report(report, evidence_path);
@@ -793,7 +833,6 @@ fn evaluate_resolved_latest_release(
                 asset_name: asset.name,
                 release_publisher_key_fingerprint_sha256: release_publisher_key_fingerprint,
                 evaluation,
-                verification_report: None,
                 evidence_write_error: None,
             };
             return finish_update_candidate_check_report(report, evidence_path);
@@ -815,7 +854,6 @@ fn evaluate_resolved_latest_release(
         asset_name: asset.name,
         release_publisher_key_fingerprint_sha256: release_publisher_key_fingerprint,
         evaluation,
-        verification_report: Some(verification_report),
         evidence_write_error: None,
     };
     finish_update_candidate_check_report(report, evidence_path)
@@ -856,6 +894,12 @@ fn download_release_asset_to_path(
         (true, Some(api_url)) => (api_url, true),
         _ => (asset.browser_download_url.as_str(), false),
     };
+
+    crate::url_policy::parse_and_validate_https_github_official_url(
+        url,
+        "update candidate asset url",
+    )?;
+
     let mut request = client
         .get(url)
         .header("User-Agent", UPDATE_CANDIDATE_USER_AGENT);
@@ -971,6 +1015,9 @@ fn refused_update_candidate_evaluation(
         asset_name: asset_name.to_string(),
         reason: reason.into(),
         verification_status: "NOT_EVALUATED".to_string(),
+        file_sha256: None,
+        expected_sha256: None,
+        verification_source: None,
         source_authenticity_status: None,
         source_trust_decision: None,
         publisher_key_fingerprint_sha256,
@@ -1037,7 +1084,6 @@ fn write_update_candidate_evidence(
         "asset_name": &report.asset_name,
         "release_publisher_key_fingerprint_sha256": &report.release_publisher_key_fingerprint_sha256,
         "evaluation": &report.evaluation,
-        "verification_report": &report.verification_report,
     });
     let pretty =
         serde_json::to_string_pretty(&record).map_err(|e| format!("Serialize evidence: {e}"))?;
@@ -1053,14 +1099,10 @@ fn stage_candidate_from_check_report(
     if check_report.evaluation.status != UpdateCandidateStatus::Candidate {
         return Err("stage requires a CANDIDATE check report".to_string());
     }
-    let verification = check_report
-        .verification_report
-        .as_ref()
-        .ok_or_else(|| "stage requires a verification report".to_string())?;
-    if verification.status != VerificationStatus::Verified {
+    if check_report.evaluation.verification_status != "VERIFIED" {
         return Err(format!(
             "stage requires a VERIFIED candidate, got {}",
-            verification.status.as_str()
+            check_report.evaluation.verification_status
         ));
     }
 
@@ -1088,7 +1130,7 @@ fn stage_candidate_from_check_report(
     let tmp_path = stage_dir.join(format!("{}.staging.tmp", asset.name));
     download_release_asset_to_path(client, &asset, &tmp_path)?;
     let sha256 = crate::download::sha256_file(&tmp_path)?;
-    if let Some(expected) = verification.expected_sha256.as_deref() {
+    if let Some(expected) = check_report.evaluation.expected_sha256.as_deref() {
         if sha256 != expected.to_ascii_uppercase() {
             let _ = fs::remove_file(&tmp_path);
             return Err(format!(
@@ -1128,7 +1170,7 @@ fn stage_candidate_from_check_report(
         stage_dir: Some(stage_dir.display().to_string()),
         staged_asset_path: Some(staged_path.display().to_string()),
         staged_sha256: Some(sha256),
-        expected_sha256: verification.expected_sha256.clone(),
+        expected_sha256: check_report.evaluation.expected_sha256.clone(),
         publisher_key_fingerprint_sha256: check_report
             .publisher_key_fingerprint_sha256()
             .map(|v| v.to_string()),
@@ -1187,7 +1229,7 @@ fn sanitize_evidence_component(value: &str) -> String {
     }
 }
 
-pub(crate) fn run_update_candidate_contract_selftest(args: &[String]) -> Result<(), String> {
+pub fn run_update_candidate_contract_selftest(args: &[String]) -> Result<(), String> {
     let mut json_out: Option<PathBuf> = None;
     let mut i = 0;
     while i < args.len() {
@@ -1798,6 +1840,36 @@ mod tests {
         assert!(!requests
             .iter()
             .any(|request| request.starts_with("GET /gh_mirror_gui.exe ")));
+        let _ = std::fs::remove_dir_all(evidence_dir);
+    }
+
+    #[test]
+    fn refused_update_candidate_stage_report_writes_a_reviewable_evidence_record() {
+        let evidence_dir = unique_evidence_dir("refused_stage");
+        let report = refused_update_candidate_stage_report(
+            "0.1.6",
+            "self-update client build failed",
+            &evidence_dir,
+        );
+
+        assert_eq!(report.status, UpdateCandidateStageStatus::Refused);
+        assert!(report.no_install);
+        assert!(report.check_report.evaluation.no_mutation);
+
+        let stage_evidence = report
+            .evidence_path
+            .as_deref()
+            .expect("stage refused report should record an evidence path");
+        assert!(Path::new(stage_evidence).is_file());
+
+        let check_evidence = report
+            .check_report
+            .evaluation
+            .evidence_path
+            .as_deref()
+            .expect("refused check report should record an evidence path");
+        assert!(Path::new(check_evidence).is_file());
+
         let _ = std::fs::remove_dir_all(evidence_dir);
     }
 

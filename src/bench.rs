@@ -444,8 +444,9 @@ fn choose_adaptive_candidate(
     Ok((candidate, samples))
 }
 
-pub(crate) fn run_bench_download(args: &[String]) -> Result<(), String> {
+pub fn run_bench_download(args: &[String]) -> Result<(), String> {
     let config = parse_bench_config(args)?;
+    crate::url_policy::parse_and_validate_https_github_official_url(&config.url, "bench url")?;
     if let Some(parent) = config.out.parent() {
         fs::create_dir_all(parent)
             .map_err(|e| format!("Create benchmark output dir error: {e}"))?;
@@ -606,4 +607,112 @@ pub(crate) fn run_bench_download(args: &[String]) -> Result<(), String> {
             .map_err(|e| format!("Encode benchmark stdout error: {e}"))?
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::download::{DownloadProbe, SEGMENT_CONCURRENCY, SEGMENT_SIZE};
+    use crate::history::BenchHistoryEntry;
+
+    #[test]
+    fn bench_config_accepts_explicit_unsafe_tls_flag() {
+        let config = parse_bench_config(&[
+            "--url".to_string(),
+            "https://example.test/file.bin".to_string(),
+            "--out".to_string(),
+            "target/test.bin".to_string(),
+            "--allow-invalid-certs".to_string(),
+        ])
+        .unwrap();
+        assert!(config.allow_invalid_certs);
+    }
+
+    #[test]
+    fn history_backed_strategy_prefers_best_matching_full_download() {
+        let probe = DownloadProbe {
+            total: 32 * 1024 * 1024,
+            range_supported: true,
+            etag: Some("\"etag\"".to_string()),
+            last_modified: Some("Mon, 01 Jan 2024 00:00:00 GMT".to_string()),
+        };
+        let history = vec![
+            BenchHistoryEntry {
+                schema_version: 1,
+                url: "https://example.test/file.bin".to_string(),
+                variant: "seg-c4-s4m".to_string(),
+                mode: "segmented".to_string(),
+                total_bytes: probe.total,
+                segment_size: Some(4 * 1024 * 1024),
+                concurrency: Some(4),
+                download_ms: 1000,
+                avg_mib_s: 20.0,
+                sha256: "hash".to_string(),
+                verification_status: None,
+                verification_trust_decision: None,
+                verification_asset_name: None,
+                verification_file_sha256: None,
+                verification_source: None,
+                verification_source_trust: None,
+                expected_sha256: None,
+                verification_detail: None,
+                verification_evidence_path: None,
+                verification_policy: None,
+                verification_file_disposition: None,
+                etag: probe.etag.clone(),
+                last_modified: probe.last_modified.clone(),
+                recorded_at_epoch_secs: 1,
+            },
+            BenchHistoryEntry {
+                schema_version: 1,
+                url: "https://example.test/file.bin".to_string(),
+                variant: "seg-c8-s4m".to_string(),
+                mode: "segmented".to_string(),
+                total_bytes: probe.total,
+                segment_size: Some(4 * 1024 * 1024),
+                concurrency: Some(8),
+                download_ms: 2000,
+                avg_mib_s: 10.0,
+                sha256: "hash".to_string(),
+                verification_status: None,
+                verification_trust_decision: None,
+                verification_asset_name: None,
+                verification_file_sha256: None,
+                verification_source: None,
+                verification_source_trust: None,
+                expected_sha256: None,
+                verification_detail: None,
+                verification_evidence_path: None,
+                verification_policy: None,
+                verification_file_disposition: None,
+                etag: probe.etag.clone(),
+                last_modified: probe.last_modified.clone(),
+                recorded_at_epoch_secs: 1,
+            },
+        ];
+
+        let strategy = choose_history_backed_strategy(&probe, &history);
+
+        assert_eq!(strategy.variant, "seg-c4-s4m");
+        assert_eq!(strategy.config.unwrap().concurrency, 4);
+        assert_eq!(strategy.config.unwrap().segment_size, 4 * 1024 * 1024);
+        assert_eq!(strategy.history_matches, 2);
+    }
+
+    #[test]
+    fn history_backed_strategy_uses_static_default_without_history() {
+        let probe = DownloadProbe {
+            total: 32 * 1024 * 1024,
+            range_supported: true,
+            etag: None,
+            last_modified: None,
+        };
+
+        let strategy = choose_history_backed_strategy(&probe, &[]);
+
+        assert_eq!(strategy.variant, "seg-c4-s4m");
+        assert_eq!(strategy.config.unwrap().concurrency, SEGMENT_CONCURRENCY);
+        assert_eq!(strategy.config.unwrap().segment_size, SEGMENT_SIZE);
+        assert_eq!(strategy.history_matches, 0);
+    }
 }

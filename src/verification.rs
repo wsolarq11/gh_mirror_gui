@@ -13,18 +13,18 @@ const VERIFICATION_ASSET_RETRY_DELAY_MS: u64 = 100;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct VerificationAsset {
-    pub(crate) name: String,
-    pub(crate) browser_download_url: String,
-    pub(crate) api_url: Option<String>,
+    pub name: String,
+    pub browser_download_url: String,
+    pub api_url: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct DownloadVerificationPlan {
-    pub(crate) asset_name: String,
-    pub(crate) checksum_asset: Option<VerificationAsset>,
-    pub(crate) checksum_signature_asset: Option<VerificationAsset>,
-    pub(crate) provenance_asset: Option<VerificationAsset>,
-    pub(crate) provenance_signature_asset: Option<VerificationAsset>,
+    pub asset_name: String,
+    pub checksum_asset: Option<VerificationAsset>,
+    pub checksum_signature_asset: Option<VerificationAsset>,
+    pub provenance_asset: Option<VerificationAsset>,
+    pub provenance_signature_asset: Option<VerificationAsset>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -72,13 +72,13 @@ impl VerificationTrustDecision {
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct VerificationReport {
-    pub(crate) status: VerificationStatus,
-    pub(crate) asset_name: String,
-    pub(crate) file_sha256: String,
-    pub(crate) expected_sha256: Option<String>,
-    pub(crate) source: Option<String>,
-    pub(crate) source_trust: Option<SourceTrustEvidence>,
-    pub(crate) detail: String,
+    pub status: VerificationStatus,
+    pub asset_name: String,
+    pub file_sha256: String,
+    pub expected_sha256: Option<String>,
+    pub source: Option<String>,
+    pub source_trust: Option<SourceTrustEvidence>,
+    pub detail: String,
 }
 
 impl VerificationReport {
@@ -436,6 +436,7 @@ fn fetch_text_asset(
         (true, Some(api_url)) => (api_url, true),
         _ => (asset.browser_download_url.as_str(), false),
     };
+
     for attempt in 0..=VERIFICATION_ASSET_MAX_RETRIES {
         if attempt > 0 {
             std::thread::sleep(std::time::Duration::from_millis(

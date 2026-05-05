@@ -1,70 +1,23 @@
-mod bench;
-mod download;
-mod history;
-mod releases;
-mod source_trust;
-mod staged_release;
-mod trust_center;
-mod trust_policy;
-mod update_candidate;
-mod verification;
-
-#[cfg(test)]
-use bench::parse_bench_config;
-use bench::{choose_history_backed_strategy, run_bench_download};
+use backend_contract::{
+    AppliedFileDisposition, DownloadControl, ImportedPublisherKeyPin, MismatchFilePolicy,
+    ResolvedRelease, TrustCenterSnapshot, TrustPolicyConfig, UpdateCandidateCheckReport,
+    UpdateCandidateStageReport,
+};
 use directories::UserDirs;
-use download::{
-    build_client, build_effective_url, download_with_strategy, extract_filename, format_speed,
-    probe_download, sha256_file, DownloadControl, DownloadProbe,
-};
-#[cfg(test)]
-use download::{
-    download_segmented, download_single, SegmentedDownloadConfig, SEGMENT_CONCURRENCY, SEGMENT_SIZE,
-};
 use eframe::egui;
 use eframe::Storage;
-#[cfg(test)]
-use history::BenchHistoryEntry;
-use history::VerificationHistoryContext;
-use history::{append_download_history, default_history_path, load_bench_history};
+use gh_mirror_gui::backend_contract;
+use gh_mirror_gui::backend_contract::{BackendClientSettings, DownloadCompletion};
 use notify_rust::Notification;
-use releases::{
-    asset_picker_label, is_github_release_asset_download_url, parse_release_query,
-    resolve_release_assets, ResolvedRelease,
-};
 use reqwest::blocking::Client;
 use rfd::FileDialog;
-use source_trust::{normalize_public_key_pin, trusted_key_fingerprint, ImportedPublisherKeyPin};
-use staged_release::run_staged_release_download_selftest;
 use std::env;
 #[cfg(test)]
 use std::fs;
-#[cfg(test)]
-use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::{Duration, Instant};
-use trust_center::{
-    publisher_key_source_label_for_policy, trust_center_snapshot, TrustCenterSnapshot,
-};
-#[cfg(test)]
-use trust_policy::FileDispositionAction;
-use trust_policy::{
-    apply_file_disposition, file_disposition_summary, open_location_button_label_for_report,
-    plan_file_disposition_for_report, AppliedFileDisposition, MismatchFilePolicy,
-    TrustPolicyConfig, TrustPolicySnapshot,
-};
-use update_candidate::{
-    check_latest_update_candidate, refused_update_candidate_check_report,
-    run_update_candidate_contract_selftest, run_update_candidate_latest_selftest,
-    run_update_candidate_stage_selftest, stage_latest_update_candidate, UpdateCandidateCheckConfig,
-    UpdateCandidateCheckReport, UpdateCandidateStageConfig, UpdateCandidateStageReport,
-};
-use verification::{
-    verification_plan_for_selected_asset, verification_source_summary, verify_downloaded_file,
-    DownloadVerificationPlan, VerificationReport, VerificationStatus,
-};
 
 const RELEASE_PRIVATE_KEY_ENV: &str = "RELEASE_ED25519_PRIVATE_KEY_HEX";
 const LEGACY_RELEASE_PRIVATE_KEY_ENV: &str = "GH_MIRROR_GUI_ED25519_PRIVATE_KEY_HEX";
@@ -75,101 +28,86 @@ const PROVENANCE_ASSET: &str = "release-provenance.json";
 const PROVENANCE_SIGNATURE_ASSET: &str = "release-provenance.json.sig";
 const SIGNATURE_FORMAT: &str = "ed25519-detached-hex";
 
-fn log_error(msg: &str) {
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open("download_error.log")
-    {
-        use std::io::Write;
-        let ts = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        let _ = writeln!(f, "[{}] {}", ts, msg);
-    }
-}
-
 fn format_download_completion_status(
-    report: &VerificationReport,
+    snapshot: &TrustCenterSnapshot,
     disposition: &AppliedFileDisposition,
 ) -> String {
-    let short_hash = report.file_sha256.chars().take(12).collect::<String>();
-    let disposition_summary = file_disposition_summary(disposition);
-    let source_trust = source_trust_status_summary(report);
-    match (report.status.clone(), report.effective_trust_decision()) {
-        (VerificationStatus::Verified, verification::VerificationTrustDecision::Block) => format!(
+    let short_hash = snapshot.file_sha256.chars().take(12).collect::<String>();
+    let disposition_summary = backend_contract::file_disposition_summary(disposition);
+    let source_trust = source_trust_status_summary(snapshot);
+    match (snapshot.hash_status.as_str(), snapshot.policy_verdict.as_str()) {
+        ("VERIFIED", "BLOCK") => format!(
             "❌ Verification BLOCKED · SHA256 matched {} but source authenticity is {} · {} · {}",
-            report.source.as_deref().unwrap_or("verification asset"),
+            snapshot.source_asset.as_str(),
             source_trust,
             disposition_summary,
             "retry or open evidence before trusting this file"
         ),
-        (VerificationStatus::Verified, _) => format!(
+        ("VERIFIED", _) => format!(
             "✅ Download complete · VERIFIED SHA256={} via {} · source {} · {}",
             short_hash,
-            report.source.as_deref().unwrap_or("verification asset"),
+            snapshot.source_asset.as_str(),
             source_trust,
             disposition_summary
         ),
-        (VerificationStatus::Mismatch, _) => format!(
+        ("MISMATCH", _) => format!(
             "❌ Verification BLOCKED · MISMATCH SHA256={} expected {} via {} · {} · retry or open evidence before trusting this file",
             short_hash,
-            report
+            snapshot
                 .expected_sha256
-                .as_deref()
-                .map(|hash| hash.chars().take(12).collect::<String>())
-                .unwrap_or_else(|| "unknown".to_string()),
-            report.source.as_deref().unwrap_or("verification asset"),
+                .as_str()
+                .chars()
+                .take(12)
+                .collect::<String>(),
+            snapshot.source_asset.as_str(),
             disposition_summary
         ),
-        (VerificationStatus::Unknown, _) => format!(
+        ("UNKNOWN", _) => format!(
             "⚠ Verification UNKNOWN risk · SHA256={} · {} · {}",
-            short_hash, report.detail, disposition_summary
+            short_hash,
+            "no matching checksum/provenance could verify this file",
+            disposition_summary
+        ),
+        (other, decision) => format!(
+            "⚠ Verification {} ({}) · SHA256={} · {}",
+            other, decision, short_hash, disposition_summary
         ),
     }
 }
 
-fn format_download_notification_status(report: &VerificationReport) -> String {
-    match (report.status.clone(), report.effective_trust_decision()) {
-        (VerificationStatus::Verified, verification::VerificationTrustDecision::Block) => {
-            "Download blocked (UNTRUSTED SOURCE)".to_string()
-        }
-        (VerificationStatus::Verified, _) => "Download complete (VERIFIED)".to_string(),
-        (VerificationStatus::Mismatch, _) => "Download blocked (MISMATCH)".to_string(),
-        (VerificationStatus::Unknown, _) => {
-            "Download saved with UNKNOWN verification risk".to_string()
-        }
+fn format_download_notification_status(snapshot: &TrustCenterSnapshot) -> String {
+    match (
+        snapshot.hash_status.as_str(),
+        snapshot.policy_verdict.as_str(),
+    ) {
+        ("VERIFIED", "BLOCK") => "Download blocked (UNTRUSTED SOURCE)".to_string(),
+        ("VERIFIED", _) => "Download complete (VERIFIED)".to_string(),
+        ("MISMATCH", _) => "Download blocked (MISMATCH)".to_string(),
+        ("UNKNOWN", _) => "Download saved with UNKNOWN verification risk".to_string(),
+        _ => "Download completed with UNKNOWN verification risk".to_string(),
     }
 }
 
-fn source_trust_status_summary(report: &VerificationReport) -> String {
-    report
-        .source_trust
-        .as_ref()
-        .map(|trust| {
-            let signature = trust
-                .signature_asset_name
-                .as_deref()
-                .map(|asset| format!(" via {asset}"))
-                .unwrap_or_default();
-            let pin = trust
-                .trusted_publisher_key_fingerprint_sha256
-                .as_deref()
-                .map(|fingerprint| {
-                    let short = fingerprint.chars().take(12).collect::<String>();
-                    format!(" key={short}")
-                })
-                .unwrap_or_default();
-            format!(
-                "{} decision={}{}{}",
-                trust.status_label(),
-                trust.decision_label(),
-                signature,
-                pin
-            )
-        })
-        .unwrap_or_else(|| "NOT_APPLICABLE".to_string())
+fn source_trust_status_summary(snapshot: &TrustCenterSnapshot) -> String {
+    let signature = if snapshot.signature_asset != "none" {
+        format!(" via {}", snapshot.signature_asset)
+    } else {
+        String::new()
+    };
+    let pin = if snapshot.publisher_key_fingerprint != "not pinned" {
+        let short = snapshot
+            .publisher_key_fingerprint
+            .chars()
+            .take(12)
+            .collect::<String>();
+        format!(" key={short}")
+    } else {
+        String::new()
+    };
+    format!(
+        "{} decision={}{}{}",
+        snapshot.source_authenticity, snapshot.policy_verdict, signature, pin
+    )
 }
 
 fn render_trust_center_snapshot(ui: &mut egui::Ui, snapshot: &TrustCenterSnapshot) {
@@ -394,7 +332,7 @@ fn render_update_candidate_stage(ui: &mut egui::Ui, report: &UpdateCandidateStag
 fn import_publisher_key_pin_from_path(path: &Path) -> Result<String, String> {
     let text = std::fs::read_to_string(path)
         .map_err(|e| format!("Read publisher public key {}: {e}", path.display()))?;
-    normalize_public_key_pin(&text)
+    backend_contract::normalize_public_key_pin(&text)
 }
 
 fn apply_imported_publisher_key_pin(
@@ -440,15 +378,6 @@ type PublisherKeyImportMessage = (String, Result<ImportedPublisherKeyPin, String
 type UpdateCandidateCheckMessage = UpdateCandidateCheckReport;
 type UpdateCandidateStageMessage = UpdateCandidateStageReport;
 type DownloadResultMessage = Result<DownloadCompletion, String>;
-
-struct DownloadCompletion {
-    original_path: PathBuf,
-    verification: VerificationReport,
-    evidence_path: Option<PathBuf>,
-    policy_snapshot: TrustPolicySnapshot,
-    publisher_key_source_at_decision: String,
-    file_disposition: AppliedFileDisposition,
-}
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct SavedState {
@@ -525,10 +454,8 @@ struct GhMirrorGui {
     // Persisted state
     download_complete_notified: bool,
     last_download_path: Option<PathBuf>,
-    last_verification: Option<VerificationReport>,
+    last_trust_center_snapshot: Option<TrustCenterSnapshot>,
     last_verification_evidence_path: Option<PathBuf>,
-    last_trust_policy_snapshot: Option<TrustPolicySnapshot>,
-    last_publisher_key_source_at_decision: Option<String>,
     last_file_disposition: Option<AppliedFileDisposition>,
 }
 
@@ -560,7 +487,7 @@ impl GhMirrorGui {
                         unknown_keep_file: state.trust_unknown_keep_file,
                         unknown_allow_open: state.trust_unknown_allow_open,
                         mismatch_file_policy: state.trust_mismatch_file_policy,
-                        source_trust: source_trust::SourceTrustPolicyConfig {
+                        source_trust: backend_contract::SourceTrustPolicyConfig {
                             require_trusted_source: state.source_trust_require_signed,
                             trusted_publisher_key: state.source_trust_publisher_key,
                         },
@@ -624,10 +551,8 @@ impl GhMirrorGui {
             update_stage_rx: None,
             download_complete_notified: false,
             last_download_path: None,
-            last_verification: None,
+            last_trust_center_snapshot: None,
             last_verification_evidence_path: None,
-            last_trust_policy_snapshot: None,
-            last_publisher_key_source_at_decision: None,
             last_file_disposition: None,
         }
     }
@@ -696,22 +621,13 @@ impl GhMirrorGui {
             "Checking latest self-update candidate (no install)...".to_string();
         self.update_candidate_rx = Some(rx);
         self.update_candidate_thread = Some(thread::spawn(move || {
-            let report = match build_client(&proxy, 60, allow_invalid_certs) {
-                Ok(client) => check_latest_update_candidate(
-                    &client,
-                    UpdateCandidateCheckConfig {
-                        current_version: env!("CARGO_PKG_VERSION"),
-                        source_trust_policy: &source_trust_policy,
-                        evidence_dir: &evidence_dir,
-                        api_base: None,
-                    },
-                ),
-                Err(e) => refused_update_candidate_check_report(
-                    env!("CARGO_PKG_VERSION"),
-                    format!("self-update client build failed: {e}"),
-                    &evidence_dir,
-                ),
-            };
+            let settings = BackendClientSettings::new(proxy, allow_invalid_certs);
+            let report = backend_contract::run_update_candidate_check(
+                &settings,
+                env!("CARGO_PKG_VERSION"),
+                &source_trust_policy,
+                &evidence_dir,
+            );
             let _ = tx.send(report);
         }));
     }
@@ -732,44 +648,14 @@ impl GhMirrorGui {
             "Staging latest self-update candidate (no install)...".to_string();
         self.update_stage_rx = Some(rx);
         self.update_stage_thread = Some(thread::spawn(move || {
-            let report = match build_client(&proxy, 60, allow_invalid_certs) {
-                Ok(client) => stage_latest_update_candidate(
-                    &client,
-                    UpdateCandidateStageConfig {
-                        current_version: env!("CARGO_PKG_VERSION"),
-                        source_trust_policy: &source_trust_policy,
-                        evidence_dir: &evidence_dir,
-                        stage_root: &stage_root,
-                        api_base: None,
-                    },
-                ),
-                Err(e) => {
-                    let check_report = refused_update_candidate_check_report(
-                        env!("CARGO_PKG_VERSION"),
-                        format!("self-update client build failed: {e}"),
-                        &evidence_dir,
-                    );
-                    UpdateCandidateStageReport {
-                        schema_version: 1,
-                        status: update_candidate::UpdateCandidateStageStatus::Refused,
-                        repo: "wsolarq11/gh_mirror_gui".to_string(),
-                        release_tag: check_report.release_tag.clone(),
-                        release_url: check_report.release_url.clone(),
-                        stage_dir: None,
-                        staged_asset_path: None,
-                        staged_sha256: None,
-                        expected_sha256: None,
-                        publisher_key_fingerprint_sha256: check_report
-                            .publisher_key_fingerprint_sha256()
-                            .map(ToString::to_string),
-                        reason: "self-update client build failed".to_string(),
-                        no_install: true,
-                        check_report,
-                        evidence_path: None,
-                        evidence_write_error: None,
-                    }
-                }
-            };
+            let settings = BackendClientSettings::new(proxy, allow_invalid_certs);
+            let report = backend_contract::run_update_candidate_stage(
+                &settings,
+                env!("CARGO_PKG_VERSION"),
+                &source_trust_policy,
+                &evidence_dir,
+                &stage_root,
+            );
             let _ = tx.send(report);
         }));
     }
@@ -782,24 +668,27 @@ impl GhMirrorGui {
         }
 
         let input = self.url.trim().to_string();
-        let query = match parse_release_query(&input) {
-            Ok(query) => query,
-            Err(e) => {
-                self.release = None;
-                self.selected_release_asset = None;
-                self.release_status = format!("❌ {e}");
-                self.status = self.release_status.clone();
-                return;
-            }
+        let backend_contract::IntentDTO::NeedsAssetPick { query, .. } =
+            backend_contract::resolve_download_intent(&input)
+        else {
+            self.release = None;
+            self.selected_release_asset = None;
+            self.release_status =
+                "❌ GitHub intent did not resolve to a release asset picker input".to_string();
+            self.status = self.release_status.clone();
+            return;
         };
 
         let proxy = self.proxy.clone();
         let allow_invalid_certs = self.allow_invalid_certs;
         let (tx, rx) = mpsc::channel::<ReleaseLookupMessage>();
+        let kind_label = match &query.kind {
+            backend_contract::ReleaseQueryKind::Latest => "latest".to_string(),
+            backend_contract::ReleaseQueryKind::Tag(tag) => format!("tag {tag}"),
+        };
         let status = format!(
-            "Resolving {} {} assets...",
-            query.repo_slug(),
-            query.selector_label()
+            "Resolving {}/{} {kind_label} assets...",
+            query.owner, query.repo
         );
         self.release_status = status.clone();
         self.status = status;
@@ -808,22 +697,17 @@ impl GhMirrorGui {
         self.release_lookup_input = Some(input.clone());
         self.release_lookup_rx = Some(rx);
         self.release_lookup_thread = Some(thread::spawn(move || {
-            let result = match build_client(&proxy, 30, allow_invalid_certs) {
-                Ok(client) => resolve_release_assets(&client, &query),
-                Err(e) => Err(format!("Release resolver client error: {e}")),
-            };
+            let settings = BackendClientSettings::new(proxy, allow_invalid_certs);
+            let result = backend_contract::resolve_release_assets_for_query(&settings, &query);
             let _ = tx.send((input, result));
         }));
     }
 
     fn input_requires_release_asset_choice(&self) -> bool {
-        parse_release_query(&self.url).is_ok() && !is_github_release_asset_download_url(&self.url)
-    }
-
-    fn selected_release_verification_plan(&self) -> Option<DownloadVerificationPlan> {
-        let release = self.release.as_ref()?;
-        let asset_index = self.selected_release_asset?;
-        verification_plan_for_selected_asset(release, asset_index)
+        matches!(
+            backend_contract::resolve_download_intent(&self.url),
+            backend_contract::IntentDTO::NeedsAssetPick { .. }
+        )
     }
 
     fn apply_selected_release_asset(&mut self) -> bool {
@@ -852,7 +736,10 @@ impl GhMirrorGui {
         }
 
         let Some((asset, source_label)) = self.release.as_ref().and_then(|release| {
-            source_trust::publisher_key_asset(&release.assets)
+            release
+                .assets
+                .iter()
+                .find(|asset| asset.name == RELEASE_PUBLIC_KEY_ASSET)
                 .cloned()
                 .map(|asset| {
                     let source_label = format!(
@@ -876,12 +763,9 @@ impl GhMirrorGui {
         self.publisher_key_import_source_label = Some(source_label);
         self.publisher_key_import_rx = Some(rx);
         self.publisher_key_import_thread = Some(thread::spawn(move || {
-            let result = match build_client(&proxy, 30, allow_invalid_certs) {
-                Ok(client) => {
-                    source_trust::import_publisher_key_pin_from_release_asset(&client, &asset)
-                }
-                Err(e) => Err(format!("Publisher key import client error: {e}")),
-            };
+            let settings = BackendClientSettings::new(proxy, allow_invalid_certs);
+            let result =
+                backend_contract::import_publisher_key_from_release_asset(&settings, &asset);
             let _ = tx.send((asset_url, result));
         }));
         self.status = format!("Importing Ed25519 publisher key from {asset_name}...");
@@ -895,6 +779,19 @@ impl GhMirrorGui {
         if self.download_thread.is_some() {
             self.status = String::from("Download already in progress");
             return;
+        }
+
+        match backend_contract::resolve_download_intent(&self.url) {
+            backend_contract::IntentDTO::DirectDownload { spec, .. } => {
+                if spec.url != self.url {
+                    self.url = spec.url;
+                }
+            }
+            backend_contract::IntentDTO::NeedsAssetPick { .. } => {}
+            backend_contract::IntentDTO::Unsupported { reason, .. } => {
+                self.status = format!("❌ {reason}");
+                return;
+            }
         }
         if self.input_requires_release_asset_choice() {
             if self.release_lookup_thread.is_some() {
@@ -916,19 +813,33 @@ impl GhMirrorGui {
             Some(p) => p,
             None => return,
         };
-        let verification_plan = self.selected_release_verification_plan();
-        let asset_name = verification_plan
+
+        let (verification_release, verification_asset_index) =
+            match (self.release.clone(), self.selected_release_asset) {
+                (Some(release), Some(idx))
+                    if release
+                        .assets
+                        .get(idx)
+                        .is_some_and(|asset| asset.browser_download_url == self.url) =>
+                {
+                    (Some(release), Some(idx))
+                }
+                _ => (None, None),
+            };
+
+        let asset_name = verification_release
             .as_ref()
-            .map(|plan| plan.asset_name.clone())
+            .and_then(|release| {
+                verification_asset_index
+                    .and_then(|idx| release.assets.get(idx).map(|asset| asset.name.clone()))
+            })
             .or_else(|| extract_filename(&self.url))
             .unwrap_or_else(|| String::from("download"));
 
         self.download_complete_notified = false;
         self.last_download_path = None;
-        self.last_verification = None;
+        self.last_trust_center_snapshot = None;
         self.last_verification_evidence_path = None;
-        self.last_trust_policy_snapshot = None;
-        self.last_publisher_key_source_at_decision = None;
         self.last_file_disposition = None;
         let control = DownloadControl::new();
         let ctrl = control.clone();
@@ -937,7 +848,10 @@ impl GhMirrorGui {
         let allow_invalid_certs = self.allow_invalid_certs;
         let trust_policy = self.trust_policy.clone();
         let publisher_key_source_at_decision =
-            publisher_key_source_label_for_policy(&trust_policy, &self.publisher_key_source);
+            backend_contract::publisher_key_source_label_for_policy(
+                &trust_policy,
+                &self.publisher_key_source,
+            );
         let history_path = self.effective_history_path();
         let (progress_tx, progress_rx) = mpsc::channel();
         let (result_tx, result_rx) = mpsc::channel::<DownloadResultMessage>();
@@ -947,113 +861,35 @@ impl GhMirrorGui {
         self.progress = 0.0;
         self.speed_text.clear();
         self.elapsed_text.clear();
-        self.status = verification_plan
+        self.status = verification_release
             .as_ref()
-            .map(|plan| format!("Starting download... {}", verification_source_summary(plan)))
+            .and_then(|release| {
+                verification_asset_index.map(|idx| {
+                    backend_contract::verification_source_summary_for_release_asset(release, idx)
+                })
+            })
+            .map(|summary| format!("Starting download... {summary}"))
             .unwrap_or_else(|| String::from("Starting download... verification will be UNKNOWN"));
 
         self.download_thread = Some(thread::spawn(move || {
-            let client = match build_client(&proxy, 3600, allow_invalid_certs) {
-                Ok(c) => c,
-                Err(e) => {
-                    log_error(&format!("build_client error: {}", e));
-                    let _ = progress_tx.send((0, 0, 0.0, 0.0));
-                    let _ = result_tx.send(Err(format!("Client build error: {e}")));
-                    return;
-                }
-            };
-
-            let probe = match probe_download(&client, &effective_url) {
-                Ok(probe) => probe,
-                Err(e) => {
-                    log_error(&format!("probe_download error: {}", e));
-                    DownloadProbe {
-                        total: 0,
-                        range_supported: false,
-                        etag: None,
-                        last_modified: None,
-                    }
-                }
-            };
-            let total = probe.total;
-            let history = load_bench_history(&Some(history_path.clone()), &effective_url, &probe);
-            let strategy = choose_history_backed_strategy(&probe, &history);
-            let save_path_str = save_path.to_string_lossy().to_string();
-            let download_start = Instant::now();
-
-            match download_with_strategy(
-                &client,
-                &effective_url,
-                &save_path_str,
-                &probe,
-                &strategy,
+            let settings = BackendClientSettings::new(proxy, allow_invalid_certs);
+            let result = backend_contract::run_download_contract(
+                &settings,
+                backend_contract::DownloadContractInput {
+                    effective_url,
+                    save_path,
+                    asset_name,
+                    verification_release,
+                    verification_asset_index,
+                    trust_policy,
+                    publisher_key_source_at_decision,
+                    history_path,
+                },
                 &ctrl,
                 &progress_tx,
-            ) {
-                Ok(()) => {
-                    let verification = match verify_downloaded_file(
-                        &client,
-                        &save_path,
-                        &asset_name,
-                        verification_plan.as_ref(),
-                        &trust_policy.source_trust,
-                    ) {
-                        Ok(report) => report,
-                        Err(e) => {
-                            log_error(&format!("verify_downloaded_file error: {}", e));
-                            let _ = result_tx.send(Err(format!(
-                                "Download completed but SHA256 verification failed: {e}"
-                            )));
-                            return;
-                        }
-                    };
-                    let disposition_plan =
-                        plan_file_disposition_for_report(&save_path, &verification, &trust_policy);
-                    let evidence_path = match append_download_history(
-                        &Some(history_path.clone()),
-                        &effective_url,
-                        &save_path,
-                        &probe,
-                        &strategy,
-                        download_start.elapsed(),
-                        Some(VerificationHistoryContext {
-                            report: &verification,
-                            policy: &trust_policy,
-                            file_disposition: &disposition_plan,
-                        }),
-                    ) {
-                        Ok(evidence_path) => evidence_path,
-                        Err(e) => {
-                            log_error(&format!("append_download_history error: {}", e));
-                            None
-                        }
-                    };
-                    let file_disposition = match apply_file_disposition(&disposition_plan) {
-                        Ok(disposition) => disposition,
-                        Err(e) => {
-                            log_error(&format!("apply_file_disposition error: {}", e));
-                            let _ = result_tx.send(Err(format!(
-                                "Download completed but trust policy file disposition failed: {e}"
-                            )));
-                            return;
-                        }
-                    };
-                    let _ = progress_tx.send((total, total, 0.0, 0.0));
-                    let _ = result_tx.send(Ok(DownloadCompletion {
-                        original_path: save_path,
-                        verification,
-                        evidence_path,
-                        policy_snapshot: trust_policy.snapshot(),
-                        publisher_key_source_at_decision,
-                        file_disposition,
-                    }));
-                }
-                Err(e) => {
-                    log_error(&format!("download_file error: {}", e));
-                    let _ = progress_tx.send((0, 0, 0.0, 0.0));
-                    let _ = result_tx.send(Err(e));
-                }
-            }
+            );
+
+            let _ = result_tx.send(result);
         }));
 
         self.control = Some(control);
@@ -1265,15 +1101,12 @@ impl eframe::App for GhMirrorGui {
             match rx.try_recv() {
                 Ok(Ok(completion)) => {
                     self.status = format_download_completion_status(
-                        &completion.verification,
+                        &completion.trust_center,
                         &completion.file_disposition,
                     );
                     self.last_download_path = completion.file_disposition.final_path.clone();
-                    self.last_verification = Some(completion.verification.clone());
+                    self.last_trust_center_snapshot = Some(completion.trust_center.clone());
                     self.last_verification_evidence_path = completion.evidence_path.clone();
-                    self.last_trust_policy_snapshot = Some(completion.policy_snapshot.clone());
-                    self.last_publisher_key_source_at_decision =
-                        Some(completion.publisher_key_source_at_decision.clone());
                     self.last_file_disposition = Some(completion.file_disposition.clone());
                     self.download_thread = None;
                     self.control = None;
@@ -1287,7 +1120,7 @@ impl eframe::App for GhMirrorGui {
                             .unwrap_or(&completion.original_path)
                             .to_string_lossy()
                             .to_string();
-                        let status = format_download_notification_status(&completion.verification);
+                        let status = format_download_notification_status(&completion.trust_center);
                         thread::spawn(move || {
                             let _ = Notification::new()
                                 .summary("gh_mirror_gui")
@@ -1338,7 +1171,10 @@ impl eframe::App for GhMirrorGui {
                 }
                 if url_response.lost_focus()
                     && ui.input(|i| i.key_pressed(egui::Key::Enter))
-                    && parse_release_query(&self.url).is_ok()
+                    && matches!(
+                        backend_contract::resolve_download_intent(&self.url),
+                        backend_contract::IntentDTO::NeedsAssetPick { .. }
+                    )
                 {
                     self.start_release_lookup();
                 }
@@ -1347,7 +1183,10 @@ impl eframe::App for GhMirrorGui {
                         if let Ok(text) = clipboard.get_text() {
                             self.url = text;
                             self.clear_release_lookup_result();
-                            if parse_release_query(&self.url).is_ok() {
+                            if matches!(
+                                backend_contract::resolve_download_intent(&self.url),
+                                backend_contract::IntentDTO::NeedsAssetPick { .. }
+                            ) {
                                 self.start_release_lookup();
                             }
                         }
@@ -1384,8 +1223,10 @@ impl eframe::App for GhMirrorGui {
                         release.owner, release.repo, release.tag_name, release_name
                     ));
 
-                    if let Some(publisher_key_asset) =
-                        source_trust::publisher_key_asset(&release.assets)
+                    if let Some(publisher_key_asset) = release
+                        .assets
+                        .iter()
+                        .find(|asset| asset.name == RELEASE_PUBLIC_KEY_ASSET)
                     {
                         ui.horizontal(|ui| {
                             ui.label(format!("Publisher key: {}", publisher_key_asset.name));
@@ -1451,11 +1292,10 @@ impl eframe::App for GhMirrorGui {
                                 .as_deref()
                                 .unwrap_or("unknown content type");
                             ui.label(format!("{} · {}", asset_picker_label(asset), content_type));
-                            if let Some(plan) =
-                                verification_plan_for_selected_asset(&release, selected_idx)
-                            {
-                                ui.label(verification_source_summary(&plan));
-                            }
+                            ui.label(backend_contract::verification_source_summary_for_release_asset(
+                                &release,
+                                selected_idx,
+                            ));
                             ui.monospace(&asset.browser_download_url);
                         }
                     }
@@ -1635,7 +1475,7 @@ impl eframe::App for GhMirrorGui {
                                     self.trust_policy.source_trust.trusted_publisher_key = pin;
                                     self.publisher_key_source =
                                         format!("local file {}", path.display());
-                                    let fingerprint = trusted_key_fingerprint(
+                                    let fingerprint = backend_contract::trusted_key_fingerprint(
                                         &self.trust_policy.source_trust.trusted_publisher_key,
                                     )
                                     .unwrap_or_else(|| "unknown".to_string());
@@ -1654,7 +1494,7 @@ impl eframe::App for GhMirrorGui {
                         }
                     }
                     if ui.button("Normalize key").clicked() {
-                        match normalize_public_key_pin(
+                        match backend_contract::normalize_public_key_pin(
                             &self.trust_policy.source_trust.trusted_publisher_key,
                         ) {
                             Ok(pin) => {
@@ -1675,13 +1515,14 @@ impl eframe::App for GhMirrorGui {
                         self.publisher_key_source.clear();
                     }
                 });
-                if let Some(fingerprint) =
-                    trusted_key_fingerprint(&self.trust_policy.source_trust.trusted_publisher_key)
+                if let Some(fingerprint) = backend_contract::trusted_key_fingerprint(
+                    &self.trust_policy.source_trust.trusted_publisher_key,
+                )
                 {
                     ui.small(format!("Pinned key SHA256 fingerprint: {fingerprint}"));
                     ui.small(format!(
                         "Pinned key source: {}",
-                        publisher_key_source_label_for_policy(
+                        backend_contract::publisher_key_source_label_for_policy(
                             &self.trust_policy,
                             &self.publisher_key_source
                         )
@@ -1779,13 +1620,10 @@ impl eframe::App for GhMirrorGui {
                 }
             });
 
-            if let Some(report) = self.last_verification.clone() {
+            if let Some(snapshot) = self.last_trust_center_snapshot.clone() {
                 ui.horizontal(|ui| {
-                    match (report.status.clone(), report.effective_trust_decision()) {
-                        (
-                            VerificationStatus::Verified,
-                            verification::VerificationTrustDecision::Block,
-                        ) => {
+                    match (snapshot.hash_status.as_str(), snapshot.policy_verdict.as_str()) {
+                        ("VERIFIED", "BLOCK") => {
                             ui.colored_label(
                                 egui::Color32::from_rgb(220, 70, 70),
                                 "Blocked: checksum matched, but verification source signature is not trusted.",
@@ -1796,7 +1634,7 @@ impl eframe::App for GhMirrorGui {
                                 self.start_download();
                             }
                         }
-                        (VerificationStatus::Mismatch, _) => {
+                        ("MISMATCH", _) => {
                             ui.colored_label(
                                 egui::Color32::from_rgb(220, 70, 70),
                                 "Blocked: downloaded file does not match trusted checksum.",
@@ -1807,18 +1645,19 @@ impl eframe::App for GhMirrorGui {
                                 self.start_download();
                             }
                         }
-                        (VerificationStatus::Unknown, _) => {
+                        ("UNKNOWN", _) => {
                             ui.colored_label(
                                 egui::Color32::from_rgb(220, 160, 0),
                                 "Risk: no matching checksum/provenance could verify this file.",
                             );
                         }
-                        (VerificationStatus::Verified, _) => {
+                        ("VERIFIED", _) => {
                             ui.colored_label(
                                 egui::Color32::from_rgb(0, 180, 0),
                                 "Trusted: checksum/provenance hash and source policy passed.",
                             );
                         }
+                        _ => {}
                     }
 
                     if let Some(evidence_path) = &self.last_verification_evidence_path {
@@ -1837,8 +1676,9 @@ impl eframe::App for GhMirrorGui {
                     if let (Some(download_path), Some(disposition)) =
                         (&self.last_download_path, &self.last_file_disposition)
                     {
-                        if let Some(label) = open_location_button_label_for_report(
-                            &report,
+                        if let Some(label) = backend_contract::open_location_button_label_for_facts(
+                            snapshot.hash_status.as_str(),
+                            snapshot.policy_verdict.as_str(),
                             disposition,
                             &self.trust_policy,
                         ) {
@@ -1853,21 +1693,10 @@ impl eframe::App for GhMirrorGui {
                 });
                 ui.small(format!(
                     "Source authenticity: {}",
-                    source_trust_status_summary(&report)
+                    source_trust_status_summary(&snapshot)
                 ));
                 if let Some(disposition) = &self.last_file_disposition {
-                    ui.small(file_disposition_summary(disposition));
-                    let policy_snapshot = self
-                        .last_trust_policy_snapshot
-                        .clone()
-                        .unwrap_or_else(|| self.trust_policy.snapshot());
-                    let snapshot = trust_center_snapshot(
-                        &report,
-                        self.last_verification_evidence_path.as_deref(),
-                        disposition,
-                        &policy_snapshot,
-                        self.last_publisher_key_source_at_decision.as_deref(),
-                    );
+                    ui.small(backend_contract::file_disposition_summary(disposition));
                     render_trust_center_snapshot(ui, &snapshot);
                 }
             }
@@ -1898,10 +1727,73 @@ impl eframe::App for GhMirrorGui {
 fn history_path_from_setting(value: &str) -> PathBuf {
     let trimmed = value.trim();
     if trimmed.is_empty() {
-        default_history_path()
+        backend_contract::default_history_path()
     } else {
         PathBuf::from(trimmed)
     }
+}
+
+fn extract_filename(url: &str) -> Option<String> {
+    let parts: Vec<&str> = url.rsplitn(2, '/').collect();
+    if parts.len() >= 2 && !parts[0].is_empty() {
+        Some(parts[0].to_string())
+    } else {
+        None
+    }
+}
+
+fn build_effective_url(mirror_url: &str, raw_url: &str) -> String {
+    if mirror_url.is_empty() {
+        raw_url.to_string()
+    } else {
+        format!("{}{}", mirror_url, raw_url)
+    }
+}
+
+fn format_speed(speed_kbps: f64) -> String {
+    if speed_kbps > 1024.0 {
+        format!("{:.1} MB/s", speed_kbps / 1024.0)
+    } else if speed_kbps > 1.0 {
+        format!("{:.0} KB/s", speed_kbps)
+    } else {
+        format!("{:.1} B/s", speed_kbps * 1024.0)
+    }
+}
+
+fn sha256_file(path: &PathBuf) -> Result<String, String> {
+    use sha2::{Digest, Sha256};
+    const HASH_BUFFER_SIZE: usize = 256 * 1024;
+
+    let mut file = std::fs::File::open(path).map_err(|e| format!("Open hash input error: {e}"))?;
+    let mut hasher = Sha256::new();
+    let mut buf = vec![0u8; HASH_BUFFER_SIZE];
+
+    loop {
+        let n = std::io::Read::read(&mut file, &mut buf)
+            .map_err(|e| format!("Hash read error: {e}"))?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+
+    Ok(format!("{:X}", hasher.finalize()))
+}
+
+fn format_asset_size(bytes: u64) -> String {
+    if bytes >= 1024 * 1024 * 1024 {
+        format!("{:.2} GiB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
+    } else if bytes >= 1024 * 1024 {
+        format!("{:.1} MiB", bytes as f64 / (1024.0 * 1024.0))
+    } else if bytes >= 1024 {
+        format!("{:.1} KiB", bytes as f64 / 1024.0)
+    } else {
+        format!("{bytes} B")
+    }
+}
+
+fn asset_picker_label(asset: &backend_contract::ReleaseAsset) -> String {
+    format!("{} ({})", asset.name, format_asset_size(asset.size))
 }
 
 fn latency_color(ms: f64) -> egui::Color32 {
@@ -2023,8 +1915,8 @@ fn run_release_signing_doctor(args: &[String]) -> Result<(), String> {
     }
 
     let (private_key, private_key_env) = load_release_private_key_seed()?;
-    let public_key = source_trust::public_key_from_private_seed(&private_key)?;
-    let fingerprint = trusted_key_fingerprint(&public_key)
+    let public_key = backend_contract::public_key_from_private_seed(&private_key)?;
+    let fingerprint = backend_contract::trusted_key_fingerprint(&public_key)
         .ok_or_else(|| "derived Ed25519 public key fingerprint failed".to_string())?;
 
     std::fs::create_dir_all(&fixture_dir).map_err(|e| format!("Create fixture dir error: {e}"))?;
@@ -2037,10 +1929,10 @@ fn run_release_signing_doctor(args: &[String]) -> Result<(), String> {
         "  gh_mirror_gui.exe\n"
     );
     write_text_file(&source_path, fixture_text)?;
-    let signature = source_trust::sign_ed25519_detached(fixture_text.as_bytes(), &private_key)?;
+    let signature = backend_contract::sign_ed25519_detached(fixture_text.as_bytes(), &private_key)?;
     write_text_file(&signature_path, &format!("{signature}\n"))?;
     write_text_file(&public_key_path, &format!("{public_key}\n"))?;
-    source_trust::verify_ed25519_detached(fixture_text.as_bytes(), &signature, &public_key)?;
+    backend_contract::verify_ed25519_detached(fixture_text.as_bytes(), &signature, &public_key)?;
 
     let report = serde_json::json!({
         "schema_version": 1,
@@ -2111,7 +2003,7 @@ fn run_sign_verification_source(args: &[String]) -> Result<(), String> {
     let (private_key, _) = load_release_private_key_seed()?;
     let source_bytes =
         std::fs::read(&source).map_err(|e| format!("Read source asset error: {e}"))?;
-    let signature = source_trust::sign_ed25519_detached(&source_bytes, &private_key)?;
+    let signature = backend_contract::sign_ed25519_detached(&source_bytes, &private_key)?;
     if let Some(parent) = out.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("Create signature dir error: {e}"))?;
     }
@@ -2185,9 +2077,9 @@ fn run_verify_verification_source(args: &[String]) -> Result<(), String> {
             "--public-key".to_string(),
         )
     };
-    let public_key = normalize_public_key_pin(&public_key_text)?;
-    source_trust::verify_ed25519_detached(&source_bytes, signature_text.trim(), &public_key)?;
-    let fingerprint = trusted_key_fingerprint(&public_key)
+    let public_key = backend_contract::normalize_public_key_pin(&public_key_text)?;
+    backend_contract::verify_ed25519_detached(&source_bytes, signature_text.trim(), &public_key)?;
+    let fingerprint = backend_contract::trusted_key_fingerprint(&public_key)
         .ok_or_else(|| "publisher key fingerprint failed".to_string())?;
     let source_sha256 = sha256_file(&source)?;
 
@@ -2219,6 +2111,43 @@ fn run_verify_verification_source(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+fn run_resolve_download_intent(args: &[String]) -> Result<(), String> {
+    let mut input = None;
+    let mut json_out = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--input" => {
+                i += 1;
+                input = args.get(i).cloned();
+            }
+            "--json" => {
+                i += 1;
+                json_out = Some(
+                    args.get(i)
+                        .map(PathBuf::from)
+                        .ok_or_else(|| "--json requires a path".to_string())?,
+                );
+            }
+            other if input.is_none() && !other.starts_with("--") => {
+                input = Some(other.to_string());
+            }
+            other => return Err(format!("unknown --resolve-download-intent option: {other}")),
+        }
+        i += 1;
+    }
+
+    let input = input.ok_or_else(|| "--input is required".to_string())?;
+    let intent = backend_contract::resolve_download_intent(&input);
+    let pretty = serde_json::to_string_pretty(&intent)
+        .map_err(|e| format!("Serialize intent JSON error: {e}"))?;
+    if let Some(path) = json_out {
+        write_text_file(&path, &format!("{pretty}\n"))?;
+    }
+    println!("{pretty}");
+    Ok(())
+}
+
 fn main() -> Result<(), eframe::Error> {
     let args = env::args().skip(1).collect::<Vec<_>>();
     if args.first().map(|s| s.as_str()) == Some("--release-signing-doctor") {
@@ -2237,6 +2166,14 @@ fn main() -> Result<(), eframe::Error> {
         return Ok(());
     }
 
+    if args.first().map(|s| s.as_str()) == Some("--resolve-download-intent") {
+        if let Err(e) = run_resolve_download_intent(&args[1..]) {
+            eprintln!("resolve download intent failed: {e}");
+            std::process::exit(2);
+        }
+        return Ok(());
+    }
+
     if args.first().map(|s| s.as_str()) == Some("--verify-verification-source") {
         if let Err(e) = run_verify_verification_source(&args[1..]) {
             eprintln!("verify verification source failed: {e}");
@@ -2246,7 +2183,7 @@ fn main() -> Result<(), eframe::Error> {
     }
 
     if args.first().map(|s| s.as_str()) == Some("--bench-download") {
-        if let Err(e) = run_bench_download(&args[1..]) {
+        if let Err(e) = backend_contract::run_bench_download(&args[1..]) {
             eprintln!("benchmark failed: {e}");
             std::process::exit(2);
         }
@@ -2254,7 +2191,7 @@ fn main() -> Result<(), eframe::Error> {
     }
 
     if args.first().map(|s| s.as_str()) == Some("--staged-release-download-selftest") {
-        if let Err(e) = run_staged_release_download_selftest(&args[1..]) {
+        if let Err(e) = backend_contract::run_staged_release_download_selftest(&args[1..]) {
             eprintln!("staged release download selftest failed: {e}");
             std::process::exit(2);
         }
@@ -2262,7 +2199,7 @@ fn main() -> Result<(), eframe::Error> {
     }
 
     if args.first().map(|s| s.as_str()) == Some("--update-candidate-contract-selftest") {
-        if let Err(e) = run_update_candidate_contract_selftest(&args[1..]) {
+        if let Err(e) = backend_contract::run_update_candidate_contract_selftest(&args[1..]) {
             eprintln!("update candidate contract selftest failed: {e}");
             std::process::exit(2);
         }
@@ -2270,7 +2207,7 @@ fn main() -> Result<(), eframe::Error> {
     }
 
     if args.first().map(|s| s.as_str()) == Some("--update-candidate-latest-selftest") {
-        if let Err(e) = run_update_candidate_latest_selftest(&args[1..]) {
+        if let Err(e) = backend_contract::run_update_candidate_latest_selftest(&args[1..]) {
             eprintln!("update candidate latest selftest failed: {e}");
             std::process::exit(2);
         }
@@ -2278,7 +2215,7 @@ fn main() -> Result<(), eframe::Error> {
     }
 
     if args.first().map(|s| s.as_str()) == Some("--update-candidate-stage-selftest") {
-        if let Err(e) = run_update_candidate_stage_selftest(&args[1..]) {
+        if let Err(e) = backend_contract::run_update_candidate_stage_selftest(&args[1..]) {
             eprintln!("update candidate stage selftest failed: {e}");
             std::process::exit(2);
         }
@@ -2301,8 +2238,7 @@ fn main() -> Result<(), eframe::Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::TcpListener;
-    use std::sync::mpsc;
+    use backend_contract::FileDispositionAction;
 
     fn unique_test_path(name: &str) -> PathBuf {
         let nonce = std::time::SystemTime::now()
@@ -2326,8 +2262,8 @@ mod tests {
         let private_key = "1111111111111111111111111111111111111111111111111111111111111111";
         let source_bytes = b"release verification source bytes";
         fs::write(&source, source_bytes).unwrap();
-        let signature = source_trust::sign_ed25519_detached(source_bytes, private_key).unwrap();
-        let public_key = source_trust::public_key_from_private_seed(private_key).unwrap();
+        let signature = backend_contract::sign_ed25519_detached(source_bytes, private_key).unwrap();
+        let public_key = backend_contract::public_key_from_private_seed(private_key).unwrap();
         fs::write(&signature_path, format!("{signature}\n")).unwrap();
         fs::write(&public_key_path, format!("ed25519:{public_key}\n")).unwrap();
 
@@ -2368,9 +2304,10 @@ mod tests {
         let private_key = "1111111111111111111111111111111111111111111111111111111111111111";
         let source_bytes = b"release verification source bytes";
         fs::write(&source, source_bytes).unwrap();
-        let mut signature = source_trust::sign_ed25519_detached(source_bytes, private_key).unwrap();
+        let mut signature =
+            backend_contract::sign_ed25519_detached(source_bytes, private_key).unwrap();
         signature.replace_range(0..2, "00");
-        let public_key = source_trust::public_key_from_private_seed(private_key).unwrap();
+        let public_key = backend_contract::public_key_from_private_seed(private_key).unwrap();
         fs::write(&signature_path, format!("{signature}\n")).unwrap();
 
         let err = run_verify_verification_source(&[
@@ -2386,167 +2323,6 @@ mod tests {
 
         let _ = fs::remove_file(source);
         let _ = fs::remove_file(signature_path);
-    }
-
-    fn serve_once(body: Vec<u8>) -> (String, thread::JoinHandle<()>) {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let handle = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            let mut buf = [0u8; 2048];
-            let n = stream.read(&mut buf).unwrap();
-            let req = String::from_utf8_lossy(&buf[..n]);
-
-            let range_start = req
-                .lines()
-                .find_map(|line| {
-                    let (name, value) = line.split_once(':')?;
-                    if name.eq_ignore_ascii_case("range") {
-                        value.trim().strip_prefix("bytes=")?.strip_suffix('-')
-                    } else {
-                        None
-                    }
-                })
-                .and_then(|start| start.parse::<usize>().ok())
-                .unwrap_or(0);
-
-            if range_start > 0 {
-                let payload = &body[range_start..];
-                let header = format!(
-                    "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {}-{}/{}\r\nConnection: close\r\n\r\n",
-                    payload.len(),
-                    range_start,
-                    body.len() - 1,
-                    body.len()
-                );
-                stream.write_all(header.as_bytes()).unwrap();
-                stream.write_all(payload).unwrap();
-            } else {
-                let header = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                    body.len()
-                );
-                stream.write_all(header.as_bytes()).unwrap();
-                stream.write_all(&body).unwrap();
-            }
-        });
-
-        (format!("http://{addr}/file.bin"), handle)
-    }
-
-    fn parse_range(req: &str, body_len: usize) -> Option<(usize, usize)> {
-        req.lines()
-            .find_map(|line| {
-                let (name, value) = line.split_once(':')?;
-                if name.eq_ignore_ascii_case("range") {
-                    value.trim().strip_prefix("bytes=")
-                } else {
-                    None
-                }
-            })
-            .and_then(|range| {
-                let (start, end) = range.split_once('-')?;
-                let start = start.parse::<usize>().ok()?;
-                let end = if end.is_empty() {
-                    body_len.checked_sub(1)?
-                } else {
-                    end.parse::<usize>().ok()?
-                };
-                Some((start, end.min(body_len - 1)))
-            })
-    }
-
-    fn serve_range_requests(
-        body: Vec<u8>,
-        expected_requests: usize,
-    ) -> (String, thread::JoinHandle<()>) {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let handle = thread::spawn(move || {
-            for _ in 0..expected_requests {
-                let (mut stream, _) = listener.accept().unwrap();
-                let mut buf = [0u8; 4096];
-                let n = stream.read(&mut buf).unwrap();
-                let req = String::from_utf8_lossy(&buf[..n]);
-                let method = req
-                    .lines()
-                    .next()
-                    .and_then(|line| line.split_whitespace().next())
-                    .unwrap_or("GET");
-
-                if method == "HEAD" {
-                    let header = format!(
-                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nAccept-Ranges: bytes\r\nETag: \"test-etag\"\r\nLast-Modified: Mon, 01 Jan 2024 00:00:00 GMT\r\nConnection: close\r\n\r\n",
-                        body.len()
-                    );
-                    stream.write_all(header.as_bytes()).unwrap();
-                    continue;
-                }
-
-                if let Some((start, end)) = parse_range(&req, body.len()) {
-                    let payload = &body[start..=end];
-                    let header = format!(
-                        "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {}-{}/{}\r\nAccept-Ranges: bytes\r\nETag: \"test-etag\"\r\nLast-Modified: Mon, 01 Jan 2024 00:00:00 GMT\r\nConnection: close\r\n\r\n",
-                        payload.len(),
-                        start,
-                        end,
-                        body.len()
-                    );
-                    stream.write_all(header.as_bytes()).unwrap();
-                    stream.write_all(payload).unwrap();
-                } else {
-                    let header = format!(
-                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                        body.len()
-                    );
-                    stream.write_all(header.as_bytes()).unwrap();
-                    stream.write_all(&body).unwrap();
-                }
-            }
-        });
-
-        (format!("http://{addr}/file.bin"), handle)
-    }
-
-    fn serve_ignore_range_once(body: Vec<u8>) -> (String, thread::JoinHandle<()>) {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let handle = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            let mut buf = [0u8; 2048];
-            let _ = stream.read(&mut buf).unwrap();
-            let header = format!(
-                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                body.len()
-            );
-            stream.write_all(header.as_bytes()).unwrap();
-            stream.write_all(&body).unwrap();
-        });
-
-        (format!("http://{addr}/file.bin"), handle)
-    }
-
-    fn serve_drop_then_once(body: Vec<u8>) -> (String, thread::JoinHandle<()>) {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let handle = thread::spawn(move || {
-            let (mut dropped_stream, _) = listener.accept().unwrap();
-            let mut buf = [0u8; 256];
-            let _ = dropped_stream.read(&mut buf);
-            drop(dropped_stream);
-
-            let (mut stream, _) = listener.accept().unwrap();
-            let mut buf = [0u8; 2048];
-            let _ = stream.read(&mut buf).unwrap();
-            let header = format!(
-                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                body.len()
-            );
-            stream.write_all(header.as_bytes()).unwrap();
-            stream.write_all(&body).unwrap();
-        });
-
-        (format!("http://{addr}/file.bin"), handle)
     }
 
     #[test]
@@ -2571,12 +2347,6 @@ mod tests {
         assert_eq!(format_speed(0.5), "512.0 B/s");
         assert_eq!(format_speed(512.0), "512 KB/s");
         assert_eq!(format_speed(2048.0), "2.0 MB/s");
-    }
-
-    #[test]
-    fn client_builder_rejects_invalid_proxy_url() {
-        let err = build_client("http://127.0.0.1:abc", 5, false).unwrap_err();
-        assert!(err.contains("Invalid proxy URL"));
     }
 
     #[test]
@@ -2621,14 +2391,14 @@ mod tests {
     #[test]
     fn publisher_key_import_accepts_release_public_key_asset() {
         let private_key = "1111111111111111111111111111111111111111111111111111111111111111";
-        let public_key = source_trust::public_key_from_private_seed(private_key).unwrap();
+        let public_key = backend_contract::public_key_from_private_seed(private_key).unwrap();
         let path = unique_test_path("publisher-key.ed25519.pub");
         fs::write(&path, format!("ed25519:{public_key}\r\n")).unwrap();
 
         let imported_pin = import_publisher_key_pin_from_path(&path).unwrap();
 
         assert_eq!(imported_pin, public_key);
-        assert!(trusted_key_fingerprint(&imported_pin).is_some());
+        assert!(backend_contract::trusted_key_fingerprint(&imported_pin).is_some());
 
         let _ = fs::remove_file(path);
     }
@@ -2636,8 +2406,8 @@ mod tests {
     #[test]
     fn publisher_key_import_result_updates_trust_policy_pin_and_status() {
         let private_key = "1111111111111111111111111111111111111111111111111111111111111111";
-        let public_key = source_trust::public_key_from_private_seed(private_key).unwrap();
-        let fingerprint = trusted_key_fingerprint(&public_key).unwrap();
+        let public_key = backend_contract::public_key_from_private_seed(private_key).unwrap();
+        let fingerprint = backend_contract::trusted_key_fingerprint(&public_key).unwrap();
         let imported = ImportedPublisherKeyPin {
             public_key: public_key.clone(),
             fingerprint_sha256: fingerprint.clone(),
@@ -2664,7 +2434,10 @@ mod tests {
 
     #[test]
     fn history_path_setting_uses_default_when_blank_and_custom_when_set() {
-        assert_eq!(history_path_from_setting("  "), default_history_path());
+        assert_eq!(
+            history_path_from_setting("  "),
+            backend_contract::default_history_path()
+        );
         assert_eq!(
             history_path_from_setting(r"C:\Evidence\bench-history.jsonl"),
             PathBuf::from(r"C:\Evidence\bench-history.jsonl")
@@ -2672,50 +2445,45 @@ mod tests {
     }
 
     #[test]
-    fn bench_config_accepts_explicit_unsafe_tls_flag() {
-        let config = parse_bench_config(&[
-            "--url".to_string(),
-            "https://example.test/file.bin".to_string(),
-            "--out".to_string(),
-            "target/test.bin".to_string(),
-            "--allow-invalid-certs".to_string(),
-        ])
-        .unwrap();
-        assert!(config.allow_invalid_certs);
-    }
-
-    #[test]
     fn completion_status_makes_mismatch_blocking_and_unknown_risky() {
         let hash = "A9BDB5AE91B153ED8E04513CA9322B4445A91D3BE8DD2695A8F1C206C9937CCC";
-        let verified = VerificationReport {
-            status: VerificationStatus::Verified,
-            asset_name: "app.exe".to_string(),
-            file_sha256: hash.to_string(),
-            expected_sha256: Some(hash.to_string()),
-            source: Some("SHA256SUMS.txt".to_string()),
-            source_trust: None,
-            detail: "SHA256 matched SHA256SUMS.txt".to_string(),
-        };
-        let mismatch = VerificationReport {
-            status: VerificationStatus::Mismatch,
-            asset_name: "app.exe".to_string(),
-            file_sha256: hash.to_string(),
-            expected_sha256: Some(
-                "B9BDB5AE91B153ED8E04513CA9322B4445A91D3BE8DD2695A8F1C206C9937CCC".to_string(),
-            ),
-            source: Some("SHA256SUMS.txt".to_string()),
-            source_trust: None,
-            detail: "SHA256 mismatch against SHA256SUMS.txt".to_string(),
-        };
-        let unknown = VerificationReport {
-            status: VerificationStatus::Unknown,
-            asset_name: "app.exe".to_string(),
-            file_sha256: hash.to_string(),
-            expected_sha256: None,
-            source: None,
-            source_trust: None,
-            detail: "No checksum/provenance assets were detected".to_string(),
-        };
+
+        fn mk_snapshot(
+            hash: &str,
+            hash_status: &str,
+            policy_verdict: &str,
+            expected_sha256: &str,
+            source_authenticity: &str,
+        ) -> TrustCenterSnapshot {
+            TrustCenterSnapshot {
+                downloaded_asset: "app.exe".to_string(),
+                hash_status: hash_status.to_string(),
+                file_sha256: hash.to_string(),
+                expected_sha256: expected_sha256.to_string(),
+                source_authenticity: source_authenticity.to_string(),
+                source_trust_detail: "n/a".to_string(),
+                source_asset: "SHA256SUMS.txt".to_string(),
+                signature_asset: "none".to_string(),
+                publisher_key_fingerprint: "not pinned".to_string(),
+                publisher_key_source: "not recorded".to_string(),
+                policy_verdict: policy_verdict.to_string(),
+                policy_at_decision: "n/a".to_string(),
+                evidence_path: "not recorded".to_string(),
+                evidence_access: "not recorded".to_string(),
+                file_disposition: "n/a".to_string(),
+                final_path: "n/a".to_string(),
+            }
+        }
+
+        let verified = mk_snapshot(hash, "VERIFIED", "TRUSTED", hash, "NOT_APPLICABLE");
+        let mismatch = mk_snapshot(
+            hash,
+            "MISMATCH",
+            "BLOCK",
+            "B9BDB5AE91B153ED8E04513CA9322B4445A91D3BE8DD2695A8F1C206C9937CCC",
+            "NOT_APPLICABLE",
+        );
+        let unknown = mk_snapshot(hash, "UNKNOWN", "RISK", "not available", "NOT_APPLICABLE");
         let kept = AppliedFileDisposition {
             action: FileDispositionAction::Keep,
             original_path: PathBuf::from("app.exe"),
@@ -2745,23 +2513,23 @@ mod tests {
     #[test]
     fn completion_status_blocks_untrusted_signed_source() {
         let hash = "A9BDB5AE91B153ED8E04513CA9322B4445A91D3BE8DD2695A8F1C206C9937CCC";
-        let report = VerificationReport {
-            status: VerificationStatus::Verified,
-            asset_name: "app.exe".to_string(),
+        let report = TrustCenterSnapshot {
+            downloaded_asset: "app.exe".to_string(),
+            hash_status: "VERIFIED".to_string(),
             file_sha256: hash.to_string(),
-            expected_sha256: Some(hash.to_string()),
-            source: Some("SHA256SUMS.txt".to_string()),
-            source_trust: Some(source_trust::SourceTrustEvidence {
-                schema_version: 1,
-                status: source_trust::SourceAuthenticityStatus::BadSignature,
-                decision: source_trust::SourceTrustDecision::Block,
-                required: false,
-                source_asset_name: Some("SHA256SUMS.txt".to_string()),
-                signature_asset_name: Some("SHA256SUMS.txt.sig".to_string()),
-                trusted_publisher_key_fingerprint_sha256: Some("ABCDEF".to_string()),
-                detail: "bad signature".to_string(),
-            }),
-            detail: "SHA256 matched SHA256SUMS.txt".to_string(),
+            expected_sha256: hash.to_string(),
+            source_authenticity: "BAD_SIGNATURE".to_string(),
+            source_trust_detail: "bad signature".to_string(),
+            source_asset: "SHA256SUMS.txt".to_string(),
+            signature_asset: "SHA256SUMS.txt.sig".to_string(),
+            publisher_key_fingerprint: "ABCDEF".to_string(),
+            publisher_key_source: "n/a".to_string(),
+            policy_verdict: "BLOCK".to_string(),
+            policy_at_decision: "n/a".to_string(),
+            evidence_path: "not recorded".to_string(),
+            evidence_access: "not recorded".to_string(),
+            file_disposition: "n/a".to_string(),
+            final_path: "n/a".to_string(),
         };
         let quarantined = AppliedFileDisposition {
             action: FileDispositionAction::Quarantine,
@@ -2778,278 +2546,5 @@ mod tests {
             format_download_notification_status(&report),
             "Download blocked (UNTRUSTED SOURCE)"
         );
-    }
-
-    #[test]
-    fn history_backed_strategy_prefers_best_matching_full_download() {
-        let probe = DownloadProbe {
-            total: 32 * 1024 * 1024,
-            range_supported: true,
-            etag: Some("\"etag\"".to_string()),
-            last_modified: Some("Mon, 01 Jan 2024 00:00:00 GMT".to_string()),
-        };
-        let history = vec![
-            BenchHistoryEntry {
-                schema_version: 1,
-                url: "https://example.test/file.bin".to_string(),
-                variant: "seg-c4-s4m".to_string(),
-                mode: "segmented".to_string(),
-                total_bytes: probe.total,
-                segment_size: Some(4 * 1024 * 1024),
-                concurrency: Some(4),
-                download_ms: 1000,
-                avg_mib_s: 20.0,
-                sha256: "hash".to_string(),
-                verification_status: None,
-                verification_trust_decision: None,
-                verification_asset_name: None,
-                verification_file_sha256: None,
-                verification_source: None,
-                verification_source_trust: None,
-                expected_sha256: None,
-                verification_detail: None,
-                verification_evidence_path: None,
-                verification_policy: None,
-                verification_file_disposition: None,
-                etag: probe.etag.clone(),
-                last_modified: probe.last_modified.clone(),
-                recorded_at_epoch_secs: 1,
-            },
-            BenchHistoryEntry {
-                schema_version: 1,
-                url: "https://example.test/file.bin".to_string(),
-                variant: "seg-c8-s4m".to_string(),
-                mode: "segmented".to_string(),
-                total_bytes: probe.total,
-                segment_size: Some(4 * 1024 * 1024),
-                concurrency: Some(8),
-                download_ms: 2000,
-                avg_mib_s: 10.0,
-                sha256: "hash".to_string(),
-                verification_status: None,
-                verification_trust_decision: None,
-                verification_asset_name: None,
-                verification_file_sha256: None,
-                verification_source: None,
-                verification_source_trust: None,
-                expected_sha256: None,
-                verification_detail: None,
-                verification_evidence_path: None,
-                verification_policy: None,
-                verification_file_disposition: None,
-                etag: probe.etag.clone(),
-                last_modified: probe.last_modified.clone(),
-                recorded_at_epoch_secs: 1,
-            },
-        ];
-
-        let strategy = choose_history_backed_strategy(&probe, &history);
-
-        assert_eq!(strategy.variant, "seg-c4-s4m");
-        assert_eq!(strategy.config.unwrap().concurrency, 4);
-        assert_eq!(strategy.config.unwrap().segment_size, 4 * 1024 * 1024);
-        assert_eq!(strategy.history_matches, 2);
-    }
-
-    #[test]
-    fn history_backed_strategy_uses_static_default_without_history() {
-        let probe = DownloadProbe {
-            total: 32 * 1024 * 1024,
-            range_supported: true,
-            etag: None,
-            last_modified: None,
-        };
-
-        let strategy = choose_history_backed_strategy(&probe, &[]);
-
-        assert_eq!(strategy.variant, "seg-c4-s4m");
-        assert_eq!(strategy.config.unwrap().concurrency, SEGMENT_CONCURRENCY);
-        assert_eq!(strategy.config.unwrap().segment_size, SEGMENT_SIZE);
-        assert_eq!(strategy.history_matches, 0);
-    }
-
-    #[test]
-    fn probe_download_detects_range_support_and_metadata() {
-        let body = b"range probe payload".to_vec();
-        let (url, server) = serve_range_requests(body.clone(), 2);
-        let client = Client::builder()
-            .timeout(Duration::from_secs(5))
-            .build()
-            .unwrap();
-
-        let probe = probe_download(&client, &url).unwrap();
-
-        server.join().unwrap();
-        assert_eq!(probe.total, body.len() as u64);
-        assert!(probe.range_supported);
-        assert_eq!(probe.etag, Some("\"test-etag\"".to_string()));
-        assert_eq!(
-            probe.last_modified,
-            Some("Mon, 01 Jan 2024 00:00:00 GMT".to_string())
-        );
-    }
-
-    #[test]
-    fn download_single_creates_new_temp_file_with_write_access() {
-        let body = b"fresh download payload".to_vec();
-        let (url, server) = serve_once(body.clone());
-        let save_path = unique_test_path("fresh.bin");
-        let client = Client::builder()
-            .timeout(Duration::from_secs(5))
-            .build()
-            .unwrap();
-        let ctrl = DownloadControl::new();
-        let (tx, rx) = mpsc::channel();
-
-        download_single(
-            &client,
-            &url,
-            save_path.to_str().unwrap(),
-            body.len() as u64,
-            &ctrl,
-            &tx,
-        )
-        .unwrap();
-
-        server.join().unwrap();
-        assert_eq!(fs::read(&save_path).unwrap(), body);
-        assert!(rx
-            .try_iter()
-            .any(|(downloaded, total, _, _)| downloaded > 0 && total == body.len() as u64));
-        assert!(!save_path.with_extension("bin.part").exists());
-        let _ = fs::remove_file(save_path);
-    }
-
-    #[test]
-    fn download_single_retries_transient_request_send_failure() {
-        let body = b"retry after dropped connection".to_vec();
-        let (url, server) = serve_drop_then_once(body.clone());
-        let save_path = unique_test_path("retry-send.bin");
-        let client = Client::builder()
-            .timeout(Duration::from_secs(5))
-            .build()
-            .unwrap();
-        let ctrl = DownloadControl::new();
-        let (tx, _rx) = mpsc::channel();
-
-        download_single(
-            &client,
-            &url,
-            save_path.to_str().unwrap(),
-            body.len() as u64,
-            &ctrl,
-            &tx,
-        )
-        .unwrap();
-
-        server.join().unwrap();
-        assert_eq!(fs::read(&save_path).unwrap(), body);
-        let _ = fs::remove_file(save_path);
-    }
-
-    #[test]
-    fn download_single_restarts_when_resume_range_is_ignored() {
-        let body = b"server ignored range and returned full body".to_vec();
-        let (url, server) = serve_ignore_range_once(body.clone());
-        let save_path = unique_test_path("ignored-range.bin");
-        let part_path = format!("{}.part", save_path.to_string_lossy());
-        fs::write(&part_path, &body[..7]).unwrap();
-
-        let client = Client::builder()
-            .timeout(Duration::from_secs(5))
-            .build()
-            .unwrap();
-        let ctrl = DownloadControl::new();
-        let (tx, _rx) = mpsc::channel();
-
-        download_single(
-            &client,
-            &url,
-            save_path.to_str().unwrap(),
-            body.len() as u64,
-            &ctrl,
-            &tx,
-        )
-        .unwrap();
-
-        server.join().unwrap();
-        assert_eq!(fs::read(&save_path).unwrap(), body);
-        assert!(!PathBuf::from(&part_path).exists());
-        let _ = fs::remove_file(save_path);
-    }
-
-    #[test]
-    fn download_segmented_writes_all_ranges_and_removes_resume_meta() {
-        let body = (0..=255).cycle().take(1024).collect::<Vec<u8>>();
-        let segment_size = 128;
-        let request_count = body.len() / segment_size;
-        let (url, server) = serve_range_requests(body.clone(), request_count);
-        let save_path = unique_test_path("segmented.bin");
-        let probe = DownloadProbe {
-            total: body.len() as u64,
-            range_supported: true,
-            etag: Some("\"test-etag\"".to_string()),
-            last_modified: Some("Mon, 01 Jan 2024 00:00:00 GMT".to_string()),
-        };
-        let client = Client::builder()
-            .timeout(Duration::from_secs(5))
-            .build()
-            .unwrap();
-        let ctrl = DownloadControl::new();
-        let (tx, rx) = mpsc::channel();
-
-        download_segmented(
-            &client,
-            &url,
-            save_path.to_str().unwrap(),
-            &probe,
-            SegmentedDownloadConfig {
-                segment_size: segment_size as u64,
-                concurrency: 3,
-            },
-            &ctrl,
-            &tx,
-        )
-        .unwrap();
-
-        server.join().unwrap();
-        assert_eq!(fs::read(&save_path).unwrap(), body);
-        assert!(!PathBuf::from(format!("{}.part", save_path.to_string_lossy())).exists());
-        assert!(!PathBuf::from(format!("{}.part.json", save_path.to_string_lossy())).exists());
-        assert!(rx
-            .try_iter()
-            .any(|(downloaded, total, _, _)| downloaded == total && total == body.len() as u64));
-        let _ = fs::remove_file(save_path);
-    }
-
-    #[test]
-    fn download_single_resumes_existing_part_file_with_range_request() {
-        let body = b"resume download payload".to_vec();
-        let (url, server) = serve_once(body.clone());
-        let save_path = unique_test_path("resume.bin");
-        let part_path = format!("{}.part", save_path.to_string_lossy());
-        fs::write(&part_path, &body[..7]).unwrap();
-
-        let client = Client::builder()
-            .timeout(Duration::from_secs(5))
-            .build()
-            .unwrap();
-        let ctrl = DownloadControl::new();
-        let (tx, _rx) = mpsc::channel();
-
-        download_single(
-            &client,
-            &url,
-            save_path.to_str().unwrap(),
-            body.len() as u64,
-            &ctrl,
-            &tx,
-        )
-        .unwrap();
-
-        server.join().unwrap();
-        assert_eq!(fs::read(&save_path).unwrap(), body);
-        assert!(!PathBuf::from(&part_path).exists());
-        let _ = fs::remove_file(save_path);
     }
 }

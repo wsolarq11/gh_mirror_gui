@@ -55,7 +55,7 @@ impl StaticServer {
     }
 }
 
-pub(crate) fn run_staged_release_download_selftest(args: &[String]) -> Result<(), String> {
+pub fn run_staged_release_download_selftest(args: &[String]) -> Result<(), String> {
     let config = parse_staged_release_selftest_config(args)?;
     let report = run_staged_release_selftest(&config)?;
     let pretty_report = serde_json::to_string_pretty(&report)
