@@ -5,6 +5,11 @@ param(
     [switch]$SkipNetworkSmoke,
     [switch]$SkipBenchmark,
     [switch]$SkipBenchmarkMatrix,
+    # Artifact hygiene: keep `target\delivery\*` bounded so the repo stays lean without
+    # impacting normal development.
+    [int]$KeepDeliveryRuns = 8,
+    [switch]$PruneTargetIncremental,
+    [switch]$SkipTargetGc,
     # Optional post-publish check: run the previous published release binary and
     # prove Self-update Stage 2 produces a real-world NO_UPDATE vs STAGED verdict
     # against the currently published latest release (no install / no exe replacement).
@@ -2282,6 +2287,42 @@ if (!$SkipGuiSmoke) {
 }
 else {
     $Receipt.checks.gui_launch_smoke = [ordered]@{ skipped = $true }
+}
+
+if ($SkipTargetGc) {
+    $Receipt.checks.target_gc = [ordered]@{ skipped = $true }
+}
+else {
+    $gcScript = Join-Path $RepoRoot 'tools\target-gc.ps1'
+    if (!(Test-Path -LiteralPath $gcScript)) {
+        $Receipt.checks.target_gc = [ordered]@{
+            ok = $false
+            error = "target-gc script not found: $gcScript"
+        }
+    }
+    else {
+        try {
+            $gcJsonPath = Join-Path $EvidenceDir 'target-gc.json'
+            $gcOutput = & $gcScript `
+                -RepoRoot $RepoRoot `
+                -KeepDeliveryRuns $KeepDeliveryRuns `
+                -PruneIncremental:$PruneTargetIncremental
+            $gcText = (@($gcOutput | ForEach-Object { $_.ToString() }) -join "`n")
+            $gcText | Set-Content -LiteralPath $gcJsonPath -Encoding UTF8
+            $Receipt.checks.target_gc = [ordered]@{
+                ok = $true
+                json = $gcJsonPath
+                keep_delivery_runs = $KeepDeliveryRuns
+                prune_incremental = [bool]$PruneTargetIncremental
+            }
+        }
+        catch {
+            $Receipt.checks.target_gc = [ordered]@{
+                ok = $false
+                error = $_.Exception.Message
+            }
+        }
+    }
 }
 
 $Receipt.completed_at = (Get-Date).ToUniversalTime().ToString('o')
