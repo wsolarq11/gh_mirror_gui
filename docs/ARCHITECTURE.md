@@ -67,6 +67,22 @@ The core/backend is responsible for:
 
 The future backend may be a Rust crate first, then a local process/daemon later. Do not daemonize before the core contract is clean.
 
+### Network egress policy (GitHub official artifact domains only)
+
+Default policy:
+
+- All outbound HTTP(S) requests must be **https://** and must target **GitHub official artifact hosts only**.
+- Redirect targets must be validated under the same policy (no open redirects to arbitrary hosts).
+
+Implementation:
+
+- Canonical allowlist lives in `src/url_policy.rs` (used across download, release resolve, verification, source trust, and update-candidate paths).
+
+Selftest-only exception:
+
+- `tools\release-verify.ps1` runs `--staged-release-download-selftest`, which spins up a **loopback** static HTTP server for deterministic staging checks.
+- Loopback URLs are allowed **only inside this selftest harness** (guarded by `url_policy::enable_loopback_for_selftests()` and limited to loopback hosts).
+
 ### Verification engine
 
 Hash match and source authenticity are separate facts:
