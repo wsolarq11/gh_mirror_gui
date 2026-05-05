@@ -28,21 +28,21 @@ pub struct DownloadVerificationPlan {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum VerificationStatus {
+pub(crate) enum VerificationStatus {
     Verified,
     Mismatch,
     Unknown,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum VerificationTrustDecision {
+pub(crate) enum VerificationTrustDecision {
     Trusted,
     Block,
     Risk,
 }
 
 impl VerificationStatus {
-    pub fn as_str(&self) -> &'static str {
+    pub(crate) fn as_str(&self) -> &'static str {
         match self {
             Self::Verified => "VERIFIED",
             Self::Mismatch => "MISMATCH",
@@ -61,7 +61,7 @@ impl VerificationStatus {
 }
 
 impl VerificationTrustDecision {
-    pub fn as_str(&self) -> &'static str {
+    pub(crate) fn as_str(&self) -> &'static str {
         match self {
             Self::Trusted => "TRUSTED",
             Self::Block => "BLOCK",
@@ -71,7 +71,7 @@ impl VerificationTrustDecision {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct VerificationReport {
+pub(crate) struct VerificationReport {
     pub status: VerificationStatus,
     pub asset_name: String,
     pub file_sha256: String,
@@ -82,7 +82,7 @@ pub struct VerificationReport {
 }
 
 impl VerificationReport {
-    pub fn effective_trust_decision(&self) -> VerificationTrustDecision {
+    pub(crate) fn effective_trust_decision(&self) -> VerificationTrustDecision {
         match self.status {
             VerificationStatus::Mismatch => VerificationTrustDecision::Block,
             VerificationStatus::Unknown => VerificationTrustDecision::Risk,

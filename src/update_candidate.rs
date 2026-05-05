@@ -97,6 +97,9 @@ pub struct UpdateCandidateEvaluation {
     pub asset_name: String,
     pub reason: String,
     pub verification_status: String,
+    pub file_sha256: Option<String>,
+    pub expected_sha256: Option<String>,
+    pub verification_source: Option<String>,
     pub source_authenticity_status: Option<String>,
     pub source_trust_decision: Option<String>,
     pub publisher_key_fingerprint_sha256: Option<String>,
@@ -113,7 +116,6 @@ pub struct UpdateCandidateCheckReport {
     pub asset_name: String,
     pub release_publisher_key_fingerprint_sha256: Option<String>,
     pub evaluation: UpdateCandidateEvaluation,
-    pub verification_report: Option<VerificationReport>,
     pub evidence_write_error: Option<String>,
 }
 
@@ -190,7 +192,6 @@ pub(crate) fn check_latest_update_candidate(
                 asset_name: SELF_UPDATE_ASSET_NAME.to_string(),
                 release_publisher_key_fingerprint_sha256: None,
                 evaluation,
-                verification_report: None,
                 evidence_write_error: None,
             };
             return finish_update_candidate_check_report(report, evidence_path);
@@ -320,7 +321,6 @@ pub(crate) fn refused_update_candidate_check_report(
         asset_name: SELF_UPDATE_ASSET_NAME.to_string(),
         release_publisher_key_fingerprint_sha256: None,
         evaluation,
-        verification_report: None,
         evidence_write_error: None,
     };
     finish_update_candidate_check_report(report, evidence_path)
@@ -595,6 +595,9 @@ pub(crate) fn evaluate_update_candidate(
         asset_name: input.asset_name.to_string(),
         reason: String::new(),
         verification_status: input.verification_report.status.as_str().to_string(),
+        file_sha256: Some(input.verification_report.file_sha256.clone()),
+        expected_sha256: input.verification_report.expected_sha256.clone(),
+        verification_source: input.verification_report.source.clone(),
         source_authenticity_status: input
             .verification_report
             .source_trust
@@ -720,7 +723,6 @@ fn evaluate_resolved_latest_release(
             asset_name: SELF_UPDATE_ASSET_NAME.to_string(),
             release_publisher_key_fingerprint_sha256: release_publisher_key_fingerprint,
             evaluation,
-            verification_report: None,
             evidence_write_error: None,
         };
         return finish_update_candidate_check_report(report, evidence_path);
@@ -750,7 +752,6 @@ fn evaluate_resolved_latest_release(
             asset_name: asset.name,
             release_publisher_key_fingerprint_sha256: release_publisher_key_fingerprint,
             evaluation,
-            verification_report: Some(verification_report),
             evidence_write_error: None,
         };
         return finish_update_candidate_check_report(report, evidence_path);
@@ -776,7 +777,6 @@ fn evaluate_resolved_latest_release(
             asset_name: asset.name,
             release_publisher_key_fingerprint_sha256: release_publisher_key_fingerprint,
             evaluation,
-            verification_report: None,
             evidence_write_error: None,
         };
         return finish_update_candidate_check_report(report, evidence_path);
@@ -798,7 +798,6 @@ fn evaluate_resolved_latest_release(
             asset_name: asset.name,
             release_publisher_key_fingerprint_sha256: release_publisher_key_fingerprint,
             evaluation,
-            verification_report: None,
             evidence_write_error: None,
         };
         return finish_update_candidate_check_report(report, evidence_path);
@@ -834,7 +833,6 @@ fn evaluate_resolved_latest_release(
                 asset_name: asset.name,
                 release_publisher_key_fingerprint_sha256: release_publisher_key_fingerprint,
                 evaluation,
-                verification_report: None,
                 evidence_write_error: None,
             };
             return finish_update_candidate_check_report(report, evidence_path);
@@ -856,7 +854,6 @@ fn evaluate_resolved_latest_release(
         asset_name: asset.name,
         release_publisher_key_fingerprint_sha256: release_publisher_key_fingerprint,
         evaluation,
-        verification_report: Some(verification_report),
         evidence_write_error: None,
     };
     finish_update_candidate_check_report(report, evidence_path)
@@ -1018,6 +1015,9 @@ fn refused_update_candidate_evaluation(
         asset_name: asset_name.to_string(),
         reason: reason.into(),
         verification_status: "NOT_EVALUATED".to_string(),
+        file_sha256: None,
+        expected_sha256: None,
+        verification_source: None,
         source_authenticity_status: None,
         source_trust_decision: None,
         publisher_key_fingerprint_sha256,
@@ -1084,7 +1084,6 @@ fn write_update_candidate_evidence(
         "asset_name": &report.asset_name,
         "release_publisher_key_fingerprint_sha256": &report.release_publisher_key_fingerprint_sha256,
         "evaluation": &report.evaluation,
-        "verification_report": &report.verification_report,
     });
     let pretty =
         serde_json::to_string_pretty(&record).map_err(|e| format!("Serialize evidence: {e}"))?;
@@ -1100,14 +1099,10 @@ fn stage_candidate_from_check_report(
     if check_report.evaluation.status != UpdateCandidateStatus::Candidate {
         return Err("stage requires a CANDIDATE check report".to_string());
     }
-    let verification = check_report
-        .verification_report
-        .as_ref()
-        .ok_or_else(|| "stage requires a verification report".to_string())?;
-    if verification.status != VerificationStatus::Verified {
+    if check_report.evaluation.verification_status != "VERIFIED" {
         return Err(format!(
             "stage requires a VERIFIED candidate, got {}",
-            verification.status.as_str()
+            check_report.evaluation.verification_status
         ));
     }
 
@@ -1135,7 +1130,7 @@ fn stage_candidate_from_check_report(
     let tmp_path = stage_dir.join(format!("{}.staging.tmp", asset.name));
     download_release_asset_to_path(client, &asset, &tmp_path)?;
     let sha256 = crate::download::sha256_file(&tmp_path)?;
-    if let Some(expected) = verification.expected_sha256.as_deref() {
+    if let Some(expected) = check_report.evaluation.expected_sha256.as_deref() {
         if sha256 != expected.to_ascii_uppercase() {
             let _ = fs::remove_file(&tmp_path);
             return Err(format!(
@@ -1175,7 +1170,7 @@ fn stage_candidate_from_check_report(
         stage_dir: Some(stage_dir.display().to_string()),
         staged_asset_path: Some(staged_path.display().to_string()),
         staged_sha256: Some(sha256),
-        expected_sha256: verification.expected_sha256.clone(),
+        expected_sha256: check_report.evaluation.expected_sha256.clone(),
         publisher_key_fingerprint_sha256: check_report
             .publisher_key_fingerprint_sha256()
             .map(|v| v.to_string()),

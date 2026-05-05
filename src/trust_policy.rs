@@ -261,7 +261,8 @@ pub(crate) fn open_location_button_label(
     }
 }
 
-pub fn open_location_button_label_for_report(
+#[cfg(test)]
+pub(crate) fn open_location_button_label_for_report(
     report: &VerificationReport,
     disposition: &AppliedFileDisposition,
     policy: &TrustPolicyConfig,

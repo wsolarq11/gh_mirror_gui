@@ -37,7 +37,6 @@ pub use crate::staged_release::run_staged_release_download_selftest;
 pub use crate::trust_center::publisher_key_source_label_for_policy;
 pub use crate::trust_policy::file_disposition_summary;
 pub use crate::trust_policy::open_location_button_label_for_facts;
-pub use crate::trust_policy::open_location_button_label_for_report;
 pub use crate::trust_policy::{AppliedFileDisposition, FileDispositionAction};
 pub use crate::trust_policy::{MismatchFilePolicy, TrustPolicyConfig, TrustPolicySnapshot};
 pub use crate::update_candidate::run_update_candidate_contract_selftest;
@@ -47,7 +46,6 @@ pub use crate::update_candidate::{UpdateCandidateCheckReport, UpdateCandidateSta
 pub use crate::verification::verification_plan_for_selected_asset;
 pub use crate::verification::verification_source_summary;
 pub use crate::verification::DownloadVerificationPlan;
-pub use crate::verification::{VerificationReport, VerificationStatus, VerificationTrustDecision};
 
 pub type DownloadProgressMessage = (u64, u64, f64, f64);
 
@@ -94,8 +92,8 @@ pub struct TrustCenterSnapshot {
     pub final_path: String,
 }
 
-pub fn trust_center_snapshot(
-    report: &VerificationReport,
+fn trust_center_snapshot(
+    report: &crate::verification::VerificationReport,
     evidence_path: Option<&Path>,
     disposition: &AppliedFileDisposition,
     policy_snapshot: &TrustPolicySnapshot,
