@@ -2,7 +2,7 @@ use crate::bench::choose_history_backed_strategy;
 use crate::download::{build_client, download_with_strategy, probe_download, DownloadProbe};
 use crate::github_intent::{parse_github_intent, ParsedGithubIntent};
 use crate::history::{append_download_history, load_bench_history, VerificationHistoryContext};
-use crate::releases::resolve_release_assets;
+use crate::source_adapter::{GitHubReleaseAdapter, SourceAdapter};
 use crate::source_trust::import_publisher_key_pin_from_release_asset;
 use crate::trust_policy::{apply_file_disposition, plan_file_disposition_for_report};
 use crate::update_candidate::{
@@ -225,7 +225,7 @@ pub fn resolve_release_assets_for_query(
     let client = settings
         .client(30)
         .map_err(|e| format!("Release resolver client error: {e}"))?;
-    resolve_release_assets(&client, query)
+    GitHubReleaseAdapter.resolve_release_assets(&client, query)
 }
 
 pub fn import_publisher_key_from_release_asset(

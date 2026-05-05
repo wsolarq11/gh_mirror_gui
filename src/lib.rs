@@ -5,6 +5,7 @@ mod download;
 mod github_intent;
 mod history;
 mod releases;
+mod source_adapter;
 mod source_trust;
 mod staged_release;
 mod trust_center;
