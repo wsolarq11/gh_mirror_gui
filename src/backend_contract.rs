@@ -8,7 +8,6 @@ use crate::update_candidate::{
     check_latest_update_candidate, refused_update_candidate_check_report,
     refused_update_candidate_stage_report, stage_latest_update_candidate,
 };
-use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::{mpsc, Arc};
@@ -352,19 +351,6 @@ pub fn run_download_contract(
         ctrl,
         progress_tx,
     })?;
-
-    // Ensure the UI sees a non-error completion progress event even when the probe could
-    // not determine a total size (probe.total == 0). Otherwise the (0,0) sentinel would
-    // be indistinguishable from failure.
-    let downloaded_bytes = fs::metadata(&save_path).map(|meta| meta.len()).unwrap_or(0);
-    let done_total = if downloaded_bytes > 0 {
-        downloaded_bytes
-    } else if probe.total > 0 {
-        probe.total
-    } else {
-        1
-    };
-    let _ = progress_tx.send((done_total, done_total, 0.0, 0.0));
 
     let verification = match runtime.verify_downloaded_file(
         &client,

@@ -153,6 +153,22 @@ impl CoreRuntime {
             let _ = progress_tx.send((0, 0, 0.0, 0.0));
             return Err(e);
         }
+
+        // Ensure the UI sees a non-error completion progress event even when the probe could
+        // not determine a total size (probe.total == 0). Otherwise the (0,0) sentinel would
+        // be indistinguishable from failure.
+        let downloaded_bytes = std::fs::metadata(save_path)
+            .map(|meta| meta.len())
+            .unwrap_or(0);
+        let done_total = if downloaded_bytes > 0 {
+            downloaded_bytes
+        } else if probe.total > 0 {
+            probe.total
+        } else {
+            1
+        };
+        let _ = progress_tx.send((done_total, done_total, 0.0, 0.0));
+
         Ok(())
     }
 
