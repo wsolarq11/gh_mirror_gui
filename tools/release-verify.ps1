@@ -10,9 +10,14 @@ param(
     [int]$KeepDeliveryRuns = 8,
     [switch]$PruneTargetIncremental,
     [switch]$SkipTargetGc,
-    # Optional post-publish check: run the previous published release binary and
+    # Post-publish check: simulate running the previous published release and
     # prove Self-update Stage 2 produces a real-world NO_UPDATE vs STAGED verdict
     # against the currently published latest release (no install / no exe replacement).
+    #
+    # This is a trust-critical end-to-end gate for "public signed release consumption"
+    # and therefore runs by default. Use `-SkipPostPublishSelfUpdateStage2` to skip.
+    [switch]$SkipPostPublishSelfUpdateStage2,
+    # Back-compat: legacy opt-in flag (kept so older invocations still parse).
     [switch]$PostPublishSelfUpdateStage2
 )
 
@@ -2158,7 +2163,9 @@ $Receipt.checks.update_candidate_stage_selftest = Invoke-UpdateCandidateStageSel
     -Exe $exe `
     -JsonFile (Join-Path $EvidenceDir 'update-candidate-stage-selftest.json')
 
-if ($PostPublishSelfUpdateStage2) {
+$doPostPublishStage2 = $PostPublishSelfUpdateStage2 -or !$SkipPostPublishSelfUpdateStage2
+
+if ($doPostPublishStage2) {
     $expectedLatestTag = $null
     if ($originRelease.found) {
         $expectedLatestTag = [string]$originRelease.tag_name
