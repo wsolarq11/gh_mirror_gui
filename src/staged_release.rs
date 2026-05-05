@@ -149,7 +149,7 @@ fn run_staged_release_selftest(
 
     let client = build_client("", 30, false)?;
     let download_url = release.assets[0].browser_download_url.clone();
-    let probe = probe_download(&client, &download_url)?;
+    let probe = probe_download_with_retry(&client, &download_url)?;
     let strategy = SelectedDownloadStrategy {
         variant: "staged-signed-release-single".to_string(),
         config: None,
@@ -257,6 +257,32 @@ fn run_staged_release_selftest(
         },
         "server_requests": server_requests,
     }))
+}
+
+fn probe_download_with_retry(
+    client: &reqwest::blocking::Client,
+    url: &str,
+) -> Result<crate::download::DownloadProbe, String> {
+    let mut last_error = None;
+    // The staged-release selftest spins up a loopback server in a background thread.
+    // On some Windows setups we occasionally observe a transient connect/send failure
+    // right after the listener is bound. Retrying keeps the receipt gate stable
+    // without weakening production network policy.
+    for attempt in 0..6 {
+        match probe_download(client, url) {
+            Ok(probe) => return Ok(probe),
+            Err(e) => {
+                last_error = Some(e);
+                if attempt < 5 {
+                    thread::sleep(Duration::from_millis(25));
+                }
+            }
+        }
+    }
+    Err(format!(
+        "Range probe request failed after retries: {}",
+        last_error.unwrap_or_else(|| "unknown probe failure".to_string())
+    ))
 }
 
 #[allow(clippy::too_many_arguments)]
