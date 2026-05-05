@@ -144,6 +144,10 @@ pub fn resolve_download_intent(input: &str) -> IntentDTO {
     }
 }
 
+pub fn official_github_artifact_hosts() -> &'static [&'static str] {
+    crate::url_policy::official_github_artifact_hosts()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -155,6 +159,17 @@ mod tests {
             matches!(intent, IntentDTO::Unsupported { .. }),
             "expected Unsupported, got: {intent:?}"
         );
+    }
+
+    #[test]
+    fn official_github_artifact_hosts_contains_core_hosts() {
+        let hosts = official_github_artifact_hosts();
+        assert!(hosts
+            .iter()
+            .any(|host| host.eq_ignore_ascii_case("github.com")));
+        assert!(hosts
+            .iter()
+            .any(|host| host.eq_ignore_ascii_case("api.github.com")));
     }
 }
 

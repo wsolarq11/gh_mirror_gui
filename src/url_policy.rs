@@ -22,6 +22,10 @@ const OFFICIAL_GITHUB_ARTIFACT_HOSTS: &[&str] = &[
     "github-releases.githubusercontent.com",
 ];
 
+pub(crate) fn official_github_artifact_hosts() -> &'static [&'static str] {
+    OFFICIAL_GITHUB_ARTIFACT_HOSTS
+}
+
 fn normalize_host(host: &str) -> &str {
     host.trim().strip_prefix("www.").unwrap_or(host.trim())
 }
