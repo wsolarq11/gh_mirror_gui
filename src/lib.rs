@@ -2,6 +2,7 @@
 
 mod bench;
 mod download;
+mod evidence_ledger;
 mod github_intent;
 mod history;
 mod releases;

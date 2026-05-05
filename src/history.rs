@@ -4,7 +4,6 @@ use crate::trust_policy::{FileDispositionRecord, PlannedFileDisposition, TrustPo
 use crate::verification::VerificationReport;
 use directories::ProjectDirs;
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -106,19 +105,7 @@ pub(crate) fn append_bench_history_entry(
     let Some(path) = path else {
         return Ok(());
     };
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| format!("Create benchmark history dir error: {e}"))?;
-    }
-
-    let line = serde_json::to_string(entry)
-        .map_err(|e| format!("Encode benchmark history entry error: {e}"))?;
-    let mut file = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .map_err(|e| format!("Open benchmark history error: {e}"))?;
-    writeln!(file, "{line}").map_err(|e| format!("Write benchmark history error: {e}"))
+    crate::evidence_ledger::append_jsonl(path, entry)
 }
 
 #[derive(serde::Serialize)]
@@ -249,10 +236,7 @@ fn write_verification_evidence(
         policy: policy.map(TrustPolicyConfig::snapshot),
         file_disposition: file_disposition.map(PlannedFileDisposition::record),
     };
-    let json = serde_json::to_vec_pretty(&record)
-        .map_err(|e| format!("Encode verification evidence error: {e}"))?;
-    fs::write(&evidence_path, json)
-        .map_err(|e| format!("Write verification evidence error: {e}"))?;
+    crate::evidence_ledger::write_json_pretty(&evidence_path, &record)?;
     Ok(Some(evidence_path))
 }
 

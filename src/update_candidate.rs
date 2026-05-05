@@ -1066,10 +1066,6 @@ fn write_update_candidate_evidence(
     path: &Path,
     report: &UpdateCandidateCheckReport,
 ) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| format!("Create update candidate evidence dir: {e}"))?;
-    }
     let record = serde_json::json!({
         "schema_version": UPDATE_CANDIDATE_EVIDENCE_SCHEMA_VERSION,
         "no_mutation": true,
@@ -1080,9 +1076,7 @@ fn write_update_candidate_evidence(
         "release_publisher_key_fingerprint_sha256": &report.release_publisher_key_fingerprint_sha256,
         "evaluation": &report.evaluation,
     });
-    let pretty =
-        serde_json::to_string_pretty(&record).map_err(|e| format!("Serialize evidence: {e}"))?;
-    fs::write(path, format!("{pretty}\n")).map_err(|e| format!("Write evidence: {e}"))
+    crate::evidence_ledger::write_json_pretty(path, &record)
 }
 
 fn stage_candidate_from_check_report(
@@ -1179,10 +1173,6 @@ fn write_update_candidate_stage_evidence(
     path: &Path,
     report: &UpdateCandidateStageReport,
 ) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| format!("Create update candidate stage evidence dir: {e}"))?;
-    }
     let record = serde_json::json!({
         "schema_version": UPDATE_CANDIDATE_STAGE_EVIDENCE_SCHEMA_VERSION,
         "no_install": true,
@@ -1198,9 +1188,7 @@ fn write_update_candidate_stage_evidence(
         "expected_sha256": &report.expected_sha256,
         "check_report": &report.check_report,
     });
-    let pretty =
-        serde_json::to_string_pretty(&record).map_err(|e| format!("Serialize evidence: {e}"))?;
-    fs::write(path, format!("{pretty}\n")).map_err(|e| format!("Write evidence: {e}"))
+    crate::evidence_ledger::write_json_pretty(path, &record)
 }
 
 fn sanitize_evidence_component(value: &str) -> String {
