@@ -1,3 +1,4 @@
+use crate::evidence_ledger::{EvidenceLedger, FileSystemEvidenceLedger};
 use crate::releases::{ReleaseQuery, ResolvedRelease};
 use crate::source_adapter::{GitHubReleaseAdapter, SourceAdapter};
 use crate::source_trust::SourceTrustPolicyConfig;
@@ -17,6 +18,7 @@ use std::path::Path;
 pub(crate) struct CoreRuntime {
     source_adapter: GitHubReleaseAdapter,
     verifier_adapter: GitHubReleaseVerifierAdapter,
+    evidence_ledger: FileSystemEvidenceLedger,
 }
 
 impl Default for CoreRuntime {
@@ -24,6 +26,7 @@ impl Default for CoreRuntime {
         Self {
             source_adapter: GitHubReleaseAdapter,
             verifier_adapter: GitHubReleaseVerifierAdapter,
+            evidence_ledger: FileSystemEvidenceLedger,
         }
     }
 }
@@ -63,5 +66,9 @@ impl CoreRuntime {
             plan,
             source_trust_policy,
         )
+    }
+
+    pub(crate) fn append_line(&self, path: &Path, line: &str) -> Result<(), String> {
+        self.evidence_ledger.append_line(path, line)
     }
 }

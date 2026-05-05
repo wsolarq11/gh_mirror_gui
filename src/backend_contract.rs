@@ -206,18 +206,13 @@ pub fn verification_source_summary_for_release_asset(
 }
 
 fn log_error(msg: &str) {
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open("download_error.log")
-    {
-        use std::io::Write;
-        let ts = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        let _ = writeln!(f, "[{}] {}", ts, msg);
-    }
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let line = format!("[{ts}] {msg}");
+    let runtime = CoreRuntime::default();
+    let _ = runtime.append_line(Path::new("download_error.log"), &line);
 }
 
 pub struct BackendClientSettings {
