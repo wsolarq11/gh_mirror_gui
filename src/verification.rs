@@ -436,6 +436,7 @@ fn fetch_text_asset(
         (true, Some(api_url)) => (api_url, true),
         _ => (asset.browser_download_url.as_str(), false),
     };
+
     for attempt in 0..=VERIFICATION_ASSET_MAX_RETRIES {
         if attempt > 0 {
             std::thread::sleep(std::time::Duration::from_millis(

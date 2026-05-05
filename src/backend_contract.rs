@@ -306,6 +306,8 @@ pub fn run_download_contract(
     let publisher_key_source_at_decision = input.publisher_key_source_at_decision;
     let history_path = input.history_path;
 
+    crate::url_policy::parse_and_validate_https_github_official_url(effective_url, "download url")?;
+
     let client = match settings.client(3600) {
         Ok(c) => c,
         Err(e) => {

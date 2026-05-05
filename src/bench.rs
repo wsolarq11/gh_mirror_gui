@@ -446,6 +446,7 @@ fn choose_adaptive_candidate(
 
 pub fn run_bench_download(args: &[String]) -> Result<(), String> {
     let config = parse_bench_config(args)?;
+    crate::url_policy::parse_and_validate_https_github_official_url(&config.url, "bench url")?;
     if let Some(parent) = config.out.parent() {
         fs::create_dir_all(parent)
             .map_err(|e| format!("Create benchmark output dir error: {e}"))?;

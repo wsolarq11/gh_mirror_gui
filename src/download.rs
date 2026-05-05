@@ -114,11 +114,25 @@ pub(crate) fn build_client(
             return Ok(cached.client.clone());
         }
     }
+    let redirect_policy = reqwest::redirect::Policy::custom(|attempt| {
+        if let Err(reason) =
+            crate::url_policy::validate_https_github_official_url(attempt.url(), "redirect target")
+        {
+            return attempt.error(std::io::Error::other(reason));
+        }
+
+        reqwest::redirect::Policy::default().redirect(attempt)
+    });
+
     let mut builder = reqwest::blocking::Client::builder()
         .tcp_nodelay(true)
         .pool_max_idle_per_host(10)
         .timeout(Duration::from_secs(timeout_secs))
-        .connect_timeout(Duration::from_secs(timeout_secs.clamp(1, 30)));
+        .connect_timeout(Duration::from_secs(timeout_secs.clamp(1, 30)))
+        // Keep behavior deterministic: only use an explicit proxy configured by the user, never
+        // an ambient/system proxy that could unexpectedly intercept localhost or GitHub traffic.
+        .no_proxy()
+        .redirect(redirect_policy);
     if allow_invalid_certs {
         builder = builder.danger_accept_invalid_certs(true);
     }

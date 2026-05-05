@@ -155,6 +155,12 @@ pub(crate) fn import_publisher_key_pin_from_release_asset(
         (true, Some(api_url)) => (api_url, true),
         _ => (asset.browser_download_url.as_str(), false),
     };
+
+    crate::url_policy::parse_and_validate_https_github_official_url(
+        url,
+        "publisher key asset url",
+    )?;
+
     let mut request = client
         .get(url)
         .header("User-Agent", "gh_mirror_gui-source-trust");

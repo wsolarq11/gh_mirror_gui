@@ -897,6 +897,12 @@ fn download_release_asset_to_path(
         (true, Some(api_url)) => (api_url, true),
         _ => (asset.browser_download_url.as_str(), false),
     };
+
+    crate::url_policy::parse_and_validate_https_github_official_url(
+        url,
+        "update candidate asset url",
+    )?;
+
     let mut request = client
         .get(url)
         .header("User-Agent", UPDATE_CANDIDATE_USER_AGENT);

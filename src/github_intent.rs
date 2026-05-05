@@ -243,11 +243,13 @@ fn looks_like_repo_slug(input: &str) -> bool {
 }
 
 fn ensure_https_scheme(input: &str) -> String {
-    if input.starts_with("http://") || input.starts_with("https://") {
-        input.to_string()
-    } else {
-        format!("https://{input}")
+    if let Some(rest) = input.strip_prefix("http://") {
+        return format!("https://{rest}");
     }
+    if input.starts_with("https://") {
+        return input.to_string();
+    }
+    format!("https://{input}")
 }
 
 fn clean_repo_part(part: &str) -> String {
@@ -347,6 +349,19 @@ mod tests {
         match intent {
             ParsedGithubIntent::Unsupported { .. } => {}
             other => panic!("expected Unsupported, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn router_upgrades_http_github_urls_to_https() {
+        let intent = parse_github_intent(
+            "http://github.com/octo-org/octo-repo/releases/download/v1.2.3/app.zip",
+        );
+        match intent {
+            ParsedGithubIntent::DirectDownload { url, .. } => {
+                assert!(url.starts_with("https://github.com/"));
+            }
+            other => panic!("expected DirectDownload, got {other:?}"),
         }
     }
 }
