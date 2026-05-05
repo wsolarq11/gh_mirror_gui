@@ -13,5 +13,6 @@ mod trust_policy;
 mod update_candidate;
 mod url_policy;
 mod verification;
+mod verifier_adapter;
 
 pub mod backend_contract;

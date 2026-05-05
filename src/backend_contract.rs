@@ -9,7 +9,7 @@ use crate::update_candidate::{
     check_latest_update_candidate, refused_update_candidate_check_report,
     refused_update_candidate_stage_report, stage_latest_update_candidate,
 };
-use crate::verification::verify_downloaded_file;
+use crate::verifier_adapter::{GitHubReleaseVerifierAdapter, VerifierAdapter};
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
@@ -198,7 +198,8 @@ pub fn verification_source_summary_for_release_asset(
     release: &ResolvedRelease,
     asset_index: usize,
 ) -> String {
-    crate::verification::verification_plan_for_selected_asset(release, asset_index)
+    GitHubReleaseVerifierAdapter
+        .verification_plan_for_selected_asset(release, asset_index)
         .map(|plan| crate::verification::verification_source_summary(&plan))
         .unwrap_or_else(|| {
             "No checksum/provenance assets detected; result will be UNKNOWN".to_string()
@@ -361,7 +362,7 @@ pub fn run_download_contract(
                     release.assets.len()
                 ));
             }
-            crate::verification::verification_plan_for_selected_asset(release, idx)
+            GitHubReleaseVerifierAdapter.verification_plan_for_selected_asset(release, idx)
         }
         _ => {
             return Err(
@@ -398,7 +399,7 @@ pub fn run_download_contract(
     };
     let _ = progress_tx.send((done_total, done_total, 0.0, 0.0));
 
-    let verification = match verify_downloaded_file(
+    let verification = match GitHubReleaseVerifierAdapter.verify_downloaded_file(
         &client,
         &save_path,
         &asset_name,

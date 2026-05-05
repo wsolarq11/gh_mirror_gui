@@ -5,7 +5,7 @@ use crate::source_trust::{
     SourceTrustPolicyConfig,
 };
 use reqwest::blocking::Client;
-use std::path::PathBuf;
+use std::path::Path;
 
 const MAX_VERIFICATION_ASSET_BYTES: usize = 5 * 1024 * 1024;
 const VERIFICATION_ASSET_MAX_RETRIES: u32 = 2;
@@ -149,7 +149,7 @@ pub(crate) fn verification_source_summary(plan: &DownloadVerificationPlan) -> St
 
 pub(crate) fn verify_downloaded_file(
     client: &Client,
-    path: &PathBuf,
+    path: &Path,
     asset_name: &str,
     plan: Option<&DownloadVerificationPlan>,
     source_trust_policy: &SourceTrustPolicyConfig,
@@ -718,6 +718,7 @@ mod tests {
     use std::fs;
     use std::io::{Read, Write};
     use std::net::TcpListener;
+    use std::path::PathBuf;
     use std::thread;
     use std::time::Duration;
 

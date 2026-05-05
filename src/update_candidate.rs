@@ -4,10 +4,8 @@ use crate::source_trust::{
     import_publisher_key_pin_from_release_asset, not_applicable_source_trust, publisher_key_asset,
     SourceAuthenticityStatus, SourceTrustDecision, SourceTrustEvidence, SourceTrustPolicyConfig,
 };
-use crate::verification::{
-    verification_plan_for_selected_asset, verify_downloaded_file, VerificationReport,
-    VerificationStatus,
-};
+use crate::verification::{VerificationReport, VerificationStatus};
+use crate::verifier_adapter::{GitHubReleaseVerifierAdapter, VerifierAdapter};
 use reqwest::blocking::Client;
 use std::cmp::Ordering;
 use std::fs;
@@ -864,10 +862,11 @@ fn download_and_verify_update_candidate(
     required_policy: &SourceTrustPolicyConfig,
 ) -> Result<VerificationReport, String> {
     download_release_asset_to_path(client, asset, temp_path)?;
-    let verification_plan = verification_plan_for_selected_asset(release, asset_index);
-    verify_downloaded_file(
+    let verification_plan =
+        GitHubReleaseVerifierAdapter.verification_plan_for_selected_asset(release, asset_index);
+    GitHubReleaseVerifierAdapter.verify_downloaded_file(
         client,
-        &temp_path.to_path_buf(),
+        temp_path,
         &asset.name,
         verification_plan.as_ref(),
         required_policy,

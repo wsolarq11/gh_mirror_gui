@@ -3,7 +3,7 @@ use sha2::{Digest, Sha256};
 use std::collections::VecDeque;
 use std::fs;
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::path::PathBuf;
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Condvar, Mutex, OnceLock};
 use std::thread;
@@ -789,7 +789,7 @@ pub(crate) fn download_single(
     Ok(())
 }
 
-pub(crate) fn sha256_file(path: &PathBuf) -> Result<String, String> {
+pub(crate) fn sha256_file(path: &Path) -> Result<String, String> {
     let mut file = fs::File::open(path).map_err(|e| format!("Open hash input error: {e}"))?;
     let mut hasher = Sha256::new();
     let mut buf = vec![0u8; DOWNLOAD_BUFFER_SIZE];
@@ -812,6 +812,7 @@ mod tests {
     use super::*;
     use reqwest::blocking::Client;
     use std::net::TcpListener;
+    use std::path::PathBuf;
 
     fn unique_test_path(name: &str) -> PathBuf {
         let nonce = std::time::SystemTime::now()
