@@ -43,7 +43,7 @@ impl Default for TrustPolicyConfig {
 }
 
 impl TrustPolicyConfig {
-    pub fn snapshot(&self) -> TrustPolicySnapshot {
+    pub(crate) fn snapshot(&self) -> TrustPolicySnapshot {
         TrustPolicySnapshot {
             schema_version: 2,
             unknown_keep_file: self.unknown_keep_file,
@@ -55,13 +55,13 @@ impl TrustPolicyConfig {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct TrustPolicySnapshot {
-    pub schema_version: u32,
-    pub unknown_keep_file: bool,
-    pub unknown_allow_open: bool,
-    pub mismatch_file_policy: String,
+pub(crate) struct TrustPolicySnapshot {
+    pub(crate) schema_version: u32,
+    pub(crate) unknown_keep_file: bool,
+    pub(crate) unknown_allow_open: bool,
+    pub(crate) mismatch_file_policy: String,
     #[serde(default)]
-    pub source_trust: SourceTrustPolicySnapshot,
+    pub(crate) source_trust: SourceTrustPolicySnapshot,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

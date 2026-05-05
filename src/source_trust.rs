@@ -31,10 +31,10 @@ impl SourceTrustPolicyConfig {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct SourceTrustPolicySnapshot {
-    pub schema_version: u32,
-    pub require_trusted_source: bool,
-    pub trusted_publisher_key_fingerprint_sha256: Option<String>,
+pub(crate) struct SourceTrustPolicySnapshot {
+    pub(crate) schema_version: u32,
+    pub(crate) require_trusted_source: bool,
+    pub(crate) trusted_publisher_key_fingerprint_sha256: Option<String>,
 }
 
 impl Default for SourceTrustPolicySnapshot {

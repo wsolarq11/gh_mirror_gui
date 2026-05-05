@@ -35,7 +35,7 @@ pub use crate::trust_center::publisher_key_source_label_for_policy;
 pub use crate::trust_policy::file_disposition_summary;
 pub use crate::trust_policy::open_location_button_label_for_facts;
 pub use crate::trust_policy::{AppliedFileDisposition, FileDispositionAction};
-pub use crate::trust_policy::{MismatchFilePolicy, TrustPolicyConfig, TrustPolicySnapshot};
+pub use crate::trust_policy::{MismatchFilePolicy, TrustPolicyConfig};
 pub use crate::update_candidate::run_update_candidate_contract_selftest;
 pub use crate::update_candidate::run_update_candidate_latest_selftest;
 pub use crate::update_candidate::run_update_candidate_stage_selftest;
@@ -93,7 +93,7 @@ fn trust_center_snapshot(
     report: &crate::verification::VerificationReport,
     evidence_path: Option<&Path>,
     disposition: &AppliedFileDisposition,
-    policy_snapshot: &TrustPolicySnapshot,
+    policy_snapshot: &crate::trust_policy::TrustPolicySnapshot,
     publisher_key_source: Option<&str>,
 ) -> TrustCenterSnapshot {
     let snapshot = crate::trust_center::trust_center_snapshot(
