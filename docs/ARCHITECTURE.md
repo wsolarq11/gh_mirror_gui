@@ -28,6 +28,7 @@ UI Shell
 - `src/trust_policy.rs`: trust policy, file disposition, quarantine/delete/open-location decisions.
 - `src/trust_center.rs`: UI-framework-free Trust Center snapshot contract built from backend/core verification reports, policy snapshots, and evidence paths.
 - `src/update_candidate.rs`: no-mutation self-update candidate contract; it accepts only newer trusted signed releases and refuses same-version, unsigned, bad-signature, or missing-key candidates.
+- `src/evidence_ledger.rs`: evidence ledger seam (Phase 5); today it writes JSON/JSONL evidence to the filesystem.
 - `src/history.rs`: benchmark history and verification evidence JSON.
 - `src/main.rs`: current egui UI plus temporary app orchestration. Keep this layer thinner over time.
 - `tools\release-verify.ps1`: single delivery front door and receipt producer.
