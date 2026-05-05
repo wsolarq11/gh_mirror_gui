@@ -51,6 +51,29 @@ impl CoreRuntime {
             .verification_plan_for_selected_asset(release, asset_index)
     }
 
+    pub(crate) fn verification_plan_from_download_context(
+        &self,
+        release: Option<&ResolvedRelease>,
+        asset_index: Option<usize>,
+    ) -> Result<Option<DownloadVerificationPlan>, String> {
+        match (release, asset_index) {
+            (None, None) => Ok(None),
+            (Some(release), Some(idx)) => {
+                if release.assets.get(idx).is_none() {
+                    return Err(format!(
+                        "Download verification context is invalid: asset index {idx} is out of range (assets={})",
+                        release.assets.len()
+                    ));
+                }
+                Ok(self.verification_plan_for_selected_asset(release, idx))
+            }
+            _ => Err(
+                "Download verification context is inconsistent (release + asset index must be both set or both absent)"
+                    .to_string(),
+            ),
+        }
+    }
+
     pub(crate) fn verify_downloaded_file(
         &self,
         client: &Client,

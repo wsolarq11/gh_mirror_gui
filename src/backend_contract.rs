@@ -348,24 +348,10 @@ pub fn run_download_contract(
     let save_path_str = save_path.to_string_lossy().to_string();
     let download_start = Instant::now();
 
-    let verification_plan = match (verification_release.as_ref(), verification_asset_index) {
-        (None, None) => None,
-        (Some(release), Some(idx)) => {
-            if release.assets.get(idx).is_none() {
-                return Err(format!(
-                    "Download verification context is invalid: asset index {idx} is out of range (assets={})",
-                    release.assets.len()
-                ));
-            }
-            runtime.verification_plan_for_selected_asset(release, idx)
-        }
-        _ => {
-            return Err(
-                "Download verification context is inconsistent (release + asset index must be both set or both absent)"
-                    .to_string(),
-            );
-        }
-    };
+    let verification_plan = runtime.verification_plan_from_download_context(
+        verification_release.as_ref(),
+        verification_asset_index,
+    )?;
 
     if let Err(e) = download_with_strategy(
         &client,
