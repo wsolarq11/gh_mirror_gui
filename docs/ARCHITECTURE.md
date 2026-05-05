@@ -19,9 +19,11 @@ UI Shell
 ## Current module map
 
 - `src/releases.rs`: GitHub Release discovery and asset selection helpers.
+- `src/source_adapter.rs`: artifact source adapter seam (Phase 5); today it wraps GitHub Release resolution.
 - `src/download.rs`: direct, resumable, and segmented download primitives.
 - `src/bench.rs`: headless benchmark and adaptive strategy evaluation.
 - `src/verification.rs`: checksum/provenance parsing, source selection, hash verification, and source-trust attachment.
+- `src/verifier_adapter.rs`: verification adapter seam (Phase 5); today it wraps GitHub Release checksum/provenance verification.
 - `src/source_trust.rs`: Ed25519 detached signature verification/signing, publisher key pinning, and `source_trust` evidence.
 - `src/trust_policy.rs`: trust policy, file disposition, quarantine/delete/open-location decisions.
 - `src/trust_center.rs`: UI-framework-free Trust Center snapshot contract built from backend/core verification reports, policy snapshots, and evidence paths.
