@@ -409,6 +409,41 @@ impl CoreRuntime {
         crate::bench::run_bench_download(args)
     }
 
+    pub(crate) fn run_staged_release_download_selftest(
+        &self,
+        args: &[String],
+    ) -> Result<(), String> {
+        crate::staged_release::run_staged_release_download_selftest(args)
+    }
+
+    pub(crate) fn run_update_candidate_contract_selftest(
+        &self,
+        args: &[String],
+    ) -> Result<(), String> {
+        crate::update_candidate::run_update_candidate_contract_selftest(args)
+    }
+
+    pub(crate) fn run_update_candidate_latest_selftest(
+        &self,
+        args: &[String],
+    ) -> Result<(), String> {
+        crate::update_candidate::run_update_candidate_latest_selftest(args)
+    }
+
+    pub(crate) fn run_update_candidate_stage_selftest(
+        &self,
+        args: &[String],
+    ) -> Result<(), String> {
+        crate::update_candidate::run_update_candidate_stage_selftest(args)
+    }
+
+    pub(crate) fn run_update_apply_plan_contract_selftest(
+        &self,
+        args: &[String],
+    ) -> Result<(), String> {
+        crate::update_apply_plan::run_update_apply_plan_contract_selftest(args)
+    }
+
     pub(crate) fn verification_plan_from_download_context(
         &self,
         release: Option<&ResolvedRelease>,

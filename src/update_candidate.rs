@@ -365,7 +365,7 @@ pub(crate) fn refused_update_candidate_stage_report(
     report
 }
 
-pub fn run_update_candidate_latest_selftest(args: &[String]) -> Result<(), String> {
+pub(crate) fn run_update_candidate_latest_selftest(args: &[String]) -> Result<(), String> {
     let mut json_out: Option<PathBuf> = None;
     let mut i = 0;
     while i < args.len() {
@@ -435,7 +435,7 @@ pub fn run_update_candidate_latest_selftest(args: &[String]) -> Result<(), Strin
     }
 }
 
-pub fn run_update_candidate_stage_selftest(args: &[String]) -> Result<(), String> {
+pub(crate) fn run_update_candidate_stage_selftest(args: &[String]) -> Result<(), String> {
     let mut json_out: Option<PathBuf> = None;
     let mut current_version_override: Option<String> = None;
     let mut trusted_publisher_key_file: Option<PathBuf> = None;
@@ -1215,7 +1215,7 @@ fn sanitize_evidence_component(value: &str) -> String {
     }
 }
 
-pub fn run_update_candidate_contract_selftest(args: &[String]) -> Result<(), String> {
+pub(crate) fn run_update_candidate_contract_selftest(args: &[String]) -> Result<(), String> {
     let mut json_out: Option<PathBuf> = None;
     let mut i = 0;
     while i < args.len() {

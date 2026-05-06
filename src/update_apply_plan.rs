@@ -245,7 +245,7 @@ pub(crate) fn write_update_apply_plan_evidence_for_stage2(
     record
 }
 
-pub fn run_update_apply_plan_contract_selftest(args: &[String]) -> Result<(), String> {
+pub(crate) fn run_update_apply_plan_contract_selftest(args: &[String]) -> Result<(), String> {
     let mut json_out = None;
     let mut i = 0;
     while i < args.len() {

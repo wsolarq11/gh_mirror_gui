@@ -55,7 +55,7 @@ impl StaticServer {
     }
 }
 
-pub fn run_staged_release_download_selftest(args: &[String]) -> Result<(), String> {
+pub(crate) fn run_staged_release_download_selftest(args: &[String]) -> Result<(), String> {
     // This command spins up a local static HTTP server for deterministic, offline-ish selftests.
     // Keep production network policy strict (GitHub official domains only), but allow loopback
     // URLs inside this selftest harness.

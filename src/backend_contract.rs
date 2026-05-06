@@ -15,16 +15,11 @@ pub use crate::history::default_history_path;
 pub use crate::releases::{ReleaseAsset, ReleaseQuery, ReleaseQueryKind, ResolvedRelease};
 pub use crate::source_trust::ImportedPublisherKeyPin;
 pub use crate::source_trust::SourceTrustPolicyConfig;
-pub use crate::staged_release::run_staged_release_download_selftest;
 pub use crate::trust_policy::{AppliedFileDisposition, FileDispositionAction};
 pub use crate::trust_policy::{MismatchFilePolicy, TrustPolicyConfig};
-pub use crate::update_apply_plan::run_update_apply_plan_contract_selftest;
 pub use crate::update_apply_plan::{
     UpdateApplyPlan, UpdateApplyPlanEvidenceRecord, UpdateApplyPlanStatus, UpdateApplyStep,
 };
-pub use crate::update_candidate::run_update_candidate_contract_selftest;
-pub use crate::update_candidate::run_update_candidate_latest_selftest;
-pub use crate::update_candidate::run_update_candidate_stage_selftest;
 pub use crate::update_candidate::{UpdateCandidateCheckReport, UpdateCandidateStageReport};
 
 pub type DownloadProgressMessage = (u64, u64, f64, f64);
@@ -175,6 +170,26 @@ pub fn trusted_key_fingerprint(public_key_text: &str) -> Option<String> {
 
 pub fn run_bench_download(args: &[String]) -> Result<(), String> {
     CoreRuntime::default().run_bench_download(args)
+}
+
+pub fn run_staged_release_download_selftest(args: &[String]) -> Result<(), String> {
+    CoreRuntime::default().run_staged_release_download_selftest(args)
+}
+
+pub fn run_update_candidate_contract_selftest(args: &[String]) -> Result<(), String> {
+    CoreRuntime::default().run_update_candidate_contract_selftest(args)
+}
+
+pub fn run_update_candidate_latest_selftest(args: &[String]) -> Result<(), String> {
+    CoreRuntime::default().run_update_candidate_latest_selftest(args)
+}
+
+pub fn run_update_candidate_stage_selftest(args: &[String]) -> Result<(), String> {
+    CoreRuntime::default().run_update_candidate_stage_selftest(args)
+}
+
+pub fn run_update_apply_plan_contract_selftest(args: &[String]) -> Result<(), String> {
+    CoreRuntime::default().run_update_apply_plan_contract_selftest(args)
 }
 
 #[cfg(test)]
