@@ -171,6 +171,9 @@ Evidence must remain reviewable and machine-readable:
   public release assets
 - update candidate contract selftest that proves the next self-update layer is
   no-mutation and refuses untrusted candidates before any install/replace step
+- UI shell thinness gate (`checks.ui_shell_thinness`) that fails fast if GUI
+  modules start depending directly on core pipeline layers instead of routing
+  through `backend_contract`
 - Self-update Stage 1 latest-release check and Trust Center display: backend
   reports only `candidate`, `no-update`, or `refused`, records evidence, and
   never installs, replaces the executable, writes system persistence, mutates

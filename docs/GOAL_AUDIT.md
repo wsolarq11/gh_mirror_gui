@@ -49,6 +49,8 @@ The system should:
 ### C. Backend contract is the single front door
 - [ ] UI calls core through `gh_mirror_gui::backend_contract` and consumes stable DTOs.
   - Evidence: `src/backend_contract.rs`, `src/gui_app.rs` (UI shell) + `src/main.rs` (entrypoint), receipt `checks.trust_center_backend_contract`.
+- [ ] UI shell stays thin (no direct dependency on core pipeline modules; rendering-only modules depend on `backend_contract` DTOs).
+  - Evidence: `src/gui_app.rs`, `src/gui_trust_center.rs`, `src/gui_update_candidate.rs`, receipt `checks.ui_shell_thinness`.
 - [ ] Core seams exist for Phase 5 evolution (Artifact Trust Broker shape).
   - Evidence: `src/source_adapter.rs`, `src/verifier_adapter.rs`, `src/evidence_ledger.rs`,
     `docs/ARCHITECTURE.md`.
