@@ -130,6 +130,22 @@ pub fn release_asset_picker_label(asset: &ReleaseAsset) -> String {
     CoreRuntime::default().release_asset_picker_label(asset)
 }
 
+pub fn trust_policy_from_settings(
+    unknown_keep_file: bool,
+    unknown_allow_open: bool,
+    mismatch_file_policy: MismatchFilePolicy,
+    require_trusted_source: bool,
+    trusted_publisher_key: String,
+) -> TrustPolicyConfig {
+    CoreRuntime::default().trust_policy_from_settings(
+        unknown_keep_file,
+        unknown_allow_open,
+        mismatch_file_policy,
+        require_trusted_source,
+        trusted_publisher_key,
+    )
+}
+
 pub fn publisher_key_source_label_for_policy(
     trust_policy: &TrustPolicyConfig,
     publisher_key_source: &str,
@@ -251,6 +267,23 @@ mod tests {
         assert_eq!(release_query_selector_label(&latest), "latest");
         assert_eq!(release_query_selector_label(&tagged), "tag v1.2.3");
         assert_eq!(release_asset_picker_label(&asset), "app.zip (2.0 MiB)");
+    }
+
+    #[test]
+    fn trust_policy_from_settings_keeps_ui_out_of_source_trust_substructure() {
+        let policy = trust_policy_from_settings(
+            false,
+            true,
+            MismatchFilePolicy::Delete,
+            true,
+            "publisher-key".to_string(),
+        );
+
+        assert!(!policy.unknown_keep_file);
+        assert!(policy.unknown_allow_open);
+        assert_eq!(policy.mismatch_file_policy, MismatchFilePolicy::Delete);
+        assert!(policy.source_trust.require_trusted_source);
+        assert_eq!(policy.source_trust.trusted_publisher_key, "publisher-key");
     }
 }
 

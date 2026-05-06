@@ -143,15 +143,13 @@ impl GhMirrorGui {
                     }
                     proxy = state.proxy;
                     allow_invalid_certs = state.allow_invalid_certs;
-                    trust_policy = TrustPolicyConfig {
-                        unknown_keep_file: state.trust_unknown_keep_file,
-                        unknown_allow_open: state.trust_unknown_allow_open,
-                        mismatch_file_policy: state.trust_mismatch_file_policy,
-                        source_trust: backend_contract::SourceTrustPolicyConfig {
-                            require_trusted_source: state.source_trust_require_signed,
-                            trusted_publisher_key: state.source_trust_publisher_key,
-                        },
-                    };
+                    trust_policy = backend_contract::trust_policy_from_settings(
+                        state.trust_unknown_keep_file,
+                        state.trust_unknown_allow_open,
+                        state.trust_mismatch_file_policy,
+                        state.source_trust_require_signed,
+                        state.source_trust_publisher_key,
+                    );
                     publisher_key_source = state.source_trust_publisher_key_source;
                     history_path = state.history_path;
                 }

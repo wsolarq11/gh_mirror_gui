@@ -266,6 +266,25 @@ impl CoreRuntime {
         }
     }
 
+    pub(crate) fn trust_policy_from_settings(
+        &self,
+        unknown_keep_file: bool,
+        unknown_allow_open: bool,
+        mismatch_file_policy: crate::trust_policy::MismatchFilePolicy,
+        require_trusted_source: bool,
+        trusted_publisher_key: String,
+    ) -> TrustPolicyConfig {
+        TrustPolicyConfig {
+            unknown_keep_file,
+            unknown_allow_open,
+            mismatch_file_policy,
+            source_trust: SourceTrustPolicyConfig {
+                require_trusted_source,
+                trusted_publisher_key,
+            },
+        }
+    }
+
     pub(crate) fn build_client(
         &self,
         settings: &CoreClientSettings,
