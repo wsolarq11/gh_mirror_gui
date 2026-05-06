@@ -1,13 +1,9 @@
-use crate::core_runtime::{
-    AppendDownloadHistoryInput, CoreRuntime, DownloadWithStrategyContractInput,
-};
+use crate::core_runtime::{CoreRuntime, RunDownloadContractInput};
 use crate::download::build_client;
 use crate::github_intent::ParsedGithubIntent;
-use crate::history::VerificationHistoryContext;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::{mpsc, Arc};
-use std::time::Instant;
 
 // ---------------------------------------------------------------------------
 // Public backend contract surface (the single runtime "door")
@@ -83,38 +79,26 @@ pub struct TrustCenterSnapshot {
     pub final_path: String,
 }
 
-fn trust_center_snapshot(
-    report: &crate::verification::VerificationReport,
-    evidence_path: Option<&Path>,
-    disposition: &AppliedFileDisposition,
-    policy_snapshot: &crate::trust_policy::TrustPolicySnapshot,
-    publisher_key_source: Option<&str>,
-) -> TrustCenterSnapshot {
-    let snapshot = CoreRuntime::default().trust_center_snapshot(
-        report,
-        evidence_path,
-        disposition,
-        policy_snapshot,
-        publisher_key_source,
-    );
-
-    TrustCenterSnapshot {
-        downloaded_asset: snapshot.downloaded_asset,
-        hash_status: snapshot.hash_status,
-        file_sha256: snapshot.file_sha256,
-        expected_sha256: snapshot.expected_sha256,
-        source_authenticity: snapshot.source_authenticity,
-        source_trust_detail: snapshot.source_trust_detail,
-        source_asset: snapshot.source_asset,
-        signature_asset: snapshot.signature_asset,
-        publisher_key_fingerprint: snapshot.publisher_key_fingerprint,
-        publisher_key_source: snapshot.publisher_key_source,
-        policy_verdict: snapshot.policy_verdict,
-        policy_at_decision: snapshot.policy_at_decision,
-        evidence_path: snapshot.evidence_path,
-        evidence_access: snapshot.evidence_access,
-        file_disposition: snapshot.file_disposition,
-        final_path: snapshot.final_path,
+impl From<crate::trust_center::TrustCenterSnapshot> for TrustCenterSnapshot {
+    fn from(snapshot: crate::trust_center::TrustCenterSnapshot) -> Self {
+        Self {
+            downloaded_asset: snapshot.downloaded_asset,
+            hash_status: snapshot.hash_status,
+            file_sha256: snapshot.file_sha256,
+            expected_sha256: snapshot.expected_sha256,
+            source_authenticity: snapshot.source_authenticity,
+            source_trust_detail: snapshot.source_trust_detail,
+            source_asset: snapshot.source_asset,
+            signature_asset: snapshot.signature_asset,
+            publisher_key_fingerprint: snapshot.publisher_key_fingerprint,
+            publisher_key_source: snapshot.publisher_key_source,
+            policy_verdict: snapshot.policy_verdict,
+            policy_at_decision: snapshot.policy_at_decision,
+            evidence_path: snapshot.evidence_path,
+            evidence_access: snapshot.evidence_access,
+            file_disposition: snapshot.file_disposition,
+            final_path: snapshot.final_path,
+        }
     }
 }
 
@@ -196,16 +180,6 @@ pub fn verification_source_summary_for_release_asset(
     asset_index: usize,
 ) -> String {
     CoreRuntime::default().verification_source_summary_for_selected_asset(release, asset_index)
-}
-
-fn log_error(msg: &str) {
-    let ts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    let line = format!("[{ts}] {msg}");
-    let runtime = CoreRuntime::default();
-    let _ = runtime.append_line(Path::new("download_error.log"), &line);
 }
 
 pub struct BackendClientSettings {
@@ -315,118 +289,43 @@ pub fn run_download_contract(
     ctrl: &Arc<DownloadControl>,
     progress_tx: &mpsc::Sender<DownloadProgressMessage>,
 ) -> Result<DownloadCompletion, String> {
-    let effective_url = input.effective_url.as_str();
-    let save_path = input.save_path;
-    let asset_name = input.asset_name;
-    let mut verification_release = input.verification_release;
-    let mut verification_asset_index = input.verification_asset_index;
-    let trust_policy = input.trust_policy;
-    let publisher_key_source_at_decision = input.publisher_key_source_at_decision;
-    let history_path = input.history_path;
-
-    crate::url_policy::parse_and_validate_https_github_official_url(effective_url, "download url")?;
+    let DownloadContractInput {
+        effective_url,
+        save_path,
+        asset_name,
+        verification_release,
+        verification_asset_index,
+        trust_policy,
+        publisher_key_source_at_decision,
+        history_path,
+    } = input;
 
     let client = match settings.client(3600) {
         Ok(c) => c,
         Err(e) => {
-            log_error(&format!("build_client error: {e}"));
             let _ = progress_tx.send((0, 0, 0.0, 0.0));
             return Err(format!("Client build error: {e}"));
         }
     };
     let runtime = CoreRuntime::default();
-
-    let (probe, probe_error) = runtime.probe_download_best_effort(&client, effective_url);
-    if let Some(e) = probe_error {
-        log_error(&format!("probe_download error: {e}"));
-    }
-
-    let strategy = runtime.choose_download_strategy(Some(&history_path), effective_url, &probe);
-    let save_path_str = save_path.to_string_lossy().to_string();
-    let download_start = Instant::now();
-
-    // Best-effort: when the UI provided no release context (direct URL input), try to map a GitHub
-    // release asset download URL back to its release, so checksum/provenance verification can run.
-    if verification_release.is_none() && verification_asset_index.is_none() {
-        if let Some((release, idx)) = runtime.resolve_release_context_for_download_best_effort(
-            &client,
-            effective_url,
-            &asset_name,
-        ) {
-            verification_release = Some(release);
-            verification_asset_index = Some(idx);
-        }
-    }
-
-    let verification_plan = runtime.verification_plan_from_download_context(
-        verification_release.as_ref(),
-        verification_asset_index,
-    )?;
-
-    runtime.download_with_strategy_contract(DownloadWithStrategyContractInput {
+    let completion = runtime.run_download_contract(RunDownloadContractInput {
         client: &client,
-        url: effective_url,
-        save_path: &save_path_str,
-        probe: &probe,
-        strategy: &strategy,
+        effective_url: effective_url.as_str(),
+        save_path,
+        asset_name,
+        verification_release,
+        verification_asset_index,
+        trust_policy,
+        publisher_key_source_at_decision,
+        history_path,
         ctrl,
         progress_tx,
     })?;
 
-    let verification = match runtime.verify_downloaded_file(
-        &client,
-        &save_path,
-        &asset_name,
-        verification_plan.as_ref(),
-        &trust_policy.source_trust,
-    ) {
-        Ok(report) => report,
-        Err(e) => {
-            log_error(&format!("verify_downloaded_file error: {e}"));
-            return Err(format!(
-                "Download completed but SHA256 verification failed: {e}"
-            ));
-        }
-    };
-
-    let disposition_plan =
-        runtime.plan_file_disposition_for_report(&save_path, &verification, &trust_policy);
-    let evidence_path = runtime.append_download_history_best_effort(AppendDownloadHistoryInput {
-        history_path: &history_path,
-        url: effective_url,
-        output: &save_path,
-        probe: &probe,
-        strategy: &strategy,
-        download_elapsed: download_start.elapsed(),
-        verification: Some(VerificationHistoryContext {
-            report: &verification,
-            policy: &trust_policy,
-            file_disposition: &disposition_plan,
-        }),
-    });
-
-    let file_disposition = runtime
-        .apply_file_disposition_contract(&disposition_plan)
-        .map_err(|e| format!("Download completed but trust policy file disposition failed: {e}"))?;
-
-    let policy_snapshot = trust_policy.snapshot();
-    let publisher_key_source = if publisher_key_source_at_decision.trim().is_empty() {
-        None
-    } else {
-        Some(publisher_key_source_at_decision.as_str())
-    };
-    let trust_center = trust_center_snapshot(
-        &verification,
-        evidence_path.as_deref(),
-        &file_disposition,
-        &policy_snapshot,
-        publisher_key_source,
-    );
-
     Ok(DownloadCompletion {
-        original_path: save_path,
-        trust_center,
-        evidence_path,
-        file_disposition,
+        original_path: completion.original_path,
+        trust_center: completion.trust_center.into(),
+        evidence_path: completion.evidence_path,
+        file_disposition: completion.file_disposition,
     })
 }

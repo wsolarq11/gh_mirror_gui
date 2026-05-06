@@ -2764,7 +2764,20 @@ function Assert-CoreBackendConvergence {
         'parse_github_intent(',
         'crate::source_spec::SourceSpec',
         'crate::verification::verification_source_summary',
-        'crate::trust_center::trust_center_snapshot'
+        'crate::trust_center::trust_center_snapshot',
+        'DownloadWithStrategyContractInput',
+        'AppendDownloadHistoryInput',
+        'VerificationHistoryContext',
+        'std::time::Instant',
+        'crate::url_policy::parse_and_validate_https_github_official_url',
+        '.probe_download_best_effort(',
+        '.choose_download_strategy(',
+        '.verification_plan_from_download_context(',
+        '.download_with_strategy_contract(',
+        '.verify_downloaded_file(',
+        '.plan_file_disposition_for_report(',
+        '.append_download_history_best_effort(',
+        '.apply_file_disposition_contract('
     )
     $backendForbiddenRegex = @(
         '(?m)^\s*use\s+crate::source_trust::import_publisher_key_pin_from_release_asset',
@@ -2789,7 +2802,8 @@ function Assert-CoreBackendConvergence {
         'pub(crate) fn resolve_download_intent',
         'pub(crate) fn verification_source_summary_for_selected_asset',
         'pub(crate) fn resolve_release_context_for_download_best_effort',
-        'pub(crate) fn trust_center_snapshot'
+        'pub(crate) fn trust_center_snapshot',
+        'pub(crate) fn run_download_contract'
     )
     $missing = @($runtimeRequired | Where-Object {
         $runtimeText.IndexOf($_, [System.StringComparison]::Ordinal) -lt 0
@@ -2800,7 +2814,7 @@ function Assert-CoreBackendConvergence {
 
     return [ordered]@{
         ok = $true
-        contract = 'backend_contract remains a stable DTO/use-case door; self-update, publisher-key import, apply-plan, intent, verification-source summary, release-context enrichment, and Trust Center snapshot orchestration route through CoreRuntime'
+        contract = 'backend_contract remains a stable DTO/use-case door; self-update, publisher-key import, apply-plan, intent, verification-source summary, release-context enrichment, Trust Center snapshot, and download/verify/history/disposition orchestration route through CoreRuntime'
         backend_contract = [ordered]@{
             path = $backendPath
             sha256 = (Get-FileHash -LiteralPath $backendPath -Algorithm SHA256).Hash

@@ -52,6 +52,27 @@ pub(crate) struct AppendDownloadHistoryInput<'a> {
     pub(crate) verification: Option<crate::history::VerificationHistoryContext<'a>>,
 }
 
+pub(crate) struct RunDownloadContractInput<'a> {
+    pub(crate) client: &'a Client,
+    pub(crate) effective_url: &'a str,
+    pub(crate) save_path: PathBuf,
+    pub(crate) asset_name: String,
+    pub(crate) verification_release: Option<ResolvedRelease>,
+    pub(crate) verification_asset_index: Option<usize>,
+    pub(crate) trust_policy: TrustPolicyConfig,
+    pub(crate) publisher_key_source_at_decision: String,
+    pub(crate) history_path: PathBuf,
+    pub(crate) ctrl: &'a Arc<DownloadControl>,
+    pub(crate) progress_tx: &'a mpsc::Sender<(u64, u64, f64, f64)>,
+}
+
+pub(crate) struct RunDownloadContractOutput {
+    pub(crate) original_path: PathBuf,
+    pub(crate) trust_center: crate::trust_center::TrustCenterSnapshot,
+    pub(crate) evidence_path: Option<PathBuf>,
+    pub(crate) file_disposition: AppliedFileDisposition,
+}
+
 impl Default for CoreRuntime {
     fn default() -> Self {
         Self::new(
@@ -107,6 +128,15 @@ impl CoreRuntime {
 
     pub(crate) fn resolve_download_intent(&self, input: &str) -> ParsedGithubIntent {
         parse_github_intent(input)
+    }
+
+    fn log_download_error(&self, msg: &str) {
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let line = format!("[{ts}] {msg}");
+        let _ = self.append_line(Path::new("download_error.log"), &line);
     }
 
     pub(crate) fn verification_plan_for_selected_asset(
@@ -363,6 +393,126 @@ impl CoreRuntime {
         )
     }
 
+    pub(crate) fn run_download_contract(
+        &self,
+        input: RunDownloadContractInput<'_>,
+    ) -> Result<RunDownloadContractOutput, String> {
+        let RunDownloadContractInput {
+            client,
+            effective_url,
+            save_path,
+            asset_name,
+            mut verification_release,
+            mut verification_asset_index,
+            trust_policy,
+            publisher_key_source_at_decision,
+            history_path,
+            ctrl,
+            progress_tx,
+        } = input;
+
+        crate::url_policy::parse_and_validate_https_github_official_url(
+            effective_url,
+            "download url",
+        )?;
+
+        let (probe, probe_error) = self.probe_download_best_effort(client, effective_url);
+        if let Some(e) = probe_error {
+            self.log_download_error(&format!("probe_download error: {e}"));
+        }
+
+        let strategy = self.choose_download_strategy(Some(&history_path), effective_url, &probe);
+        let save_path_str = save_path.to_string_lossy().to_string();
+        let download_start = std::time::Instant::now();
+
+        // Best-effort: when the UI provided no release context (direct URL input), try to map a GitHub
+        // release asset download URL back to its release, so checksum/provenance verification can run.
+        if verification_release.is_none() && verification_asset_index.is_none() {
+            if let Some((release, idx)) = self.resolve_release_context_for_download_best_effort(
+                client,
+                effective_url,
+                &asset_name,
+            ) {
+                verification_release = Some(release);
+                verification_asset_index = Some(idx);
+            }
+        }
+
+        let verification_plan = self.verification_plan_from_download_context(
+            verification_release.as_ref(),
+            verification_asset_index,
+        )?;
+
+        self.download_with_strategy_contract(DownloadWithStrategyContractInput {
+            client,
+            url: effective_url,
+            save_path: &save_path_str,
+            probe: &probe,
+            strategy: &strategy,
+            ctrl,
+            progress_tx,
+        })?;
+
+        let verification = match self.verify_downloaded_file(
+            client,
+            &save_path,
+            &asset_name,
+            verification_plan.as_ref(),
+            &trust_policy.source_trust,
+        ) {
+            Ok(report) => report,
+            Err(e) => {
+                self.log_download_error(&format!("verify_downloaded_file error: {e}"));
+                return Err(format!(
+                    "Download completed but SHA256 verification failed: {e}"
+                ));
+            }
+        };
+
+        let disposition_plan =
+            self.plan_file_disposition_for_report(&save_path, &verification, &trust_policy);
+        let evidence_path = self.append_download_history_best_effort(AppendDownloadHistoryInput {
+            history_path: &history_path,
+            url: effective_url,
+            output: &save_path,
+            probe: &probe,
+            strategy: &strategy,
+            download_elapsed: download_start.elapsed(),
+            verification: Some(crate::history::VerificationHistoryContext {
+                report: &verification,
+                policy: &trust_policy,
+                file_disposition: &disposition_plan,
+            }),
+        });
+
+        let file_disposition = self
+            .apply_file_disposition_contract(&disposition_plan)
+            .map_err(|e| {
+                format!("Download completed but trust policy file disposition failed: {e}")
+            })?;
+
+        let policy_snapshot = trust_policy.snapshot();
+        let publisher_key_source = if publisher_key_source_at_decision.trim().is_empty() {
+            None
+        } else {
+            Some(publisher_key_source_at_decision.as_str())
+        };
+        let trust_center = self.trust_center_snapshot(
+            &verification,
+            evidence_path.as_deref(),
+            &file_disposition,
+            &policy_snapshot,
+            publisher_key_source,
+        );
+
+        Ok(RunDownloadContractOutput {
+            original_path: save_path,
+            trust_center,
+            evidence_path,
+            file_disposition,
+        })
+    }
+
     pub(crate) fn check_latest_update_candidate(
         &self,
         client: &Client,
@@ -458,7 +608,7 @@ mod tests {
     use super::*;
     use crate::releases::{ReleaseAsset, ReleaseQueryKind};
     use std::path::Path;
-    use std::sync::{Arc, Mutex};
+    use std::sync::{mpsc, Arc, Mutex};
 
     struct FakeSourceAdapter {
         calls: Arc<Mutex<usize>>,
@@ -669,5 +819,37 @@ mod tests {
         assert_eq!(idx, 0);
         assert_eq!(resolved.assets[0].browser_download_url, asset_url);
         assert_eq!(*source_calls.lock().expect("lock"), 1);
+    }
+
+    #[test]
+    fn core_runtime_download_contract_owns_url_policy_gate() {
+        let runtime = CoreRuntime::default();
+        let client = Client::builder()
+            .build()
+            .expect("reqwest client build should succeed in unit tests");
+        let (tx, _rx) = mpsc::channel();
+        let ctrl = Arc::new(DownloadControl::new());
+
+        let result = runtime.run_download_contract(RunDownloadContractInput {
+            client: &client,
+            effective_url: "https://example.com/file.bin",
+            save_path: PathBuf::from("target/core-runtime-url-policy.bin"),
+            asset_name: "file.bin".to_string(),
+            verification_release: None,
+            verification_asset_index: None,
+            trust_policy: TrustPolicyConfig::default(),
+            publisher_key_source_at_decision: String::new(),
+            history_path: PathBuf::from("target/core-runtime-url-policy-history.jsonl"),
+            ctrl: &ctrl,
+            progress_tx: &tx,
+        });
+        let err = match result {
+            Ok(_) => {
+                panic!("CoreRuntime should reject non-official artifact hosts before download")
+            }
+            Err(err) => err,
+        };
+
+        assert!(err.contains("unsupported host: example.com"));
     }
 }
