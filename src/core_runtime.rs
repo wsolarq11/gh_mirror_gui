@@ -7,6 +7,8 @@ use crate::source_adapter::{GitHubReleaseAdapter, SourceAdapter};
 use crate::source_spec::SourceSpec;
 use crate::source_trust::SourceTrustPolicyConfig;
 use crate::trust_policy::{AppliedFileDisposition, PlannedFileDisposition, TrustPolicyConfig};
+use crate::update_apply_plan::{UpdateApplyPlan, UpdateApplyPlanEvidenceRecord};
+use crate::update_candidate::{UpdateCandidateCheckReport, UpdateCandidateStageReport};
 use crate::verification::{DownloadVerificationPlan, VerificationReport};
 use crate::verifier_adapter::{GitHubReleaseVerifierAdapter, VerifierAdapter};
 use reqwest::blocking::Client;
@@ -92,6 +94,14 @@ impl CoreRuntime {
     ) -> Result<ResolvedRelease, String> {
         self.source_adapter
             .resolve_release_assets(client, api_base, spec)
+    }
+
+    pub(crate) fn import_publisher_key_from_release_asset(
+        &self,
+        client: &Client,
+        asset: &crate::releases::ReleaseAsset,
+    ) -> Result<crate::source_trust::ImportedPublisherKeyPin, String> {
+        crate::source_trust::import_publisher_key_pin_from_release_asset(client, asset)
     }
 
     pub(crate) fn verification_plan_for_selected_asset(
@@ -294,6 +304,95 @@ impl CoreRuntime {
                 Err(e)
             }
         }
+    }
+
+    pub(crate) fn check_latest_update_candidate(
+        &self,
+        client: &Client,
+        current_version: &str,
+        source_trust_policy: &SourceTrustPolicyConfig,
+        evidence_dir: &Path,
+        api_base: Option<&str>,
+    ) -> UpdateCandidateCheckReport {
+        crate::update_candidate::check_latest_update_candidate(
+            client,
+            crate::update_candidate::UpdateCandidateCheckConfig {
+                current_version,
+                source_trust_policy,
+                evidence_dir,
+                api_base,
+            },
+        )
+    }
+
+    pub(crate) fn refused_update_candidate_check_report(
+        &self,
+        current_version: &str,
+        reason: String,
+        evidence_dir: &Path,
+    ) -> UpdateCandidateCheckReport {
+        crate::update_candidate::refused_update_candidate_check_report(
+            current_version,
+            reason,
+            evidence_dir,
+        )
+    }
+
+    pub(crate) fn stage_latest_update_candidate(
+        &self,
+        client: &Client,
+        current_version: &str,
+        source_trust_policy: &SourceTrustPolicyConfig,
+        evidence_dir: &Path,
+        stage_root: &Path,
+        api_base: Option<&str>,
+    ) -> UpdateCandidateStageReport {
+        crate::update_candidate::stage_latest_update_candidate(
+            client,
+            crate::update_candidate::UpdateCandidateStageConfig {
+                current_version,
+                source_trust_policy,
+                evidence_dir,
+                stage_root,
+                api_base,
+            },
+        )
+    }
+
+    pub(crate) fn refused_update_candidate_stage_report(
+        &self,
+        current_version: &str,
+        reason: String,
+        evidence_dir: &Path,
+    ) -> UpdateCandidateStageReport {
+        crate::update_candidate::refused_update_candidate_stage_report(
+            current_version,
+            reason,
+            evidence_dir,
+        )
+    }
+
+    pub(crate) fn build_update_apply_plan_for_stage2(
+        &self,
+        stage_report: &UpdateCandidateStageReport,
+        target_exe_path: &Path,
+    ) -> UpdateApplyPlan {
+        let suffix = match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+            Ok(dur) => format!("{}-{}", dur.as_secs(), std::process::id()),
+            Err(_) => format!("unknown-{}", std::process::id()),
+        };
+        crate::update_apply_plan::build_update_apply_plan(stage_report, target_exe_path, &suffix)
+    }
+
+    pub(crate) fn record_update_apply_plan_evidence_for_stage2(
+        &self,
+        stage_report: &UpdateCandidateStageReport,
+        target_exe_path: &Path,
+    ) -> UpdateApplyPlanEvidenceRecord {
+        crate::update_apply_plan::write_update_apply_plan_evidence_for_stage2(
+            stage_report,
+            target_exe_path,
+        )
     }
 }
 

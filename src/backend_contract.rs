@@ -4,11 +4,6 @@ use crate::core_runtime::{
 use crate::download::build_client;
 use crate::github_intent::{parse_github_intent, ParsedGithubIntent};
 use crate::history::VerificationHistoryContext;
-use crate::source_trust::import_publisher_key_pin_from_release_asset;
-use crate::update_candidate::{
-    check_latest_update_candidate, refused_update_candidate_check_report,
-    refused_update_candidate_stage_report, stage_latest_update_candidate,
-};
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::{mpsc, Arc};
@@ -253,7 +248,7 @@ pub fn import_publisher_key_from_release_asset(
     let client = settings
         .client(30)
         .map_err(|e| format!("Publisher key import client error: {e}"))?;
-    import_publisher_key_pin_from_release_asset(&client, asset)
+    CoreRuntime::default().import_publisher_key_from_release_asset(&client, asset)
 }
 
 pub fn run_update_candidate_check(
@@ -262,17 +257,16 @@ pub fn run_update_candidate_check(
     source_trust_policy: &SourceTrustPolicyConfig,
     evidence_dir: &Path,
 ) -> UpdateCandidateCheckReport {
+    let runtime = CoreRuntime::default();
     match settings.client(60) {
-        Ok(client) => check_latest_update_candidate(
+        Ok(client) => runtime.check_latest_update_candidate(
             &client,
-            crate::update_candidate::UpdateCandidateCheckConfig {
-                current_version,
-                source_trust_policy,
-                evidence_dir,
-                api_base: None,
-            },
+            current_version,
+            source_trust_policy,
+            evidence_dir,
+            None,
         ),
-        Err(e) => refused_update_candidate_check_report(
+        Err(e) => runtime.refused_update_candidate_check_report(
             current_version,
             format!("self-update client build failed: {e}"),
             evidence_dir,
@@ -287,18 +281,17 @@ pub fn run_update_candidate_stage(
     evidence_dir: &Path,
     stage_root: &Path,
 ) -> UpdateCandidateStageReport {
+    let runtime = CoreRuntime::default();
     match settings.client(60) {
-        Ok(client) => stage_latest_update_candidate(
+        Ok(client) => runtime.stage_latest_update_candidate(
             &client,
-            crate::update_candidate::UpdateCandidateStageConfig {
-                current_version,
-                source_trust_policy,
-                evidence_dir,
-                stage_root,
-                api_base: None,
-            },
+            current_version,
+            source_trust_policy,
+            evidence_dir,
+            stage_root,
+            None,
         ),
-        Err(e) => refused_update_candidate_stage_report(
+        Err(e) => runtime.refused_update_candidate_stage_report(
             current_version,
             format!("self-update client build failed: {e}"),
             evidence_dir,
@@ -310,21 +303,15 @@ pub fn build_update_apply_plan_for_stage2(
     stage_report: &UpdateCandidateStageReport,
     target_exe_path: &Path,
 ) -> UpdateApplyPlan {
-    let suffix = match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
-        Ok(dur) => format!("{}-{}", dur.as_secs(), std::process::id()),
-        Err(_) => format!("unknown-{}", std::process::id()),
-    };
-    crate::update_apply_plan::build_update_apply_plan(stage_report, target_exe_path, &suffix)
+    CoreRuntime::default().build_update_apply_plan_for_stage2(stage_report, target_exe_path)
 }
 
 pub fn record_update_apply_plan_evidence_for_stage2(
     stage_report: &UpdateCandidateStageReport,
     target_exe_path: &Path,
 ) -> UpdateApplyPlanEvidenceRecord {
-    crate::update_apply_plan::write_update_apply_plan_evidence_for_stage2(
-        stage_report,
-        target_exe_path,
-    )
+    CoreRuntime::default()
+        .record_update_apply_plan_evidence_for_stage2(stage_report, target_exe_path)
 }
 
 pub fn run_download_contract(

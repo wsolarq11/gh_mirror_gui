@@ -25,6 +25,7 @@ pub(crate) struct BenchConfig {
     pub(crate) history: Option<PathBuf>,
     pub(crate) proxy: String,
     pub(crate) allow_invalid_certs: bool,
+    pub(crate) allow_local_http: bool,
     pub(crate) mode: BenchMode,
     pub(crate) segment_size: Option<u64>,
     pub(crate) concurrency: Option<usize>,
@@ -140,6 +141,7 @@ pub(crate) fn parse_bench_config(args: &[String]) -> Result<BenchConfig, String>
     let mut history = None;
     let mut proxy = String::new();
     let mut allow_invalid_certs = false;
+    let mut allow_local_http = false;
     let mut mode = BenchMode::Auto;
     let mut segment_size = None;
     let mut concurrency = None;
@@ -169,6 +171,9 @@ pub(crate) fn parse_bench_config(args: &[String]) -> Result<BenchConfig, String>
             }
             "--allow-invalid-certs" => {
                 allow_invalid_certs = true;
+            }
+            "--allow-local-http" => {
+                allow_local_http = true;
             }
             "--mode" => {
                 i += 1;
@@ -205,7 +210,7 @@ pub(crate) fn parse_bench_config(args: &[String]) -> Result<BenchConfig, String>
             }
             "--help" | "-h" => {
                 return Err(
-                    "Usage: gh_mirror_gui.exe --bench-download --url <URL> --out <PATH> [--json <PATH>] [--history <PATH>] [--proxy <URL>] [--allow-invalid-certs] [--mode auto|single|segmented|adaptive] [--segment-size BYTES] [--concurrency N]"
+                    "Usage: gh_mirror_gui.exe --bench-download --url <URL> --out <PATH> [--json <PATH>] [--history <PATH>] [--proxy <URL>] [--allow-invalid-certs] [--allow-local-http] [--mode auto|single|segmented|adaptive] [--segment-size BYTES] [--concurrency N]"
                         .to_string(),
                 );
             }
@@ -223,6 +228,7 @@ pub(crate) fn parse_bench_config(args: &[String]) -> Result<BenchConfig, String>
         history,
         proxy,
         allow_invalid_certs,
+        allow_local_http,
         mode,
         segment_size,
         concurrency,
@@ -446,6 +452,9 @@ fn choose_adaptive_candidate(
 
 pub fn run_bench_download(args: &[String]) -> Result<(), String> {
     let config = parse_bench_config(args)?;
+    if config.allow_local_http {
+        crate::url_policy::enable_loopback_for_selftests();
+    }
     crate::url_policy::parse_and_validate_https_github_official_url(&config.url, "bench url")?;
     if let Some(parent) = config.out.parent() {
         fs::create_dir_all(parent)
@@ -626,6 +635,19 @@ mod tests {
         ])
         .unwrap();
         assert!(config.allow_invalid_certs);
+    }
+
+    #[test]
+    fn bench_config_accepts_explicit_local_http_gate() {
+        let config = parse_bench_config(&[
+            "--url".to_string(),
+            "http://127.0.0.1:1234/file.bin".to_string(),
+            "--out".to_string(),
+            "target/test.bin".to_string(),
+            "--allow-local-http".to_string(),
+        ])
+        .unwrap();
+        assert!(config.allow_local_http);
     }
 
     #[test]

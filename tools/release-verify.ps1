@@ -2323,6 +2323,232 @@ function Invoke-CurlBenchmark {
     }
 }
 
+function Start-LocalRangeFileServer {
+    param(
+        [string]$FilePath,
+        [string]$RouteName,
+        [string]$Name
+    )
+
+    $item = Get-Item -LiteralPath $FilePath
+    $safeRoute = ($RouteName -replace '[^A-Za-z0-9_.-]', '-')
+    if ([string]::IsNullOrWhiteSpace($safeRoute)) {
+        $safeRoute = 'asset.bin'
+    }
+    $safeName = ($Name -replace '[^A-Za-z0-9_.-]', '-')
+    if ([string]::IsNullOrWhiteSpace($safeName)) {
+        $safeName = 'range-server'
+    }
+
+    $portProbe = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Parse('127.0.0.1'), 0)
+    $portProbe.Start()
+    $port = [int]$portProbe.LocalEndpoint.Port
+    $portProbe.Stop()
+
+    $baseUrl = "http://127.0.0.1:$port/"
+    $stopPath = Join-Path $EvidenceDir "$safeName.stop"
+    $logPath = Join-Path $EvidenceDir "$safeName.log"
+    Remove-Item -LiteralPath $stopPath -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $logPath -Force -ErrorAction SilentlyContinue
+
+    $job = Start-Job -Name "gh_mirror_gui-$safeName" -ArgumentList @(
+        $item.FullName,
+        $baseUrl,
+        $safeRoute,
+        $stopPath,
+        $logPath
+    ) -ScriptBlock {
+        param(
+            [string]$ServerFilePath,
+            [string]$ServerBaseUrl,
+            [string]$ServerRoute,
+            [string]$ServerStopPath,
+            [string]$ServerLogPath
+        )
+
+        $ErrorActionPreference = 'Stop'
+        function Write-RangeServerLog {
+            param([string]$Message)
+            $line = "{0} {1}" -f (Get-Date).ToString('o'), $Message
+            Add-Content -LiteralPath $ServerLogPath -Value $line -Encoding UTF8
+        }
+        function Write-RangeServerText {
+            param(
+                [System.Net.HttpListenerContext]$Context,
+                [int]$StatusCode,
+                [string]$Text
+            )
+            $bytes = [System.Text.Encoding]::UTF8.GetBytes($Text)
+            $Context.Response.StatusCode = $StatusCode
+            $Context.Response.ContentType = 'text/plain; charset=utf-8'
+            $Context.Response.ContentLength64 = $bytes.Length
+            if ($Context.Request.HttpMethod -ne 'HEAD') {
+                $Context.Response.OutputStream.Write($bytes, 0, $bytes.Length)
+            }
+        }
+
+        $listener = [System.Net.HttpListener]::new()
+        $listener.Prefixes.Add($ServerBaseUrl)
+        $listener.Start()
+        Write-RangeServerLog "STARTED base=$ServerBaseUrl route=$ServerRoute file=$ServerFilePath"
+        try {
+            $async = $listener.BeginGetContext($null, $null)
+            while (!(Test-Path -LiteralPath $ServerStopPath)) {
+                if (!$async.AsyncWaitHandle.WaitOne(500)) {
+                    continue
+                }
+                $context = $listener.EndGetContext($async)
+                $async = $listener.BeginGetContext($null, $null)
+                try {
+                    $path = $context.Request.Url.AbsolutePath.TrimStart('/')
+                    if ($path -eq '__health') {
+                        Write-RangeServerText -Context $context -StatusCode 200 -Text 'OK'
+                        continue
+                    }
+                    if ($path -ne $ServerRoute) {
+                        Write-RangeServerText -Context $context -StatusCode 404 -Text 'not found'
+                        continue
+                    }
+
+                    $fileInfo = Get-Item -LiteralPath $ServerFilePath
+                    $total = [int64]$fileInfo.Length
+                    $start = [int64]0
+                    $end = [int64]($total - 1)
+                    $status = 200
+                    $range = [string]$context.Request.Headers['Range']
+                    if ($range -match '^bytes=(\d+)-(\d*)$') {
+                        $start = [int64]$Matches[1]
+                        if (![string]::IsNullOrWhiteSpace($Matches[2])) {
+                            $end = [int64]$Matches[2]
+                        }
+                        if ($start -ge $total) {
+                            $context.Response.StatusCode = 416
+                            $context.Response.Headers.Add('Content-Range', "bytes */$total")
+                            $context.Response.ContentLength64 = 0
+                            continue
+                        }
+                        if ($end -ge $total) {
+                            $end = [int64]($total - 1)
+                        }
+                        $status = 206
+                    }
+
+                    $count = [int64]($end - $start + 1)
+                    $context.Response.StatusCode = $status
+                    $context.Response.ContentType = 'application/octet-stream'
+                    $context.Response.Headers.Add('Accept-Ranges', 'bytes')
+                    $context.Response.Headers.Add('ETag', '"release-verify-local-range"')
+                    $context.Response.Headers.Add('Last-Modified', $fileInfo.LastWriteTimeUtc.ToString('R'))
+                    if ($status -eq 206) {
+                        $context.Response.Headers.Add('Content-Range', "bytes $start-$end/$total")
+                    }
+                    $context.Response.ContentLength64 = $count
+
+                    if ($context.Request.HttpMethod -ne 'HEAD') {
+                        $buffer = New-Object byte[] 1048576
+                        $remaining = $count
+                        $stream = [System.IO.File]::OpenRead($ServerFilePath)
+                        try {
+                            [void]$stream.Seek($start, [System.IO.SeekOrigin]::Begin)
+                            while ($remaining -gt 0) {
+                                $toRead = [int][Math]::Min($buffer.Length, $remaining)
+                                $read = $stream.Read($buffer, 0, $toRead)
+                                if ($read -le 0) { break }
+                                $context.Response.OutputStream.Write($buffer, 0, $read)
+                                $remaining -= $read
+                            }
+                        }
+                        finally {
+                            if ($null -ne $stream) { $stream.Dispose() }
+                        }
+                    }
+                }
+                catch {
+                    Write-RangeServerLog "REQUEST_ERROR $($_.Exception.Message)"
+                    try {
+                        if ($context.Response.OutputStream.CanWrite) {
+                            Write-RangeServerText -Context $context -StatusCode 500 -Text 'server error'
+                        }
+                    }
+                    catch {}
+                }
+                finally {
+                    try { $context.Response.Close() } catch {}
+                }
+            }
+        }
+        finally {
+            Write-RangeServerLog 'STOPPED'
+            if ($listener.IsListening) {
+                $listener.Stop()
+            }
+            $listener.Close()
+        }
+    }
+
+    $healthUrl = "${baseUrl}__health"
+    $ready = $false
+    for ($i = 0; $i -lt 50; $i++) {
+        Start-Sleep -Milliseconds 100
+        if ($job.State -eq 'Failed') {
+            $jobOutput = Receive-Job -Job $job -Keep -ErrorAction SilentlyContinue
+            throw "local range server failed to start: $($jobOutput -join '; ')"
+        }
+        try {
+            $response = Invoke-WebRequest -UseBasicParsing -Uri $healthUrl -TimeoutSec 2
+            if ([int]$response.StatusCode -eq 200) {
+                $ready = $true
+                break
+            }
+        }
+        catch {}
+    }
+    if (!$ready) {
+        Stop-Job -Job $job -ErrorAction SilentlyContinue
+        Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
+        throw "local range server did not become ready at $baseUrl"
+    }
+
+    return [ordered]@{
+        url = "$baseUrl$safeRoute"
+        base_url = $baseUrl
+        job_id = $job.Id
+        stop_path = $stopPath
+        log_path = $logPath
+        source = $item.FullName
+        source_size = $item.Length
+        route = $safeRoute
+    }
+}
+
+function Stop-LocalRangeFileServer {
+    param([object]$Server)
+
+    if ($null -eq $Server) {
+        return
+    }
+    try {
+        Set-Content -LiteralPath $Server.stop_path -Value 'stop' -Encoding UTF8
+    }
+    catch {}
+    try {
+        Invoke-WebRequest -UseBasicParsing -Uri "$($Server.base_url)__health" -TimeoutSec 2 | Out-Null
+    }
+    catch {}
+    $job = Get-Job -Id $Server.job_id -ErrorAction SilentlyContinue
+    if ($null -ne $job) {
+        Wait-Job -Job $job -Timeout 5 | Out-Null
+        $jobOutput = Receive-Job -Job $job -ErrorAction SilentlyContinue
+        if ($jobOutput) {
+            Add-Content -LiteralPath $Server.log_path -Value $jobOutput -Encoding UTF8
+        }
+        if ($job.State -eq 'Running') {
+            Stop-Job -Job $job -ErrorAction SilentlyContinue
+        }
+        Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Invoke-BenchVariant {
     param(
         [string]$Name,
@@ -2513,6 +2739,74 @@ function Assert-GoalAnchorContract {
     }
 }
 
+function Assert-CoreBackendConvergence {
+    $backendPath = Join-Path $RepoRoot 'src\backend_contract.rs'
+    $runtimePath = Join-Path $RepoRoot 'src\core_runtime.rs'
+    if (!(Test-Path -LiteralPath $backendPath)) {
+        throw 'backend contract module missing: src\backend_contract.rs'
+    }
+    if (!(Test-Path -LiteralPath $runtimePath)) {
+        throw 'core runtime module missing: src\core_runtime.rs'
+    }
+
+    $backendText = Get-Content -LiteralPath $backendPath -Raw
+    $runtimeText = Get-Content -LiteralPath $runtimePath -Raw
+    $backendForbidden = @(
+        'crate::source_trust::import_publisher_key_pin_from_release_asset',
+        'crate::update_candidate::check_latest_update_candidate',
+        'crate::update_candidate::stage_latest_update_candidate',
+        'crate::update_candidate::refused_update_candidate_check_report',
+        'crate::update_candidate::refused_update_candidate_stage_report',
+        'crate::update_candidate::UpdateCandidateCheckConfig',
+        'crate::update_candidate::UpdateCandidateStageConfig',
+        'crate::update_apply_plan::build_update_apply_plan',
+        'crate::update_apply_plan::write_update_apply_plan_evidence_for_stage2'
+    )
+    $backendForbiddenRegex = @(
+        '(?m)^\s*use\s+crate::source_trust::import_publisher_key_pin_from_release_asset',
+        '(?m)^\s*use\s+crate::update_candidate::\{'
+    )
+    $present = @($backendForbidden | Where-Object {
+        $backendText.IndexOf($_, [System.StringComparison]::Ordinal) -ge 0
+    })
+    $present += @($backendForbiddenRegex | Where-Object { $backendText -match $_ })
+    if ($present.Count -gt 0) {
+        throw "backend_contract owns orchestration that must live in CoreRuntime: $($present -join ', ')"
+    }
+
+    $runtimeRequired = @(
+        'pub(crate) fn import_publisher_key_from_release_asset',
+        'pub(crate) fn check_latest_update_candidate',
+        'pub(crate) fn refused_update_candidate_check_report',
+        'pub(crate) fn stage_latest_update_candidate',
+        'pub(crate) fn refused_update_candidate_stage_report',
+        'pub(crate) fn build_update_apply_plan_for_stage2',
+        'pub(crate) fn record_update_apply_plan_evidence_for_stage2'
+    )
+    $missing = @($runtimeRequired | Where-Object {
+        $runtimeText.IndexOf($_, [System.StringComparison]::Ordinal) -lt 0
+    })
+    if ($missing.Count -gt 0) {
+        throw "CoreRuntime missing backend convergence entrypoints: $($missing -join ', ')"
+    }
+
+    return [ordered]@{
+        ok = $true
+        contract = 'backend_contract remains a stable DTO/use-case door; self-update, publisher-key import, and apply-plan orchestration route through CoreRuntime'
+        backend_contract = [ordered]@{
+            path = $backendPath
+            sha256 = (Get-FileHash -LiteralPath $backendPath -Algorithm SHA256).Hash
+            forbidden_patterns_absent = $backendForbidden
+            forbidden_regex_absent = $backendForbiddenRegex
+        }
+        core_runtime = [ordered]@{
+            path = $runtimePath
+            sha256 = (Get-FileHash -LiteralPath $runtimePath -Algorithm SHA256).Hash
+            required_patterns = $runtimeRequired
+        }
+    }
+}
+
 $gitHead = @(Invoke-CapturedNative -Name 'provenance-git-head' -Exe 'git' -Arguments @('rev-parse', 'HEAD'))
 $gitBranch = @(Invoke-CapturedNative -Name 'provenance-git-branch' -Exe 'git' -Arguments @('branch', '--show-current'))
 $gitDescribe = @(Invoke-CapturedNative -Name 'provenance-git-describe' -Exe 'git' -Arguments @('describe', '--tags', '--always', '--dirty'))
@@ -2551,6 +2845,7 @@ $Receipt.checks.route_guardrails = [ordered]@{
     ok = $true
     goal_anchor = Assert-GoalAnchorContract
     design_doc_inventory = Assert-DesignDocInventory
+    core_backend_convergence = Assert-CoreBackendConvergence
     agents = Assert-FileContains `
         -RelativePath 'AGENTS.md' `
         -RequiredPatterns @(
@@ -2883,72 +3178,124 @@ else {
 if (!$SkipBenchmark) {
     $benchOut = Join-Path $EvidenceDir $targetAsset.name
     $benchJson = Join-Path $EvidenceDir 'bench-download.json'
-    $bench = Invoke-BenchVariant `
-        -Name 'download-latest-asset' `
-        -Url $targetAsset.browser_download_url `
-        -OutFile $benchOut `
-        -JsonFile $benchJson `
-        -ExtraArgs @('--mode', 'auto')
-    $Receipt.checks.download_benchmark = $bench
-    $Receipt.artifacts.benchmark_download = [ordered]@{
-        path = $benchOut
-        json = $benchJson
-        size = (Get-Item -LiteralPath $benchOut).Length
-        sha256 = (Get-FileHash -LiteralPath $benchOut -Algorithm SHA256).Hash
-    }
-    if ($bench.status -ne 'PASS') {
-        throw "benchmark status was $($bench.status)"
-    }
-    if ($Receipt.artifacts.benchmark_download.size -ne $bench.total_bytes) {
-        throw "benchmark size mismatch"
-    }
-    if ($Receipt.artifacts.benchmark_download.sha256 -ne $bench.sha256) {
-        throw "benchmark sha256 mismatch"
-    }
-
-    if (!$SkipBenchmarkMatrix) {
-        $variants = @(
-            [ordered]@{ name = 'single'; args = @('--mode', 'single') },
-            [ordered]@{ name = 'seg-c4-s4m'; args = @('--mode', 'segmented', '--concurrency', '4', '--segment-size', '4194304') },
-            [ordered]@{ name = 'seg-c8-s4m'; args = @('--mode', 'segmented', '--concurrency', '8', '--segment-size', '4194304') },
-            [ordered]@{ name = 'seg-c16-s4m'; args = @('--mode', 'segmented', '--concurrency', '16', '--segment-size', '4194304') },
-            [ordered]@{ name = 'seg-c32-s2m'; args = @('--mode', 'segmented', '--concurrency', '32', '--segment-size', '2097152') }
-        )
-        $bench | Add-Member -NotePropertyName variant -NotePropertyValue 'auto' -Force
-        $matrix = @($bench)
-        foreach ($variant in $variants) {
-            $out = Join-Path $EvidenceDir ("matrix-$($variant.name)-$($targetAsset.name)")
-            $json = Join-Path $EvidenceDir ("matrix-$($variant.name).json")
-            $result = Invoke-BenchVariant `
-                -Name $variant.name `
-                -Url $targetAsset.browser_download_url `
-                -OutFile $out `
-                -JsonFile $json `
-                -ExtraArgs $variant.args
-            $result | Add-Member -NotePropertyName variant -NotePropertyValue $variant.name -Force
-            $matrix += $result
+    $benchmarkUrl = $targetAsset.browser_download_url
+    $benchmarkFallback = $null
+    $benchmarkRangeServer = $null
+    try {
+        try {
+            $bench = Invoke-BenchVariant `
+                -Name 'download-latest-asset' `
+                -Url $benchmarkUrl `
+                -OutFile $benchOut `
+                -JsonFile $benchJson `
+                -ExtraArgs @('--mode', 'auto')
+        }
+        catch {
+            $remoteBenchmarkError = $_.Exception.Message
+            $fallbackSource = Join-Path $EvidenceDir ("bench-fallback-source-$($targetAsset.name)")
+            $ghResult = Save-ReleaseAssetWithGhFallback -Asset $targetAsset -OutFile $fallbackSource
+            $benchmarkRangeServer = Start-LocalRangeFileServer `
+                -FilePath $fallbackSource `
+                -RouteName $targetAsset.name `
+                -Name 'bench-local-range-server'
+            $benchmarkUrl = $benchmarkRangeServer.url
+            $bench = Invoke-BenchVariant `
+                -Name 'download-latest-asset-local-range-fallback' `
+                -Url $benchmarkUrl `
+                -OutFile $benchOut `
+                -JsonFile $benchJson `
+                -ExtraArgs @('--mode', 'auto', '--allow-local-http')
+            $benchmarkFallback = [ordered]@{
+                degraded_from_url = $targetAsset.browser_download_url
+                reason = $remoteBenchmarkError
+                source_download = [ordered]@{
+                    transport = $ghResult.transport
+                    repo = $ghResult.repo
+                    tag = $ghResult.tag
+                    asset = $ghResult.asset
+                    attempts = $ghResult.attempts
+                    previous_errors = $ghResult.previous_errors
+                    path = $fallbackSource
+                    size = (Get-Item -LiteralPath $fallbackSource).Length
+                    sha256 = (Get-FileHash -LiteralPath $fallbackSource -Algorithm SHA256).Hash
+                }
+                local_range_server = [ordered]@{
+                    url = $benchmarkRangeServer.url
+                    source = $benchmarkRangeServer.source
+                    source_size = $benchmarkRangeServer.source_size
+                    log = $benchmarkRangeServer.log_path
+                }
+            }
+            $bench | Add-Member -NotePropertyName release_verify_degraded_benchmark -NotePropertyValue $benchmarkFallback -Force
         }
 
-        $curlOut = Join-Path $EvidenceDir ("matrix-curl-$($targetAsset.name)")
-        $curlBench = Invoke-CurlBenchmark -Url $targetAsset.browser_download_url -OutFile $curlOut
-        $curlBench | Add-Member -NotePropertyName variant -NotePropertyValue 'curl' -Force
-        $matrix += $curlBench
-        $winner = @($matrix | Where-Object { $_.status -eq 'PASS' -and $_.avg_mib_s -ne $null } | Sort-Object avg_mib_s -Descending | Select-Object -First 1)[0]
-        $Receipt.checks.download_benchmark_matrix = [ordered]@{
-            variants = $matrix
-            winner = $winner
+        $Receipt.checks.download_benchmark = $bench
+        $Receipt.artifacts.benchmark_download = [ordered]@{
+            path = $benchOut
+            json = $benchJson
+            size = (Get-Item -LiteralPath $benchOut).Length
+            sha256 = (Get-FileHash -LiteralPath $benchOut -Algorithm SHA256).Hash
         }
-        $matrixPath = Join-Path $EvidenceDir 'bench-matrix.json'
-        $Receipt.checks.download_benchmark_matrix | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $matrixPath -Encoding UTF8
-        $Receipt.artifacts.benchmark_matrix = [ordered]@{
-            json = $matrixPath
-            winner_mode = $winner.mode
-            winner_avg_mib_s = $winner.avg_mib_s
-            winner_download_ms = $winner.download_ms
+        if ($null -ne $benchmarkFallback) {
+            $Receipt.artifacts.benchmark_download.source = $benchmarkFallback.source_download
+        }
+        if ($bench.status -ne 'PASS') {
+            throw "benchmark status was $($bench.status)"
+        }
+        if ($Receipt.artifacts.benchmark_download.size -ne $bench.total_bytes) {
+            throw "benchmark size mismatch"
+        }
+        if ($Receipt.artifacts.benchmark_download.sha256 -ne $bench.sha256) {
+            throw "benchmark sha256 mismatch"
+        }
+
+        if (!$SkipBenchmarkMatrix) {
+            $variants = @(
+                [ordered]@{ name = 'single'; args = @('--mode', 'single') },
+                [ordered]@{ name = 'seg-c4-s4m'; args = @('--mode', 'segmented', '--concurrency', '4', '--segment-size', '4194304') },
+                [ordered]@{ name = 'seg-c8-s4m'; args = @('--mode', 'segmented', '--concurrency', '8', '--segment-size', '4194304') },
+                [ordered]@{ name = 'seg-c16-s4m'; args = @('--mode', 'segmented', '--concurrency', '16', '--segment-size', '4194304') },
+                [ordered]@{ name = 'seg-c32-s2m'; args = @('--mode', 'segmented', '--concurrency', '32', '--segment-size', '2097152') }
+            )
+            $bench | Add-Member -NotePropertyName variant -NotePropertyValue 'auto' -Force
+            $matrix = @($bench)
+            foreach ($variant in $variants) {
+                $out = Join-Path $EvidenceDir ("matrix-$($variant.name)-$($targetAsset.name)")
+                $json = Join-Path $EvidenceDir ("matrix-$($variant.name).json")
+                $result = Invoke-BenchVariant `
+                    -Name $variant.name `
+                    -Url $benchmarkUrl `
+                    -OutFile $out `
+                    -JsonFile $json `
+                    -ExtraArgs (@($variant.args) + $(if ($null -ne $benchmarkFallback) { @('--allow-local-http') } else { @() }))
+                $result | Add-Member -NotePropertyName variant -NotePropertyValue $variant.name -Force
+                $matrix += $result
+            }
+
+            $curlOut = Join-Path $EvidenceDir ("matrix-curl-$($targetAsset.name)")
+            $curlBench = Invoke-CurlBenchmark -Url $benchmarkUrl -OutFile $curlOut
+            $curlBench | Add-Member -NotePropertyName variant -NotePropertyValue 'curl' -Force
+            $matrix += $curlBench
+            $winner = @($matrix | Where-Object { $_.status -eq 'PASS' -and $_.avg_mib_s -ne $null } | Sort-Object avg_mib_s -Descending | Select-Object -First 1)[0]
+            $Receipt.checks.download_benchmark_matrix = [ordered]@{
+                variants = $matrix
+                winner = $winner
+            }
+            $matrixPath = Join-Path $EvidenceDir 'bench-matrix.json'
+            $Receipt.checks.download_benchmark_matrix | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $matrixPath -Encoding UTF8
+            $Receipt.artifacts.benchmark_matrix = [ordered]@{
+                json = $matrixPath
+                winner_mode = $winner.mode
+                winner_avg_mib_s = $winner.avg_mib_s
+                winner_download_ms = $winner.download_ms
+            }
+        }
+        else {
+            $Receipt.checks.download_benchmark_matrix = [ordered]@{ skipped = $true }
         }
     }
-    else {
-        $Receipt.checks.download_benchmark_matrix = [ordered]@{ skipped = $true }
+    finally {
+        Stop-LocalRangeFileServer -Server $benchmarkRangeServer
     }
 }
 else {
