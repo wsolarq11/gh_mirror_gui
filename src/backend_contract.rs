@@ -1,5 +1,4 @@
-use crate::core_runtime::{CoreRuntime, RunDownloadContractInput};
-use crate::download::build_client;
+use crate::core_runtime::{CoreClientSettings, CoreRuntime, RunDownloadContractInput};
 use crate::github_intent::ParsedGithubIntent;
 use std::path::Path;
 use std::path::PathBuf;
@@ -195,8 +194,8 @@ impl BackendClientSettings {
         }
     }
 
-    fn client(&self, timeout_secs: u64) -> Result<reqwest::blocking::Client, String> {
-        build_client(&self.proxy, timeout_secs, self.allow_invalid_certs)
+    fn core_settings(&self) -> CoreClientSettings {
+        CoreClientSettings::new(self.proxy.clone(), self.allow_invalid_certs)
     }
 }
 
@@ -204,20 +203,22 @@ pub fn resolve_release_assets_for_query(
     settings: &BackendClientSettings,
     query: &ReleaseQuery,
 ) -> Result<ResolvedRelease, String> {
-    let client = settings
-        .client(30)
+    let runtime = CoreRuntime::default();
+    let client = runtime
+        .build_client(&settings.core_settings(), 30)
         .map_err(|e| format!("Release resolver client error: {e}"))?;
-    CoreRuntime::default().resolve_release_assets(&client, None, query)
+    runtime.resolve_release_assets(&client, None, query)
 }
 
 pub fn import_publisher_key_from_release_asset(
     settings: &BackendClientSettings,
     asset: &ReleaseAsset,
 ) -> Result<ImportedPublisherKeyPin, String> {
-    let client = settings
-        .client(30)
+    let runtime = CoreRuntime::default();
+    let client = runtime
+        .build_client(&settings.core_settings(), 30)
         .map_err(|e| format!("Publisher key import client error: {e}"))?;
-    CoreRuntime::default().import_publisher_key_from_release_asset(&client, asset)
+    runtime.import_publisher_key_from_release_asset(&client, asset)
 }
 
 pub fn run_update_candidate_check(
@@ -227,7 +228,7 @@ pub fn run_update_candidate_check(
     evidence_dir: &Path,
 ) -> UpdateCandidateCheckReport {
     let runtime = CoreRuntime::default();
-    match settings.client(60) {
+    match runtime.build_client(&settings.core_settings(), 60) {
         Ok(client) => runtime.check_latest_update_candidate(
             &client,
             current_version,
@@ -251,7 +252,7 @@ pub fn run_update_candidate_stage(
     stage_root: &Path,
 ) -> UpdateCandidateStageReport {
     let runtime = CoreRuntime::default();
-    match settings.client(60) {
+    match runtime.build_client(&settings.core_settings(), 60) {
         Ok(client) => runtime.stage_latest_update_candidate(
             &client,
             current_version,
@@ -300,14 +301,14 @@ pub fn run_download_contract(
         history_path,
     } = input;
 
-    let client = match settings.client(3600) {
+    let runtime = CoreRuntime::default();
+    let client = match runtime.build_client(&settings.core_settings(), 3600) {
         Ok(c) => c,
         Err(e) => {
             let _ = progress_tx.send((0, 0, 0.0, 0.0));
             return Err(format!("Client build error: {e}"));
         }
     };
-    let runtime = CoreRuntime::default();
     let completion = runtime.run_download_contract(RunDownloadContractInput {
         client: &client,
         effective_url: effective_url.as_str(),

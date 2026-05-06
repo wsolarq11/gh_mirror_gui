@@ -52,6 +52,21 @@ pub(crate) struct AppendDownloadHistoryInput<'a> {
     pub(crate) verification: Option<crate::history::VerificationHistoryContext<'a>>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CoreClientSettings {
+    proxy: String,
+    allow_invalid_certs: bool,
+}
+
+impl CoreClientSettings {
+    pub(crate) fn new(proxy: String, allow_invalid_certs: bool) -> Self {
+        Self {
+            proxy,
+            allow_invalid_certs,
+        }
+    }
+}
+
 pub(crate) struct RunDownloadContractInput<'a> {
     pub(crate) client: &'a Client,
     pub(crate) effective_url: &'a str,
@@ -128,6 +143,14 @@ impl CoreRuntime {
 
     pub(crate) fn resolve_download_intent(&self, input: &str) -> ParsedGithubIntent {
         parse_github_intent(input)
+    }
+
+    pub(crate) fn build_client(
+        &self,
+        settings: &CoreClientSettings,
+        timeout_secs: u64,
+    ) -> Result<Client, String> {
+        crate::download::build_client(&settings.proxy, timeout_secs, settings.allow_invalid_certs)
     }
 
     fn log_download_error(&self, msg: &str) {
@@ -851,5 +874,19 @@ mod tests {
         };
 
         assert!(err.contains("unsupported host: example.com"));
+    }
+
+    #[test]
+    fn core_runtime_build_client_owns_backend_settings() {
+        let runtime = CoreRuntime::default();
+        let settings = CoreClientSettings::new("not a url".to_string(), false);
+
+        let result = runtime.build_client(&settings, 30);
+        let err = match result {
+            Ok(_) => panic!("CoreRuntime should reject invalid proxy settings"),
+            Err(err) => err,
+        };
+
+        assert!(err.contains("Invalid proxy URL"));
     }
 }
