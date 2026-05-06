@@ -48,7 +48,7 @@ The system should:
 
 ### C. Backend contract is the single front door
 - [ ] UI calls core through `gh_mirror_gui::backend_contract` and consumes stable DTOs.
-  - Evidence: `src/backend_contract.rs`, `src/main.rs`, receipt `checks.trust_center_backend_contract`.
+  - Evidence: `src/backend_contract.rs`, `src/gui_app.rs` (UI shell) + `src/main.rs` (entrypoint), receipt `checks.trust_center_backend_contract`.
 - [ ] Core seams exist for Phase 5 evolution (Artifact Trust Broker shape).
   - Evidence: `src/source_adapter.rs`, `src/verifier_adapter.rs`, `src/evidence_ledger.rs`,
     `docs/ARCHITECTURE.md`.
@@ -87,4 +87,3 @@ The goal should be considered **not achieved** unless:
 - All checklist items above have concrete evidence **and**
 - A fresh `tools\release-verify.ps1` run produces `PASS` with a receipt that covers the
   relevant checks for the claimed progress.
-
