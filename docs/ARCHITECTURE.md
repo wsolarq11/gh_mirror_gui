@@ -171,6 +171,9 @@ Evidence must remain reviewable and machine-readable:
   public release assets
 - update candidate contract selftest that proves the next self-update layer is
   no-mutation and refuses untrusted candidates before any install/replace step
+- update apply plan contract selftest that produces a pure reversible
+  `UpdateApplyPlan` DTO for a staged candidate, describing backup/replace/
+  rollback steps without mutating the filesystem yet
 - UI shell thinness gate (`checks.ui_shell_thinness`) that fails fast if GUI
   modules start depending directly on core pipeline layers instead of routing
   through `backend_contract`

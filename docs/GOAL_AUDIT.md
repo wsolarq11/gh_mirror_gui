@@ -79,6 +79,8 @@ The system should:
     tests `update_candidate::*`.
 - [ ] Stage 2 is exercised end-to-end against public releases (staging only; no install).
   - Evidence: receipt `checks.post_publish_self_update_stage2` (must be ok=true).
+- [ ] Stage 3 apply/install/rollback is represented as a pure reversible plan (no mutation yet).
+  - Evidence: receipt `checks.update_apply_plan_contract` (must be ok=true) and `UpdateApplyPlan` DTO in `src/update_apply_plan.rs`.
 
 ---
 

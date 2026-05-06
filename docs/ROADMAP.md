@@ -139,6 +139,7 @@ Deliverables:
 - UI checks `wsolarq11/gh_mirror_gui` releases.
 - Update candidate must satisfy hash + provenance + source authenticity + pinned publisher policy.
 - Installer/update step is staged and reversible.
+- A pure `UpdateApplyPlan` DTO describes the backup/replace/rollback sequence for a staged candidate without mutating the filesystem yet.
 - Evidence records the update decision.
 
 Stop condition: update is refused when signature/publisher/policy fails.
