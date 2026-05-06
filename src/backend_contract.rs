@@ -1,6 +1,6 @@
 use crate::core_runtime::{
-    CoreClientSettings, CoreDisplayRow, CoreDownloadIntent, CoreRuntime, CoreTrustCenterSnapshot,
-    RunDownloadContractInput,
+    CoreClientSettings, CoreDisplayRow, CoreDownloadIntent, CorePathAction, CorePathActionKind,
+    CoreRuntime, CoreTrustCenterSnapshot, RunDownloadContractInput,
 };
 use std::path::Path;
 use std::path::PathBuf;
@@ -29,10 +29,36 @@ pub struct BackendDisplayRow {
     pub value: String,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BackendPathActionKind {
+    File,
+    Directory,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BackendPathAction {
+    pub label: &'static str,
+    pub path: String,
+    pub missing_message: &'static str,
+    pub kind: BackendPathActionKind,
+}
+
 fn backend_display_row_from_core(row: CoreDisplayRow) -> BackendDisplayRow {
     BackendDisplayRow {
         label: row.label,
         value: row.value,
+    }
+}
+
+fn backend_path_action_from_core(action: CorePathAction) -> BackendPathAction {
+    BackendPathAction {
+        label: action.label,
+        path: action.path,
+        missing_message: action.missing_message,
+        kind: match action.kind {
+            CorePathActionKind::File => BackendPathActionKind::File,
+            CorePathActionKind::Directory => BackendPathActionKind::Directory,
+        },
     }
 }
 
@@ -321,6 +347,20 @@ pub fn update_candidate_check_rows(report: &UpdateCandidateCheckReport) -> Vec<B
         .collect()
 }
 
+pub fn update_candidate_check_evidence_warning(
+    report: &UpdateCandidateCheckReport,
+) -> Option<String> {
+    CoreRuntime::default().update_candidate_check_evidence_warning(report)
+}
+
+pub fn update_candidate_check_evidence_action(
+    report: &UpdateCandidateCheckReport,
+) -> Option<BackendPathAction> {
+    CoreRuntime::default()
+        .update_candidate_check_evidence_action(report)
+        .map(backend_path_action_from_core)
+}
+
 pub fn update_candidate_stage_status_summary(report: &UpdateCandidateStageReport) -> String {
     CoreRuntime::default().update_candidate_stage_status_summary(report)
 }
@@ -331,6 +371,28 @@ pub fn update_candidate_stage_rows(report: &UpdateCandidateStageReport) -> Vec<B
         .into_iter()
         .map(backend_display_row_from_core)
         .collect()
+}
+
+pub fn update_candidate_stage_evidence_warning(
+    report: &UpdateCandidateStageReport,
+) -> Option<String> {
+    CoreRuntime::default().update_candidate_stage_evidence_warning(report)
+}
+
+pub fn update_candidate_stage_folder_action(
+    report: &UpdateCandidateStageReport,
+) -> Option<BackendPathAction> {
+    CoreRuntime::default()
+        .update_candidate_stage_folder_action(report)
+        .map(backend_path_action_from_core)
+}
+
+pub fn update_candidate_stage_evidence_action(
+    report: &UpdateCandidateStageReport,
+) -> Option<BackendPathAction> {
+    CoreRuntime::default()
+        .update_candidate_stage_evidence_action(report)
+        .map(backend_path_action_from_core)
 }
 
 pub fn describe_update_apply_step(step: &UpdateApplyStep) -> String {
@@ -350,6 +412,26 @@ pub fn update_apply_plan_summary_rows(
 
 pub fn update_apply_plan_step_rows(plan: &UpdateApplyPlan) -> Vec<String> {
     CoreRuntime::default().update_apply_plan_step_rows(plan)
+}
+
+pub fn update_apply_plan_evidence_warning(
+    evidence: Option<&UpdateApplyPlanEvidenceRecord>,
+) -> Option<String> {
+    CoreRuntime::default().update_apply_plan_evidence_warning(evidence)
+}
+
+pub fn update_apply_plan_evidence_action(
+    evidence: Option<&UpdateApplyPlanEvidenceRecord>,
+) -> Option<BackendPathAction> {
+    CoreRuntime::default()
+        .update_apply_plan_evidence_action(evidence)
+        .map(backend_path_action_from_core)
+}
+
+pub fn update_apply_plan_missing_evidence_message(
+    evidence: Option<&UpdateApplyPlanEvidenceRecord>,
+) -> Option<&'static str> {
+    CoreRuntime::default().update_apply_plan_missing_evidence_message(evidence)
 }
 
 #[cfg(test)]
@@ -507,10 +589,10 @@ mod tests {
                 source_authenticity_status: None,
                 source_trust_decision: None,
                 publisher_key_fingerprint_sha256: None,
-                evidence_path: None,
+                evidence_path: Some("check-evidence.json".to_string()),
                 no_mutation: true,
             },
-            evidence_write_error: None,
+            evidence_write_error: Some("check write failed".to_string()),
         };
         let stage = UpdateCandidateStageReport {
             schema_version: 1,
@@ -526,8 +608,8 @@ mod tests {
             reason: "candidate staged".to_string(),
             no_install: true,
             check_report: check.clone(),
-            evidence_path: None,
-            evidence_write_error: None,
+            evidence_path: Some("stage-evidence.json".to_string()),
+            evidence_write_error: Some("stage write failed".to_string()),
         };
         let step = UpdateApplyStep::BackupCurrentExecutable {
             from: "current.exe".to_string(),
@@ -554,7 +636,7 @@ mod tests {
             no_mutation: true,
             stage_dir: Some("stage".to_string()),
             evidence_path: Some("apply-plan.json".to_string()),
-            write_error: None,
+            write_error: Some("apply write failed".to_string()),
             plan: plan.clone(),
         };
 
@@ -579,6 +661,19 @@ mod tests {
             label: "No mutation",
             value: "true".to_string()
         }));
+        assert_eq!(
+            update_candidate_check_evidence_warning(&check),
+            Some("Evidence write warning: check write failed".to_string())
+        );
+        assert_eq!(
+            update_candidate_check_evidence_action(&check),
+            Some(BackendPathAction {
+                label: "📄 Open Update Evidence",
+                path: "check-evidence.json".to_string(),
+                missing_message: "Update evidence path is recorded but not present on disk.",
+                kind: BackendPathActionKind::File
+            })
+        );
 
         let stage_rows = update_candidate_stage_rows(&stage);
         assert!(stage_rows.contains(&BackendDisplayRow {
@@ -589,6 +684,28 @@ mod tests {
             label: "Staged asset",
             value: "stage/gh_mirror_gui.exe".to_string()
         }));
+        assert_eq!(
+            update_candidate_stage_evidence_warning(&stage),
+            Some("Evidence write warning: stage write failed".to_string())
+        );
+        assert_eq!(
+            update_candidate_stage_folder_action(&stage),
+            Some(BackendPathAction {
+                label: "📁 Open stage folder",
+                path: "stage".to_string(),
+                missing_message: "Stage folder path is recorded but not present on disk.",
+                kind: BackendPathActionKind::Directory
+            })
+        );
+        assert_eq!(
+            update_candidate_stage_evidence_action(&stage),
+            Some(BackendPathAction {
+                label: "📄 Open stage evidence",
+                path: "stage-evidence.json".to_string(),
+                missing_message: "Stage evidence path is recorded but not present on disk.",
+                kind: BackendPathActionKind::File
+            })
+        );
         assert_eq!(
             describe_update_apply_step(&step),
             "Backup current executable current.exe -> current.exe.bak"
@@ -610,6 +727,23 @@ mod tests {
         assert_eq!(
             update_apply_plan_step_rows(&plan),
             vec!["1: Backup current executable current.exe -> current.exe.bak".to_string()]
+        );
+        assert_eq!(
+            update_apply_plan_evidence_warning(Some(&evidence)),
+            Some("Evidence write warning: apply write failed".to_string())
+        );
+        assert_eq!(
+            update_apply_plan_evidence_action(Some(&evidence)),
+            Some(BackendPathAction {
+                label: "📄 Open apply plan evidence",
+                path: "apply-plan.json".to_string(),
+                missing_message: "Apply plan evidence path is recorded but not present on disk.",
+                kind: BackendPathActionKind::File
+            })
+        );
+        assert_eq!(
+            update_apply_plan_missing_evidence_message(None),
+            Some("Apply plan evidence is not recorded for this preview.")
         );
     }
 }

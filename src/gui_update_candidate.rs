@@ -5,6 +5,21 @@ use gh_mirror_gui::backend_contract::{
 };
 use std::path::Path;
 
+fn render_path_action(ui: &mut egui::Ui, action: backend_contract::BackendPathAction) {
+    let path = Path::new(&action.path);
+    let path_ready = match action.kind {
+        backend_contract::BackendPathActionKind::File => path.is_file(),
+        backend_contract::BackendPathActionKind::Directory => path.is_dir(),
+    };
+    if path_ready {
+        if ui.button(action.label).clicked() {
+            let _ = open::that(path);
+        }
+    } else {
+        ui.small(action.missing_message);
+    }
+}
+
 pub(crate) fn render_update_candidate_check(
     ui: &mut egui::Ui,
     report: &UpdateCandidateCheckReport,
@@ -25,21 +40,11 @@ pub(crate) fn render_update_candidate_check(
                 }
             });
 
-        if let Some(error) = &report.evidence_write_error {
-            ui.colored_label(
-                egui::Color32::from_rgb(220, 160, 0),
-                format!("Evidence write warning: {error}"),
-            );
+        if let Some(warning) = backend_contract::update_candidate_check_evidence_warning(report) {
+            ui.colored_label(egui::Color32::from_rgb(220, 160, 0), warning);
         }
-        if let Some(path) = report.evaluation.evidence_path.as_deref() {
-            let evidence_path = Path::new(path);
-            if evidence_path.is_file() {
-                if ui.button("📄 Open Update Evidence").clicked() {
-                    let _ = open::that(evidence_path);
-                }
-            } else {
-                ui.small("Update evidence path is recorded but not present on disk.");
-            }
+        if let Some(action) = backend_contract::update_candidate_check_evidence_action(report) {
+            render_path_action(ui, action);
         }
     });
 }
@@ -63,24 +68,15 @@ pub(crate) fn render_update_candidate_stage(
                 }
             });
 
-        if let Some(error) = &report.evidence_write_error {
-            ui.colored_label(
-                egui::Color32::from_rgb(220, 160, 0),
-                format!("Evidence write warning: {error}"),
-            );
+        if let Some(warning) = backend_contract::update_candidate_stage_evidence_warning(report) {
+            ui.colored_label(egui::Color32::from_rgb(220, 160, 0), warning);
         }
 
-        if let Some(dir) = report.stage_dir.as_deref() {
-            let stage_dir = Path::new(dir);
-            if stage_dir.is_dir() && ui.button("📁 Open stage folder").clicked() {
-                let _ = open::that(stage_dir);
-            }
+        if let Some(action) = backend_contract::update_candidate_stage_folder_action(report) {
+            render_path_action(ui, action);
         }
-        if let Some(path) = report.evidence_path.as_deref() {
-            let evidence_path = Path::new(path);
-            if evidence_path.is_file() && ui.button("📄 Open stage evidence").clicked() {
-                let _ = open::that(evidence_path);
-            }
+        if let Some(action) = backend_contract::update_candidate_stage_evidence_action(report) {
+            render_path_action(ui, action);
         }
     });
 }
@@ -107,25 +103,15 @@ pub(crate) fn render_update_apply_plan_preview(
                 }
             });
 
-        if let Some(record) = evidence {
-            if let Some(error) = record.write_error.as_deref() {
-                ui.colored_label(
-                    egui::Color32::from_rgb(220, 160, 0),
-                    format!("Evidence write warning: {error}"),
-                );
-            }
-            if let Some(path) = record.evidence_path.as_deref() {
-                let evidence_path = Path::new(path);
-                if evidence_path.is_file() {
-                    if ui.button("📄 Open apply plan evidence").clicked() {
-                        let _ = open::that(evidence_path);
-                    }
-                } else {
-                    ui.small("Apply plan evidence path is recorded but not present on disk.");
-                }
-            }
-        } else {
-            ui.small("Apply plan evidence is not recorded for this preview.");
+        if let Some(warning) = backend_contract::update_apply_plan_evidence_warning(evidence) {
+            ui.colored_label(egui::Color32::from_rgb(220, 160, 0), warning);
+        }
+        if let Some(action) = backend_contract::update_apply_plan_evidence_action(evidence) {
+            render_path_action(ui, action);
+        }
+        if let Some(message) = backend_contract::update_apply_plan_missing_evidence_message(evidence)
+        {
+            ui.small(message);
         }
 
         for step_row in backend_contract::update_apply_plan_step_rows(plan) {

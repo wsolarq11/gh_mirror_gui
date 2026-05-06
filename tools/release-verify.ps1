@@ -2863,13 +2863,23 @@ function Assert-CoreBackendConvergence {
         'pub(crate) fn run_update_candidate_stage_selftest',
         'pub(crate) fn run_update_apply_plan_contract_selftest',
         'pub(crate) struct CoreDisplayRow',
+        'pub(crate) enum CorePathActionKind',
+        'pub(crate) struct CorePathAction',
         'pub(crate) fn update_candidate_check_status_summary',
         'pub(crate) fn update_candidate_check_rows',
+        'pub(crate) fn update_candidate_check_evidence_warning',
+        'pub(crate) fn update_candidate_check_evidence_action',
         'pub(crate) fn update_candidate_stage_status_summary',
         'pub(crate) fn update_candidate_stage_rows',
+        'pub(crate) fn update_candidate_stage_evidence_warning',
+        'pub(crate) fn update_candidate_stage_folder_action',
+        'pub(crate) fn update_candidate_stage_evidence_action',
         'pub(crate) fn describe_update_apply_step',
         'pub(crate) fn update_apply_plan_summary_rows',
         'pub(crate) fn update_apply_plan_step_rows',
+        'pub(crate) fn update_apply_plan_evidence_warning',
+        'pub(crate) fn update_apply_plan_evidence_action',
+        'pub(crate) fn update_apply_plan_missing_evidence_message',
         'pub(crate) fn resolve_release_context_for_download_best_effort',
         'pub(crate) fn trust_center_snapshot',
         'pub(crate) fn run_download_contract',
@@ -2940,7 +2950,13 @@ function Assert-CoreBackendConvergence {
         'plan.steps.len().to_string()',
         'evidence.and_then(|record| record.evidence_path.as_deref())',
         'plan.steps.iter()',
-        'backend_contract::describe_update_apply_step('
+        'backend_contract::describe_update_apply_step(',
+        'report.evidence_write_error',
+        'report.evaluation.evidence_path',
+        'report.stage_dir.as_deref()',
+        'report.evidence_path.as_deref()',
+        'record.write_error',
+        'record.evidence_path'
     )
     $guiUpdatePresent = @($guiUpdateForbidden | Where-Object {
         $guiUpdateText.IndexOf($_, [System.StringComparison]::Ordinal) -ge 0
@@ -2951,7 +2967,7 @@ function Assert-CoreBackendConvergence {
 
     return [ordered]@{
         ok = $true
-        contract = 'backend_contract remains a stable DTO/use-case door; self-update, publisher-key import, imported publisher key application, apply-plan, update status/apply-step display helpers, update candidate and apply-plan row display helpers, intent DTO boundary, official-artifact-host helper, history-path helper, release DTO display helpers, trust policy settings helper, trusted publisher key mutation helpers, verification-source summary, trust display helpers, source-trust crypto helpers, bench and selftest CLI behavior, release-context DTO boundary, release-context enrichment, Trust Center snapshot, client construction, client-bound backend use cases, and download/verify/history/disposition orchestration route through CoreRuntime'
+        contract = 'backend_contract remains a stable DTO/use-case door; self-update, publisher-key import, imported publisher key application, apply-plan, update status/apply-step display helpers, update candidate and apply-plan row/evidence action display helpers, intent DTO boundary, official-artifact-host helper, history-path helper, release DTO display helpers, trust policy settings helper, trusted publisher key mutation helpers, verification-source summary, trust display helpers, source-trust crypto helpers, bench and selftest CLI behavior, release-context DTO boundary, release-context enrichment, Trust Center snapshot, client construction, client-bound backend use cases, and download/verify/history/disposition orchestration route through CoreRuntime'
         backend_contract = [ordered]@{
             path = $backendPath
             sha256 = (Get-FileHash -LiteralPath $backendPath -Algorithm SHA256).Hash

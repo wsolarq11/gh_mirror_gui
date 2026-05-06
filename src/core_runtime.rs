@@ -170,6 +170,48 @@ impl CoreDisplayRow {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CorePathActionKind {
+    File,
+    Directory,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CorePathAction {
+    pub(crate) label: &'static str,
+    pub(crate) path: String,
+    pub(crate) missing_message: &'static str,
+    pub(crate) kind: CorePathActionKind,
+}
+
+impl CorePathAction {
+    pub(crate) fn file(
+        label: &'static str,
+        path: impl Into<String>,
+        missing_message: &'static str,
+    ) -> Self {
+        Self {
+            label,
+            path: path.into(),
+            missing_message,
+            kind: CorePathActionKind::File,
+        }
+    }
+
+    pub(crate) fn directory(
+        label: &'static str,
+        path: impl Into<String>,
+        missing_message: &'static str,
+    ) -> Self {
+        Self {
+            label,
+            path: path.into(),
+            missing_message,
+            kind: CorePathActionKind::Directory,
+        }
+    }
+}
+
 impl From<crate::trust_center::TrustCenterSnapshot> for CoreTrustCenterSnapshot {
     fn from(snapshot: crate::trust_center::TrustCenterSnapshot) -> Self {
         Self {
@@ -658,6 +700,29 @@ impl CoreRuntime {
         ]
     }
 
+    pub(crate) fn update_candidate_check_evidence_warning(
+        &self,
+        report: &UpdateCandidateCheckReport,
+    ) -> Option<String> {
+        report
+            .evidence_write_error
+            .as_ref()
+            .map(|error| format!("Evidence write warning: {error}"))
+    }
+
+    pub(crate) fn update_candidate_check_evidence_action(
+        &self,
+        report: &UpdateCandidateCheckReport,
+    ) -> Option<CorePathAction> {
+        report.evaluation.evidence_path.as_ref().map(|path| {
+            CorePathAction::file(
+                "📄 Open Update Evidence",
+                path.clone(),
+                "Update evidence path is recorded but not present on disk.",
+            )
+        })
+    }
+
     pub(crate) fn update_candidate_stage_status_summary(
         &self,
         report: &UpdateCandidateStageReport,
@@ -708,6 +773,42 @@ impl CoreRuntime {
                 report.evidence_path.as_deref().unwrap_or("not recorded"),
             ),
         ]
+    }
+
+    pub(crate) fn update_candidate_stage_evidence_warning(
+        &self,
+        report: &UpdateCandidateStageReport,
+    ) -> Option<String> {
+        report
+            .evidence_write_error
+            .as_ref()
+            .map(|error| format!("Evidence write warning: {error}"))
+    }
+
+    pub(crate) fn update_candidate_stage_folder_action(
+        &self,
+        report: &UpdateCandidateStageReport,
+    ) -> Option<CorePathAction> {
+        report.stage_dir.as_ref().map(|path| {
+            CorePathAction::directory(
+                "📁 Open stage folder",
+                path.clone(),
+                "Stage folder path is recorded but not present on disk.",
+            )
+        })
+    }
+
+    pub(crate) fn update_candidate_stage_evidence_action(
+        &self,
+        report: &UpdateCandidateStageReport,
+    ) -> Option<CorePathAction> {
+        report.evidence_path.as_ref().map(|path| {
+            CorePathAction::file(
+                "📄 Open stage evidence",
+                path.clone(),
+                "Stage evidence path is recorded but not present on disk.",
+            )
+        })
     }
 
     pub(crate) fn describe_update_apply_step(
@@ -771,6 +872,41 @@ impl CoreRuntime {
             .enumerate()
             .map(|(idx, step)| format!("{}: {}", idx + 1, self.describe_update_apply_step(step)))
             .collect()
+    }
+
+    pub(crate) fn update_apply_plan_evidence_warning(
+        &self,
+        evidence: Option<&UpdateApplyPlanEvidenceRecord>,
+    ) -> Option<String> {
+        evidence
+            .and_then(|record| record.write_error.as_deref())
+            .map(|error| format!("Evidence write warning: {error}"))
+    }
+
+    pub(crate) fn update_apply_plan_evidence_action(
+        &self,
+        evidence: Option<&UpdateApplyPlanEvidenceRecord>,
+    ) -> Option<CorePathAction> {
+        evidence
+            .and_then(|record| record.evidence_path.as_ref())
+            .map(|path| {
+                CorePathAction::file(
+                    "📄 Open apply plan evidence",
+                    path.clone(),
+                    "Apply plan evidence path is recorded but not present on disk.",
+                )
+            })
+    }
+
+    pub(crate) fn update_apply_plan_missing_evidence_message(
+        &self,
+        evidence: Option<&UpdateApplyPlanEvidenceRecord>,
+    ) -> Option<&'static str> {
+        if evidence.is_none() {
+            Some("Apply plan evidence is not recorded for this preview.")
+        } else {
+            None
+        }
     }
 
     pub(crate) fn verification_plan_from_download_context(
