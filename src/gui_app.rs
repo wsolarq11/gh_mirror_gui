@@ -16,8 +16,8 @@ use crate::gui_update_candidate::{
 use crate::RELEASE_PUBLIC_KEY_ASSET;
 use backend_contract::{
     AppliedFileDisposition, DownloadControl, ImportedPublisherKeyPin, MismatchFilePolicy,
-    ResolvedRelease, TrustCenterSnapshot, TrustPolicyConfig, UpdateCandidateCheckReport,
-    UpdateCandidateStageReport,
+    ResolvedRelease, TrustCenterSnapshot, TrustPolicyConfig, UpdateApplyPlanEvidenceRecord,
+    UpdateCandidateCheckReport, UpdateCandidateStageReport,
 };
 use directories::UserDirs;
 use eframe::egui;
@@ -110,9 +110,7 @@ pub(crate) struct GhMirrorGui {
     update_stage_report: Option<UpdateCandidateStageReport>,
     update_stage_thread: Option<thread::JoinHandle<()>>,
     update_stage_rx: Option<mpsc::Receiver<UpdateCandidateStageMessage>>,
-    update_apply_plan_evidence_status: String,
-    update_apply_plan_evidence_path: Option<PathBuf>,
-    update_apply_plan_evidence_write_error: Option<String>,
+    update_apply_plan_evidence_record: Option<UpdateApplyPlanEvidenceRecord>,
     // Persisted state
     download_complete_notified: bool,
     last_download_path: Option<PathBuf>,
@@ -242,9 +240,7 @@ impl GhMirrorGui {
             update_stage_report: None,
             update_stage_thread: None,
             update_stage_rx: None,
-            update_apply_plan_evidence_status: String::new(),
-            update_apply_plan_evidence_path: None,
-            update_apply_plan_evidence_write_error: None,
+            update_apply_plan_evidence_record: None,
             download_complete_notified: false,
             last_download_path: None,
             last_trust_center_snapshot: None,
@@ -769,35 +765,13 @@ impl eframe::App for GhMirrorGui {
 
                 // Record a Stage 3 apply plan evidence file (no mutation / no install).
                 // The UI only triggers the backend contract; the backend writes the evidence.
-                self.update_apply_plan_evidence_status.clear();
-                self.update_apply_plan_evidence_path = None;
-                self.update_apply_plan_evidence_write_error = None;
-                match std::env::current_exe() {
-                    Ok(target_exe_path) => {
-                        let record = backend_contract::record_update_apply_plan_evidence_for_stage2(
-                            &report,
-                            &target_exe_path,
-                        );
-                        self.update_apply_plan_evidence_status = if record.ok {
-                            format!(
-                                "Apply plan evidence recorded: {}",
-                                record.evidence_path.as_deref().unwrap_or("unknown")
-                            )
-                        } else {
-                            format!(
-                                "Apply plan evidence not recorded: {}",
-                                record.write_error.as_deref().unwrap_or("unknown error")
-                            )
-                        };
-                        if let Some(path) = record.evidence_path.as_deref() {
-                            self.update_apply_plan_evidence_path = Some(PathBuf::from(path));
-                        }
-                        self.update_apply_plan_evidence_write_error = record.write_error;
-                    }
-                    Err(e) => {
-                        self.update_apply_plan_evidence_status =
-                            format!("Apply plan evidence skipped (current_exe error): {e}");
-                    }
+                self.update_apply_plan_evidence_record = None;
+                if let Ok(target_exe_path) = std::env::current_exe() {
+                    let record = backend_contract::record_update_apply_plan_evidence_for_stage2(
+                        &report,
+                        &target_exe_path,
+                    );
+                    self.update_apply_plan_evidence_record = Some(record);
                 }
                 self.update_stage_report = Some(report);
             }
@@ -1365,18 +1339,22 @@ impl eframe::App for GhMirrorGui {
                 if let Some(report) = &self.update_stage_report {
                     render_update_candidate_stage(ui, report);
                     ui.separator();
-                    match std::env::current_exe() {
-                        Ok(target_exe_path) => {
-                            let plan = backend_contract::build_update_apply_plan_for_stage2(
-                                report,
-                                &target_exe_path,
-                            );
-                            render_update_apply_plan_preview(ui, &plan);
-                        }
-                        Err(e) => {
-                            ui.small(format!(
-                                "Update apply plan preview unavailable (current_exe error): {e}"
-                            ));
+                    if let Some(record) = &self.update_apply_plan_evidence_record {
+                        render_update_apply_plan_preview(ui, &record.plan, Some(record));
+                    } else {
+                        match std::env::current_exe() {
+                            Ok(target_exe_path) => {
+                                let plan = backend_contract::build_update_apply_plan_for_stage2(
+                                    report,
+                                    &target_exe_path,
+                                );
+                                render_update_apply_plan_preview(ui, &plan, None);
+                            }
+                            Err(e) => {
+                                ui.small(format!(
+                                    "Update apply plan preview unavailable (current_exe error): {e}"
+                                ));
+                            }
                         }
                     }
                 }

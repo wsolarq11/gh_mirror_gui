@@ -1,6 +1,7 @@
 use eframe::egui;
 use gh_mirror_gui::backend_contract::{
-    UpdateApplyPlan, UpdateApplyStep, UpdateCandidateCheckReport, UpdateCandidateStageReport,
+    UpdateApplyPlan, UpdateApplyPlanEvidenceRecord, UpdateApplyStep, UpdateCandidateCheckReport,
+    UpdateCandidateStageReport,
 };
 use std::path::Path;
 
@@ -178,7 +179,11 @@ fn describe_update_apply_step(step: &UpdateApplyStep) -> String {
     }
 }
 
-pub(crate) fn render_update_apply_plan_preview(ui: &mut egui::Ui, plan: &UpdateApplyPlan) {
+pub(crate) fn render_update_apply_plan_preview(
+    ui: &mut egui::Ui,
+    plan: &UpdateApplyPlan,
+    evidence: Option<&UpdateApplyPlanEvidenceRecord>,
+) {
     ui.group(|ui| {
         ui.label(egui::RichText::new("Self-update Stage 3 (apply plan preview)").strong());
         ui.small(
@@ -217,10 +222,39 @@ pub(crate) fn render_update_apply_plan_preview(ui: &mut egui::Ui, plan: &UpdateA
                 ui.label(plan.no_mutation.to_string());
                 ui.end_row();
 
+                ui.label("Evidence path");
+                ui.label(
+                    evidence
+                        .and_then(|record| record.evidence_path.as_deref())
+                        .unwrap_or("not recorded"),
+                );
+                ui.end_row();
+
                 ui.label("Steps");
                 ui.label(plan.steps.len().to_string());
                 ui.end_row();
             });
+
+        if let Some(record) = evidence {
+            if let Some(error) = record.write_error.as_deref() {
+                ui.colored_label(
+                    egui::Color32::from_rgb(220, 160, 0),
+                    format!("Evidence write warning: {error}"),
+                );
+            }
+            if let Some(path) = record.evidence_path.as_deref() {
+                let evidence_path = Path::new(path);
+                if evidence_path.is_file() {
+                    if ui.button("📄 Open apply plan evidence").clicked() {
+                        let _ = open::that(evidence_path);
+                    }
+                } else {
+                    ui.small("Apply plan evidence path is recorded but not present on disk.");
+                }
+            }
+        } else {
+            ui.small("Apply plan evidence is not recorded for this preview.");
+        }
 
         for (idx, step) in plan.steps.iter().enumerate() {
             ui.small(format!("{}: {}", idx + 1, describe_update_apply_step(step)));
