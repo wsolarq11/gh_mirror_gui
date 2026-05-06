@@ -39,11 +39,17 @@ User-side experience should stay one Windows UI. Internally, trust-critical
 logic should stay in testable core/backend surfaces and be proven by
 `tools\release-verify.ps1 + receipt.json`.
 
-See:
+The durable design/end-state anchors are this README plus:
 
+- `docs\GOAL-ANCHOR.json` for the machine-readable goal anchor, release gate,
+  execute gates, and artifact boundary.
 - `AGENTS.md` for repo guardrails.
 - `docs\ROADMAP.md` for the phased route.
 - `docs\ARCHITECTURE.md` for layer boundaries.
+
+Run/audit evidence should stay in `target\delivery\<run_id>\` receipts or
+`.run\<namespace>\{logs,data,cache,tmp}` instead of becoming a second tracked
+design-doc lane.
 
 ## Download and verify
 

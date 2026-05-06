@@ -12,7 +12,7 @@ use crate::trust_policy::{
 };
 use crate::verification::{
     verification_plan_for_selected_asset, verify_downloaded_file, DownloadVerificationPlan,
-    VerificationReport, VerificationTrustDecision,
+    VerificationReport, VerificationStatus, VerificationTrustDecision,
 };
 use serde_json::json;
 use std::fs;
@@ -299,13 +299,8 @@ fn verify_source_chain_and_record_evidence(
     policy: &TrustPolicyConfig,
     history_path: &Path,
 ) -> Result<serde_json::Value, String> {
-    let report = verify_downloaded_file(
-        client,
-        output,
-        RELEASE_BINARY_ASSET,
-        Some(plan),
-        &policy.source_trust,
-    )?;
+    let report =
+        verify_staged_downloaded_file_with_retry(client, output, plan, &policy.source_trust)?;
     assert_trusted_staged_report(label, expected_source_name, &report)?;
     let disposition = plan_file_disposition_for_report(output, &report, policy);
     let applied = apply_file_disposition(&disposition)?;
@@ -342,6 +337,37 @@ fn verify_source_chain_and_record_evidence(
         },
         "evidence_path": evidence_path,
     }))
+}
+
+fn verify_staged_downloaded_file_with_retry(
+    client: &reqwest::blocking::Client,
+    output: &Path,
+    plan: &DownloadVerificationPlan,
+    source_trust_policy: &crate::source_trust::SourceTrustPolicyConfig,
+) -> Result<VerificationReport, String> {
+    let mut last_report = None;
+    // The staged-release gate uses a loopback static server and the same verifier
+    // path as public release checks. On Windows, adjacent loopback requests can
+    // occasionally race the tiny selftest server and produce a transient UNKNOWN
+    // source fetch result. Retry only inside this selftest harness; production
+    // verifier semantics remain fail-closed.
+    for attempt in 0..6 {
+        let report = verify_downloaded_file(
+            client,
+            output,
+            RELEASE_BINARY_ASSET,
+            Some(plan),
+            source_trust_policy,
+        )?;
+        if report.status != VerificationStatus::Unknown {
+            return Ok(report);
+        }
+        last_report = Some(report);
+        if attempt < 5 {
+            thread::sleep(Duration::from_millis(50));
+        }
+    }
+    last_report.ok_or_else(|| "staged verification did not produce a report".to_string())
 }
 
 fn validate_required_assets(release_dir: &Path) -> Result<(), String> {

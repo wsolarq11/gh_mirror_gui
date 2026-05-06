@@ -9,6 +9,7 @@
 > 当前现实目标是 **Windows-first Trusted GitHub Release Downloader**；中期产品目标是 **Windows-first Artifact Trust Broker**；长期北极星是 **Windows Local Software Trust Root**。
 
 用户侧始终收敛成一个 Windows UI；工程侧保持 `core/backend/API/evidence/policy` 分层；交付裁判继续只走 `tools\release-verify.ps1 + receipt.json`。
+自动化/长程推进先读取 `docs\GOAL-ANCHOR.json` 作为机器可读锚点；该锚点只枚举路线文档、门禁、执行 gate 与产物边界，不替代设计文档或 release receipt。
 
 路线分层：
 
@@ -27,6 +28,7 @@
 - Do **not** let README or conversation notes replace executable verification. `tools\release-verify.ps1` receipt is the delivery judge.
 - Do **not** mutate, retag, or republish `v0.1.2` unless the user explicitly starts a release-repair task. Existing `v0.1.2` must deref to `7482e7bdfa12c5ccb31e6365e8251e68006366c6`.
 - Do **not** keep long-term dual tracks. Experiments must converge back into the single main chain or be removed.
+- `docs\GOAL-ANCHOR.json` is the single machine-readable goal anchor. Design/end-state route docs are anchored only in `AGENTS.md`, `README.md`, `docs\ROADMAP.md`, and `docs\ARCHITECTURE.md`; run/audit evidence belongs in `target\delivery\<run_id>\` receipts or `.run\<namespace>\{logs,data,cache,tmp}`.
 
 ## Required design shape
 
@@ -56,4 +58,4 @@ cargo build --release --locked
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\release-verify.ps1 -SkipBenchmarkMatrix
 ```
 
-Route guardrails are first-class artifacts. Keep `AGENTS.md`, `docs\ROADMAP.md`, and `docs\ARCHITECTURE.md` in sync with major direction changes, and keep them covered by the release verification receipt.
+Route guardrails are first-class artifacts. Keep `docs\GOAL-ANCHOR.json`, `AGENTS.md`, `README.md`, `docs\ROADMAP.md`, and `docs\ARCHITECTURE.md` in sync with major direction changes, and keep the doc inventory covered by the release verification receipt.

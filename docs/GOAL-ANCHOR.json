@@ -1,0 +1,136 @@
+{
+  "schema": "gh_mirror_gui.goal_anchor.v1",
+  "authority": {
+    "anchor_path": "docs/GOAL-ANCHOR.json",
+    "role": "machine-readable route and execution anchor",
+    "derived_from": [
+      "AGENTS.md",
+      "README.md",
+      "docs/ROADMAP.md",
+      "docs/ARCHITECTURE.md"
+    ],
+    "fallback": "If this file is missing or invalid, fail closed and regenerate it from DESIGN_DOCS before implementation."
+  },
+  "intent": {
+    "now": "Windows-first Trusted GitHub Release Downloader",
+    "mid_term": "Windows-first Artifact Trust Broker",
+    "north_star": "Windows Local Software Trust Root",
+    "non_goals": [
+      "mirror-list aggregator",
+      "UI-owned final trust verdicts",
+      "second release gate beside tools/release-verify.ps1",
+      "long-term dual tracks"
+    ],
+    "next_main_chain": [
+      "auto-update MVP",
+      "Phase 4 core/backend contract convergence"
+    ]
+  },
+  "DESIGN_DOCS": [
+    {
+      "path": "AGENTS.md",
+      "role": "repo guardrails and hard boundaries"
+    },
+    {
+      "path": "README.md",
+      "role": "user-facing product and verification route"
+    },
+    {
+      "path": "docs/ROADMAP.md",
+      "role": "phase route, stop conditions, and prioritization"
+    },
+    {
+      "path": "docs/ARCHITECTURE.md",
+      "role": "layer boundaries and release front door contract"
+    }
+  ],
+  "RUN_ROOT": {
+    "namespace_template": ".run/<namespace>/{logs,data,cache,tmp}",
+    "subdirs": [
+      "logs",
+      "data",
+      "cache",
+      "tmp"
+    ],
+    "release_evidence_root": "target/delivery/<run_id>/receipt.json",
+    "policy": "Auxiliary run/audit artifacts use .run namespaces. Release gate evidence remains in target/delivery receipts. Toolchain artifacts must use official toolchain entrypoints and stay bounded, cleanable, and reversible."
+  },
+  "RELEASE_GATE": {
+    "front_door": "tools/release-verify.ps1 + receipt.json",
+    "command": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\tools\\release-verify.ps1 -SkipBenchmarkMatrix",
+    "required_status": "PASS",
+    "receipt_pattern": "target/delivery/<run_id>/receipt.json",
+    "single_delivery_judge": true,
+    "fresh_receipt_required_before_claiming_delivery": true,
+    "local_quality_gates": [
+      "cargo fmt --check",
+      "cargo test --all-targets --locked",
+      "cargo clippy --all-targets --locked -- -D warnings",
+      "cargo build --release --locked"
+    ]
+  },
+  "EXECUTE_GATES": {
+    "default_allowed_without_extra_authorization": [
+      "repo file edits",
+      "local builds",
+      "local tests",
+      "repo-native release verification"
+    ],
+    "must_gate": [
+      {
+        "id": "installer_or_unknown_binary",
+        "trigger": "run installer or unknown executable payload",
+        "rule": "require explicit gate entry before execution"
+      },
+      {
+        "id": "publish_or_release_mutation",
+        "trigger": "tag, retag, upload, publish, delete, or mutate a public release",
+        "rule": "manual confirmation required; v0.1.2 remains immutable unless release-repair is explicitly requested"
+      },
+      {
+        "id": "real_network",
+        "trigger": "external network access",
+        "rule": "allowed only for repo-native read-only GitHub release verification or clearly declared read-only evidence probes; no publish or mutation"
+      },
+      {
+        "id": "system_level_change",
+        "trigger": "registry, service, scheduled task, PATH, firewall, certificate store, or other machine-level change",
+        "rule": "manual confirmation required"
+      },
+      {
+        "id": "destructive_delete",
+        "trigger": "destructive deletion outside bounded generated artifacts",
+        "rule": "manual confirmation required; prefer reversible cleanup and receipts"
+      }
+    ]
+  },
+  "WORKFLOW": {
+    "loop": [
+      "intent",
+      "plan",
+      "implement",
+      "verify",
+      "reconcile",
+      "evidence"
+    ],
+    "fail_closed_on": [
+      "anchor_missing",
+      "anchor_invalid",
+      "missing_design_doc",
+      "release_gate_not_PASS",
+      "route_boundary_conflict",
+      "scope_or_external_contract_change_without_design_doc_update"
+    ],
+    "quality_beyond_end": "Allowed only when external contracts, gates, acceptance criteria, and demand scope remain unchanged; otherwise update DESIGN_DOCS and RELEASE_GATE first."
+  },
+  "StopPolicy": {
+    "mode": "MANUAL_ONLY",
+    "do_not_self_declare_goal_complete": true,
+    "per_cycle_stop_conditions": [
+      "fresh RELEASE_GATE receipt is PASS for the claimed slice",
+      "evidence is recorded in target/delivery or bounded .run namespace",
+      "repo status and changed artifacts are reconciled",
+      "next concrete action is stated"
+    ]
+  }
+}

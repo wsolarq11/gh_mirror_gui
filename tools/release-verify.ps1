@@ -1151,18 +1151,10 @@ function Invoke-GitHubLatestRelease {
     param([string]$Repo)
 
     try {
-        $token = Get-GitHubAccessToken
-        $headers = @{
-            'User-Agent' = 'gh_mirror_gui-release-verify'
-            'Accept'     = 'application/vnd.github+json'
-        }
-        if (![string]::IsNullOrWhiteSpace($token)) {
-            $headers.Authorization = "Bearer $token"
-        }
-
-        $release = Invoke-RestMethod `
-            -Headers $headers `
-            -Uri "https://api.github.com/repos/$Repo/releases/latest"
+        $release = Invoke-GitHubApiJson `
+            -Name "latest-$Repo" `
+            -Uri "https://api.github.com/repos/$Repo/releases/latest" `
+            -GhPath "repos/$Repo/releases/latest"
 
         return [ordered]@{
             found = $true
@@ -1232,6 +1224,97 @@ function Get-GitHubAccessToken {
     }
 }
 
+function Invoke-GitHubApiJson {
+    param(
+        [string]$Name,
+        [string]$Uri,
+        [string]$GhPath,
+        [int]$MaxAttempts = 5,
+        [int]$BaseDelaySeconds = 2
+    )
+
+    $token = Get-GitHubAccessToken
+    $headers = @{
+        'User-Agent' = 'gh_mirror_gui-release-verify'
+        'Accept'     = 'application/vnd.github+json'
+    }
+    if (![string]::IsNullOrWhiteSpace($token)) {
+        $headers.Authorization = "Bearer $token"
+    }
+
+    $attempt = 1
+    $errors = @()
+    while ($attempt -le $MaxAttempts) {
+        try {
+            return Invoke-RestMethod `
+                -Headers $headers `
+                -Uri $Uri `
+                -TimeoutSec 60 `
+                -ErrorAction Stop
+        }
+        catch {
+            $status = $null
+            try {
+                if ($_.Exception.Response) {
+                    $status = [int]$_.Exception.Response.StatusCode
+                }
+            }
+            catch {
+                $status = $null
+            }
+
+            $errors += [ordered]@{
+                transport = 'Invoke-RestMethod'
+                attempt = $attempt
+                status_code = $status
+                error = $_.Exception.Message
+            }
+
+            $transient = @($null, 408, 425, 429, 500, 502, 503, 504)
+            $isTransient = ($transient -contains $status)
+            if (!$isTransient -or $attempt -ge $MaxAttempts) {
+                break
+            }
+
+            $delay = [int]([Math]::Min(30, $BaseDelaySeconds * [Math]::Pow(2, ($attempt - 1))))
+            Start-Sleep -Seconds $delay
+            $attempt += 1
+        }
+    }
+
+    # `gh api` uses the same GitHub host and the user's official gh auth store,
+    # but it is independent of PowerShell WebRequest transport/proxy drift. Keep
+    # this inside the single release-verify front door instead of creating a
+    # second external gate.
+    if (Get-Command gh -ErrorAction SilentlyContinue) {
+        try {
+            $safeName = ($Name -replace '[^A-Za-z0-9_.-]', '-')
+            $jsonLines = @(Invoke-CapturedNative `
+                -Name "github-api-$safeName-gh-fallback" `
+                -Exe 'gh' `
+                -Arguments @('api', $GhPath))
+            $json = ($jsonLines -join "`n").Trim()
+            if (![string]::IsNullOrWhiteSpace($json)) {
+                return ($json | ConvertFrom-Json)
+            }
+            throw 'gh api returned an empty response'
+        }
+        catch {
+            $errors += [ordered]@{
+                transport = 'gh api'
+                attempt = 1
+                status_code = $null
+                error = $_.Exception.Message
+            }
+        }
+    }
+
+    $errorSummary = @($errors | ForEach-Object {
+        "$($_.transport)#$($_.attempt) status=$($_.status_code) error=$($_.error)"
+    }) -join '; '
+    throw "GitHub API $Name failed: $errorSummary"
+}
+
 function Convert-GitHubApiReleaseToReceiptShape {
     param(
         [object]$Release,
@@ -1270,18 +1353,10 @@ function Invoke-GitHubPublishedReleases {
     )
 
     try {
-        $token = Get-GitHubAccessToken
-        $headers = @{
-            'User-Agent' = 'gh_mirror_gui-release-verify'
-            'Accept'     = 'application/vnd.github+json'
-        }
-        if (![string]::IsNullOrWhiteSpace($token)) {
-            $headers.Authorization = "Bearer $token"
-        }
-
-        $raw = Invoke-RestMethod `
-            -Headers $headers `
-            -Uri "https://api.github.com/repos/$Repo/releases?per_page=$PerPage"
+        $raw = Invoke-GitHubApiJson `
+            -Name "published-$Repo" `
+            -Uri "https://api.github.com/repos/$Repo/releases?per_page=$PerPage" `
+            -GhPath "repos/$Repo/releases?per_page=$PerPage"
 
         $published = @(
             $raw |
@@ -1350,7 +1425,8 @@ function Invoke-WebRequestWithRetry {
         [hashtable]$Headers,
         [string]$OutFile,
         [int]$MaxAttempts = 5,
-        [int]$BaseDelaySeconds = 2
+        [int]$BaseDelaySeconds = 2,
+        [int]$TimeoutSeconds = 45
     )
 
     $attempt = 1
@@ -1363,11 +1439,13 @@ function Invoke-WebRequestWithRetry {
                 -Uri $Uri `
                 -Headers $Headers `
                 -MaximumRedirection 10 `
+                -TimeoutSec $TimeoutSeconds `
                 -OutFile $OutFile `
                 -UseBasicParsing | Out-Null
             return [ordered]@{
                 ok = $true
                 attempts = $attempt
+                timeout_seconds = $TimeoutSeconds
             }
         }
         catch {
@@ -1391,6 +1469,188 @@ function Invoke-WebRequestWithRetry {
             Start-Sleep -Seconds $delay
             $attempt += 1
         }
+    }
+}
+
+function Save-HttpRangeWithRetry {
+    param(
+        [string]$Uri,
+        [string]$OutFile,
+        [int]$Start = 0,
+        [int]$End = 65535,
+        [int]$MaxAttempts = 2,
+        [int]$BaseDelaySeconds = 2,
+        [int]$TimeoutSeconds = 60
+    )
+
+    Add-Type -AssemblyName System.Net.Http | Out-Null
+    $attempt = 1
+    $errors = @()
+    while ($attempt -le $MaxAttempts) {
+        $handler = $null
+        $client = $null
+        $request = $null
+        $response = $null
+        $stream = $null
+        $file = $null
+        try {
+            if (![string]::IsNullOrWhiteSpace($OutFile) -and (Test-Path -LiteralPath $OutFile)) {
+                Remove-Item -LiteralPath $OutFile -Force -ErrorAction SilentlyContinue
+            }
+            $outDir = Split-Path -Parent $OutFile
+            if (![string]::IsNullOrWhiteSpace($outDir)) {
+                New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+            }
+
+            $handler = [System.Net.Http.HttpClientHandler]::new()
+            $handler.AllowAutoRedirect = $true
+            $client = [System.Net.Http.HttpClient]::new($handler)
+            $client.Timeout = [TimeSpan]::FromSeconds($TimeoutSeconds)
+            $request = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Get, $Uri)
+            $request.Headers.UserAgent.ParseAdd('gh_mirror_gui-release-verify')
+            $request.Headers.Range = [System.Net.Http.Headers.RangeHeaderValue]::new($Start, $End)
+
+            $response = $client.SendAsync(
+                $request,
+                [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead
+            ).GetAwaiter().GetResult()
+            if (!$response.IsSuccessStatusCode) {
+                throw "HTTP status $([int]$response.StatusCode) $($response.ReasonPhrase)"
+            }
+
+            $stream = $response.Content.ReadAsStreamAsync().GetAwaiter().GetResult()
+            $file = [System.IO.File]::Open(
+                $OutFile,
+                [System.IO.FileMode]::Create,
+                [System.IO.FileAccess]::Write,
+                [System.IO.FileShare]::None
+            )
+            $stream.CopyTo($file)
+
+            $contentRange = $null
+            if ($null -ne $response.Content.Headers.ContentRange) {
+                $contentRange = $response.Content.Headers.ContentRange.ToString()
+            }
+            $contentLength = $null
+            if ($null -ne $response.Content.Headers.ContentLength) {
+                $contentLength = [int64]$response.Content.Headers.ContentLength
+            }
+            $finalUri = $null
+            if ($null -ne $response.RequestMessage -and $null -ne $response.RequestMessage.RequestUri) {
+                $finalUri = $response.RequestMessage.RequestUri.AbsoluteUri
+            }
+
+            return [ordered]@{
+                ok = $true
+                attempts = $attempt
+                status_code = [int]$response.StatusCode
+                timeout_seconds = $TimeoutSeconds
+                content_range = $contentRange
+                content_length = $contentLength
+                final_uri = $finalUri
+            }
+        }
+        catch {
+            $errors += "attempt=$attempt error=$($_.Exception.Message)"
+            if ($attempt -ge $MaxAttempts) {
+                throw "HttpClient range request failed: $($errors -join '; ')"
+            }
+            $delay = [int]([Math]::Min(30, $BaseDelaySeconds * [Math]::Pow(2, ($attempt - 1))))
+            Start-Sleep -Seconds $delay
+            $attempt += 1
+        }
+        finally {
+            if ($null -ne $file) { $file.Dispose() }
+            if ($null -ne $stream) { $stream.Dispose() }
+            if ($null -ne $response) { $response.Dispose() }
+            if ($null -ne $request) { $request.Dispose() }
+            if ($null -ne $client) { $client.Dispose() }
+            if ($null -ne $handler) { $handler.Dispose() }
+        }
+    }
+}
+
+function Save-ReleaseAssetWithGhFallback {
+    param(
+        [object]$Asset,
+        [string]$OutFile,
+        [int]$MaxAttempts = 4,
+        [int]$BaseDelaySeconds = 3
+    )
+
+    if (!(Get-Command gh -ErrorAction SilentlyContinue)) {
+        throw 'gh CLI not available for release asset fallback'
+    }
+
+    $downloadUrl = [string]$Asset.browser_download_url
+    if ([string]::IsNullOrWhiteSpace($downloadUrl)) {
+        throw 'asset has no browser_download_url for gh release download fallback'
+    }
+    if ($downloadUrl -notmatch '^https://github\.com/([^/]+)/([^/]+)/releases/download/([^/]+)/(.+)$') {
+        throw "asset browser_download_url is not a GitHub release asset URL: $downloadUrl"
+    }
+
+    $repo = "$($Matches[1])/$($Matches[2])"
+    $tag = [Uri]::UnescapeDataString($Matches[3])
+    $assetName = [string]$Asset.name
+    $outDir = Split-Path -Parent $OutFile
+    if ([string]::IsNullOrWhiteSpace($outDir)) {
+        $outDir = '.'
+    }
+    New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+    if (Test-Path -LiteralPath $OutFile) {
+        Remove-Item -LiteralPath $OutFile -Force
+    }
+
+    $safeName = ("$repo-$tag-$assetName" -replace '[^A-Za-z0-9_.-]', '-')
+    $errors = @()
+    $attempt = 1
+    while ($attempt -le $MaxAttempts) {
+        try {
+            Invoke-LoggedNative `
+                -Name "gh-release-download-$safeName-a$attempt" `
+                -Exe 'gh' `
+                -Arguments @(
+                    'release',
+                    'download',
+                    $tag,
+                    '--repo',
+                    $repo,
+                    '--pattern',
+                    $assetName,
+                    '--dir',
+                    $outDir,
+                    '--clobber'
+                )
+            break
+        }
+        catch {
+            $errors += "attempt=$attempt error=$($_.Exception.Message)"
+            if ($attempt -ge $MaxAttempts) {
+                throw "gh release download failed after $MaxAttempts attempts: $($errors -join '; ')"
+            }
+            $delay = [int]([Math]::Min(30, $BaseDelaySeconds * [Math]::Pow(2, ($attempt - 1))))
+            Start-Sleep -Seconds $delay
+            $attempt += 1
+        }
+    }
+
+    $downloadedPath = Join-Path $outDir $assetName
+    if (!(Test-Path -LiteralPath $downloadedPath)) {
+        throw "gh release download did not create expected asset: $downloadedPath"
+    }
+    if ($downloadedPath -ne $OutFile) {
+        Move-Item -LiteralPath $downloadedPath -Destination $OutFile -Force
+    }
+
+    return [ordered]@{
+        ok = $true
+        transport = 'gh release download'
+        repo = $repo
+        tag = $tag
+        asset = $assetName
+        attempts = $attempt
+        previous_errors = $errors
     }
 }
 
@@ -1418,24 +1678,44 @@ function Save-ReleaseAsset {
         $apiUrl = [string]$Asset.api_url
     }
 
-    if (![string]::IsNullOrWhiteSpace($apiUrl)) {
-        $apiHeaders = @{
-            'User-Agent' = $headers.'User-Agent'
-            'Accept'     = 'application/octet-stream'
-        }
-        if ($headers.ContainsKey('Authorization')) {
-            $apiHeaders.Authorization = $headers.Authorization
-        }
-        Invoke-WebRequestWithRetry -Uri $apiUrl -Headers $apiHeaders -OutFile $OutFile | Out-Null
+    $transport = [ordered]@{
+        ok = $true
+        transport = 'Invoke-WebRequest'
     }
-    else {
-        Invoke-WebRequestWithRetry -Uri $Asset.browser_download_url -Headers $headers -OutFile $OutFile | Out-Null
+    $webRequestMaxAttempts = if (Get-Command gh -ErrorAction SilentlyContinue) { 2 } else { 5 }
+    try {
+        if (![string]::IsNullOrWhiteSpace($apiUrl)) {
+            $apiHeaders = @{
+                'User-Agent' = $headers.'User-Agent'
+                'Accept'     = 'application/octet-stream'
+            }
+            if ($headers.ContainsKey('Authorization')) {
+                $apiHeaders.Authorization = $headers.Authorization
+            }
+            $webResult = Invoke-WebRequestWithRetry -Uri $apiUrl -Headers $apiHeaders -OutFile $OutFile -MaxAttempts $webRequestMaxAttempts
+        }
+        else {
+            $webResult = Invoke-WebRequestWithRetry -Uri $Asset.browser_download_url -Headers $headers -OutFile $OutFile -MaxAttempts $webRequestMaxAttempts
+        }
+        $transport['attempts'] = $webResult.attempts
+        $transport['timeout_seconds'] = $webResult.timeout_seconds
+    }
+    catch {
+        $webRequestError = $_.Exception.Message
+        try {
+            $transport = Save-ReleaseAssetWithGhFallback -Asset $Asset -OutFile $OutFile
+            $transport['web_request_error'] = $webRequestError
+        }
+        catch {
+            throw "asset download failed via Invoke-WebRequest ($webRequestError) and gh fallback ($($_.Exception.Message))"
+        }
     }
 
     return [ordered]@{
         path = $OutFile
         size = (Get-Item -LiteralPath $OutFile).Length
         sha256 = (Get-FileHash -LiteralPath $OutFile -Algorithm SHA256).Hash
+        transport = $transport
     }
 }
 
@@ -1908,24 +2188,88 @@ function Invoke-NetworkRangeSmoke {
         [string]$OutFile
     )
 
+    $errors = @()
+    $transport = $null
     $curl = Get-Command curl.exe -ErrorAction SilentlyContinue
     if ($curl) {
-        & $curl.Source -L --fail --silent --show-error --range 0-65535 `
-            --user-agent 'gh_mirror_gui-release-verify' `
-            --output $OutFile `
-            $Url
-        if ($LASTEXITCODE -ne 0) {
-            throw "curl range smoke failed with exit code $LASTEXITCODE"
+        $oldErrorActionPreference = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            $curlOutput = & $curl.Source -L --fail --silent --show-error `
+                --connect-timeout 20 `
+                --max-time 120 `
+                --retry 3 `
+                --retry-delay 2 `
+                --retry-connrefused `
+                --range 0-65535 `
+                --user-agent 'gh_mirror_gui-release-verify' `
+                --output $OutFile `
+                $Url 2>&1
+            $curlExitCode = if ($null -eq $LASTEXITCODE) { 0 } else { [int]$LASTEXITCODE }
+        }
+        finally {
+            $ErrorActionPreference = $oldErrorActionPreference
+        }
+        @($curlOutput | ForEach-Object { $_.ToString() }) |
+            Set-Content -LiteralPath (Join-Path $EvidenceDir 'network-range-smoke-curl.log') -Encoding UTF8
+        if ($curlExitCode -eq 0) {
+            $transport = [ordered]@{
+                name = 'curl.exe'
+                exit_code = $curlExitCode
+            }
+        }
+        else {
+            $errors += "curl.exe exit_code=$curlExitCode"
+            if (Test-Path -LiteralPath $OutFile) {
+                Remove-Item -LiteralPath $OutFile -Force -ErrorAction SilentlyContinue
+            }
         }
     }
-    else {
-        Invoke-WebRequest `
-            -Uri $Url `
-            -Headers @{ 'User-Agent' = 'gh_mirror_gui-release-verify' } `
-            -MaximumRedirection 10 `
-            -OutFile $OutFile `
-            -UseBasicParsing | Out-Null
+
+    if ($null -eq $transport) {
+        try {
+            $webResult = Save-HttpRangeWithRetry `
+                -Uri $Url `
+                -OutFile $OutFile `
+                -MaxAttempts 2 `
+                -BaseDelaySeconds 2 `
+                -TimeoutSeconds 60
+            $transport = [ordered]@{
+                name = 'HttpClient'
+                attempts = $webResult.attempts
+                status_code = $webResult.status_code
+                timeout_seconds = $webResult.timeout_seconds
+                content_range = $webResult.content_range
+                content_length = $webResult.content_length
+                final_uri = $webResult.final_uri
+                fallback_after = $errors
+            }
+        }
+        catch {
+            $errors += "Invoke-WebRequest error=$($_.Exception.Message)"
+            try {
+                $assetName = [Uri]::UnescapeDataString(($Url -split '/')[-1])
+                $asset = [pscustomobject]@{
+                    browser_download_url = $Url
+                    name = $assetName
+                }
+                $ghResult = Save-ReleaseAssetWithGhFallback -Asset $asset -OutFile $OutFile
+                $transport = [ordered]@{
+                    name = 'gh release download'
+                    degraded_from_range_request = $true
+                    repo = $ghResult.repo
+                    tag = $ghResult.tag
+                    asset = $ghResult.asset
+                    fallback_after = $errors
+                }
+            }
+            catch {
+                $errors += "gh release download error=$($_.Exception.Message)"
+                throw "network range smoke failed: $($errors -join '; ')"
+            }
+        }
     }
+
     $item = Get-Item -LiteralPath $OutFile
     return [ordered]@{
         ok = ($item.Length -gt 0)
@@ -1933,6 +2277,7 @@ function Invoke-NetworkRangeSmoke {
         output = $OutFile
         bytes = $item.Length
         sha256 = (Get-FileHash -LiteralPath $OutFile -Algorithm SHA256).Hash
+        transport = $transport
     }
 }
 
@@ -1984,19 +2329,46 @@ function Invoke-BenchVariant {
         [string]$Url,
         [string]$OutFile,
         [string]$JsonFile,
-        [string[]]$ExtraArgs
+        [string[]]$ExtraArgs,
+        [int]$MaxAttempts = 3,
+        [int]$BaseDelaySeconds = 5
     )
 
-    Invoke-LoggedNative `
-        -Name "bench-$Name" `
-        -Exe $exe `
-        -Arguments (@(
-            '--bench-download',
-            '--url', $Url,
-            '--out', $OutFile,
-            '--json', $JsonFile,
-            '--history', $HistoryPath
-        ) + $ExtraArgs)
+    $errors = @()
+    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+        try {
+            foreach ($path in @(
+                    $OutFile,
+                    "$OutFile.part",
+                    "$OutFile.part.json",
+                    $JsonFile
+                )) {
+                if (Test-Path -LiteralPath $path) {
+                    Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+                }
+            }
+
+            Invoke-LoggedNative `
+                -Name "bench-$Name-a$attempt" `
+                -Exe $exe `
+                -Arguments (@(
+                    '--bench-download',
+                    '--url', $Url,
+                    '--out', $OutFile,
+                    '--json', $JsonFile,
+                    '--history', $HistoryPath
+                ) + $ExtraArgs)
+            break
+        }
+        catch {
+            $errors += "attempt=$attempt error=$($_.Exception.Message)"
+            if ($attempt -ge $MaxAttempts) {
+                throw "benchmark $Name failed after $MaxAttempts attempts: $($errors -join '; ')"
+            }
+            $delay = [int]([Math]::Min(45, $BaseDelaySeconds * [Math]::Pow(2, ($attempt - 1))))
+            Start-Sleep -Seconds $delay
+        }
+    }
 
     $bench = Get-Content -LiteralPath $JsonFile -Raw | ConvertFrom-Json
     if ($bench.status -ne 'PASS') {
@@ -2005,7 +2377,140 @@ function Invoke-BenchVariant {
     if ((Get-Item -LiteralPath $OutFile).Length -ne $bench.total_bytes) {
         throw "benchmark $Name size mismatch"
     }
+    $bench | Add-Member -NotePropertyName release_verify_attempts -NotePropertyValue $attempt -Force
+    $bench | Add-Member -NotePropertyName release_verify_previous_errors -NotePropertyValue $errors -Force
     return $bench
+}
+
+function Assert-DesignDocInventory {
+    $allowedDocs = @(
+        'AGENTS.md',
+        'README.md',
+        'docs/ROADMAP.md',
+        'docs/ARCHITECTURE.md'
+    )
+    $allowedDocsUnderDocs = @(
+        'docs/ARCHITECTURE.md',
+        'docs/ROADMAP.md'
+    )
+    $trackedDocsUnderDocs = @(Invoke-CapturedNative `
+        -Name 'tracked-docs-markdown' `
+        -Exe 'git' `
+        -Arguments @('ls-files', '--', 'docs/*.md', 'docs/**/*.md') |
+        ForEach-Object { ([string]$_).Replace('\', '/') } |
+        Where-Object { $_.Trim().Length -gt 0 } |
+        Sort-Object -Unique)
+
+    $missing = @($allowedDocsUnderDocs | Where-Object { $trackedDocsUnderDocs -notcontains $_ })
+    $unexpected = @($trackedDocsUnderDocs | Where-Object { $allowedDocsUnderDocs -notcontains $_ })
+    if ($missing.Count -gt 0 -or $unexpected.Count -gt 0) {
+        throw "design doc inventory drift. missing=[$($missing -join ', ')] unexpected=[$($unexpected -join ', ')]"
+    }
+
+    return [ordered]@{
+        ok = $true
+        contract = 'design/end-state docs are anchored only in AGENTS.md, README.md, docs/ROADMAP.md, and docs/ARCHITECTURE.md; run/audit evidence belongs in target/delivery receipts or .run namespaces'
+        allowed_docs = $allowedDocs
+        tracked_docs_under_docs = $trackedDocsUnderDocs
+    }
+}
+
+function Assert-GoalAnchorContract {
+    $relativePath = 'docs\GOAL-ANCHOR.json'
+    $path = Join-Path $RepoRoot $relativePath
+    if (!(Test-Path -LiteralPath $path)) {
+        throw "required goal anchor missing: $relativePath"
+    }
+
+    try {
+        $anchor = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
+    }
+    catch {
+        throw "required goal anchor is not valid JSON: $($_.Exception.Message)"
+    }
+
+    if ([string]$anchor.schema -ne 'gh_mirror_gui.goal_anchor.v1') {
+        throw "goal anchor schema mismatch: $($anchor.schema)"
+    }
+    if ([string]$anchor.authority.anchor_path -ne 'docs/GOAL-ANCHOR.json') {
+        throw "goal anchor authority.anchor_path mismatch"
+    }
+
+    $designDocs = @($anchor.DESIGN_DOCS | ForEach-Object { [string]$_.path })
+    $requiredDesignDocs = @(
+        'AGENTS.md',
+        'README.md',
+        'docs/ROADMAP.md',
+        'docs/ARCHITECTURE.md'
+    )
+    $missingDesignDocs = @($requiredDesignDocs | Where-Object { $designDocs -notcontains $_ })
+    if ($missingDesignDocs.Count -gt 0) {
+        throw "goal anchor missing DESIGN_DOCS entries: $($missingDesignDocs -join ', ')"
+    }
+
+    if ([string]$anchor.RELEASE_GATE.front_door -ne 'tools/release-verify.ps1 + receipt.json') {
+        throw "goal anchor RELEASE_GATE.front_door mismatch"
+    }
+    if ([string]$anchor.RELEASE_GATE.required_status -ne 'PASS') {
+        throw "goal anchor RELEASE_GATE.required_status must be PASS"
+    }
+    if (!$anchor.RELEASE_GATE.single_delivery_judge) {
+        throw "goal anchor RELEASE_GATE.single_delivery_judge must be true"
+    }
+
+    if ([string]$anchor.RUN_ROOT.namespace_template -ne '.run/<namespace>/{logs,data,cache,tmp}') {
+        throw "goal anchor RUN_ROOT.namespace_template mismatch"
+    }
+    if ([string]$anchor.RUN_ROOT.release_evidence_root -ne 'target/delivery/<run_id>/receipt.json') {
+        throw "goal anchor RUN_ROOT.release_evidence_root mismatch"
+    }
+
+    $executeGateIds = @($anchor.EXECUTE_GATES.must_gate | ForEach-Object { [string]$_.id })
+    $requiredExecuteGates = @(
+        'installer_or_unknown_binary',
+        'publish_or_release_mutation',
+        'real_network',
+        'system_level_change',
+        'destructive_delete'
+    )
+    $missingExecuteGates = @($requiredExecuteGates | Where-Object { $executeGateIds -notcontains $_ })
+    if ($missingExecuteGates.Count -gt 0) {
+        throw "goal anchor missing EXECUTE_GATES entries: $($missingExecuteGates -join ', ')"
+    }
+
+    $failClosed = @($anchor.WORKFLOW.fail_closed_on | ForEach-Object { [string]$_ })
+    $requiredFailClosed = @(
+        'anchor_missing',
+        'anchor_invalid',
+        'release_gate_not_PASS'
+    )
+    $missingFailClosed = @($requiredFailClosed | Where-Object { $failClosed -notcontains $_ })
+    if ($missingFailClosed.Count -gt 0) {
+        throw "goal anchor missing fail_closed_on entries: $($missingFailClosed -join ', ')"
+    }
+
+    if ([string]$anchor.StopPolicy.mode -ne 'MANUAL_ONLY') {
+        throw "goal anchor StopPolicy.mode must be MANUAL_ONLY"
+    }
+    if (!$anchor.StopPolicy.do_not_self_declare_goal_complete) {
+        throw "goal anchor StopPolicy.do_not_self_declare_goal_complete must be true"
+    }
+
+    return [ordered]@{
+        ok = $true
+        path = $path
+        sha256 = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
+        schema = [string]$anchor.schema
+        design_docs = $designDocs
+        release_gate = [ordered]@{
+            front_door = [string]$anchor.RELEASE_GATE.front_door
+            command = [string]$anchor.RELEASE_GATE.command
+            required_status = [string]$anchor.RELEASE_GATE.required_status
+            receipt_pattern = [string]$anchor.RELEASE_GATE.receipt_pattern
+        }
+        execute_gate_ids = $executeGateIds
+        stop_policy = [string]$anchor.StopPolicy.mode
+    }
 }
 
 $gitHead = @(Invoke-CapturedNative -Name 'provenance-git-head' -Exe 'git' -Arguments @('rev-parse', 'HEAD'))
@@ -2028,6 +2533,7 @@ $Receipt.provenance = [ordered]@{
     }
     files = [ordered]@{
         repo_agents = Get-OptionalFileEvidence -RelativePath 'AGENTS.md'
+        goal_anchor = Get-OptionalFileEvidence -RelativePath 'docs\GOAL-ANCHOR.json'
         readme = Get-OptionalFileEvidence -RelativePath 'README.md'
         roadmap = Get-OptionalFileEvidence -RelativePath 'docs\ROADMAP.md'
         architecture = Get-OptionalFileEvidence -RelativePath 'docs\ARCHITECTURE.md'
@@ -2043,6 +2549,8 @@ $Receipt.provenance = [ordered]@{
 Invoke-LoggedNative -Name 'git-status' -Exe 'git' -Arguments @('status', '--short', '--branch')
 $Receipt.checks.route_guardrails = [ordered]@{
     ok = $true
+    goal_anchor = Assert-GoalAnchorContract
+    design_doc_inventory = Assert-DesignDocInventory
     agents = Assert-FileContains `
         -RelativePath 'AGENTS.md' `
         -RequiredPatterns @(
@@ -2050,7 +2558,20 @@ $Receipt.checks.route_guardrails = [ordered]@{
             'Windows-first Artifact Trust Broker',
             'Windows Local Software Trust Root',
             'Do **not** let the UI make final trust verdicts',
-            'tools\release-verify.ps1 + receipt.json'
+            'tools\release-verify.ps1 + receipt.json',
+            'docs\GOAL-ANCHOR.json',
+            'Design/end-state route docs are anchored only'
+        )
+    readme = Assert-FileContains `
+        -RelativePath 'README.md' `
+        -RequiredPatterns @(
+            'Windows-first Trusted GitHub Release Downloader',
+            'Windows-first Artifact Trust Broker',
+            'Windows Local Software Trust Root',
+            'tools\release-verify.ps1 + receipt.json',
+            'docs\GOAL-ANCHOR.json',
+            'The durable design/end-state anchors are this README plus',
+            'Run/audit evidence should stay in `target\delivery\<run_id>\` receipts'
         )
     roadmap = Assert-FileContains `
         -RelativePath 'docs\ROADMAP.md' `
