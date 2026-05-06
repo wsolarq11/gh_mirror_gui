@@ -343,6 +343,36 @@ impl CoreRuntime {
             })
     }
 
+    pub(crate) fn publisher_key_source_label_for_policy(
+        &self,
+        trust_policy: &TrustPolicyConfig,
+        publisher_key_source: &str,
+    ) -> String {
+        crate::trust_center::publisher_key_source_label_for_policy(
+            trust_policy,
+            publisher_key_source,
+        )
+    }
+
+    pub(crate) fn open_location_button_label_for_facts(
+        &self,
+        hash_status: &str,
+        policy_verdict: &str,
+        disposition: &AppliedFileDisposition,
+        policy: &TrustPolicyConfig,
+    ) -> Option<&'static str> {
+        crate::trust_policy::open_location_button_label_for_facts(
+            hash_status,
+            policy_verdict,
+            disposition,
+            policy,
+        )
+    }
+
+    pub(crate) fn file_disposition_summary(&self, disposition: &AppliedFileDisposition) -> String {
+        crate::trust_policy::file_disposition_summary(disposition)
+    }
+
     pub(crate) fn verification_plan_from_download_context(
         &self,
         release: Option<&ResolvedRelease>,

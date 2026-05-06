@@ -2768,6 +2768,9 @@ function Assert-CoreBackendConvergence {
         'crate::verification::verification_source_summary',
         'crate::trust_center::trust_center_snapshot',
         'crate::trust_center::TrustCenterSnapshot',
+        'pub use crate::trust_center::publisher_key_source_label_for_policy',
+        'pub use crate::trust_policy::file_disposition_summary',
+        'pub use crate::trust_policy::open_location_button_label_for_facts',
         'DownloadWithStrategyContractInput',
         'AppendDownloadHistoryInput',
         'VerificationHistoryContext',
@@ -2808,6 +2811,9 @@ function Assert-CoreBackendConvergence {
         'pub(crate) fn record_update_apply_plan_evidence_for_stage2',
         'pub(crate) fn resolve_download_intent',
         'pub(crate) fn verification_source_summary_for_selected_asset',
+        'pub(crate) fn publisher_key_source_label_for_policy',
+        'pub(crate) fn open_location_button_label_for_facts',
+        'pub(crate) fn file_disposition_summary',
         'pub(crate) fn resolve_release_context_for_download_best_effort',
         'pub(crate) fn trust_center_snapshot',
         'pub(crate) fn run_download_contract',
@@ -2830,7 +2836,7 @@ function Assert-CoreBackendConvergence {
 
     return [ordered]@{
         ok = $true
-        contract = 'backend_contract remains a stable DTO/use-case door; self-update, publisher-key import, apply-plan, intent DTO boundary, verification-source summary, release-context DTO boundary, release-context enrichment, Trust Center snapshot, client construction, client-bound backend use cases, and download/verify/history/disposition orchestration route through CoreRuntime'
+        contract = 'backend_contract remains a stable DTO/use-case door; self-update, publisher-key import, apply-plan, intent DTO boundary, verification-source summary, trust display helpers, release-context DTO boundary, release-context enrichment, Trust Center snapshot, client construction, client-bound backend use cases, and download/verify/history/disposition orchestration route through CoreRuntime'
         backend_contract = [ordered]@{
             path = $backendPath
             sha256 = (Get-FileHash -LiteralPath $backendPath -Algorithm SHA256).Hash

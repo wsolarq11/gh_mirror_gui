@@ -91,7 +91,7 @@ pub(crate) fn trust_center_snapshot(
     }
 }
 
-pub fn publisher_key_source_label_for_policy(
+pub(crate) fn publisher_key_source_label_for_policy(
     trust_policy: &TrustPolicyConfig,
     publisher_key_source: &str,
 ) -> String {

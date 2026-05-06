@@ -21,9 +21,6 @@ pub use crate::source_trust::ImportedPublisherKeyPin;
 pub use crate::source_trust::SourceTrustPolicyConfig;
 pub use crate::source_trust::{normalize_public_key_pin, trusted_key_fingerprint};
 pub use crate::staged_release::run_staged_release_download_selftest;
-pub use crate::trust_center::publisher_key_source_label_for_policy;
-pub use crate::trust_policy::file_disposition_summary;
-pub use crate::trust_policy::open_location_button_label_for_facts;
 pub use crate::trust_policy::{AppliedFileDisposition, FileDispositionAction};
 pub use crate::trust_policy::{MismatchFilePolicy, TrustPolicyConfig};
 pub use crate::update_apply_plan::run_update_apply_plan_contract_selftest;
@@ -130,6 +127,31 @@ pub fn resolve_download_intent(input: &str) -> IntentDTO {
 
 pub fn official_github_artifact_hosts() -> &'static [&'static str] {
     crate::url_policy::official_github_artifact_hosts()
+}
+
+pub fn publisher_key_source_label_for_policy(
+    trust_policy: &TrustPolicyConfig,
+    publisher_key_source: &str,
+) -> String {
+    CoreRuntime::default().publisher_key_source_label_for_policy(trust_policy, publisher_key_source)
+}
+
+pub fn open_location_button_label_for_facts(
+    hash_status: &str,
+    policy_verdict: &str,
+    disposition: &AppliedFileDisposition,
+    policy: &TrustPolicyConfig,
+) -> Option<&'static str> {
+    CoreRuntime::default().open_location_button_label_for_facts(
+        hash_status,
+        policy_verdict,
+        disposition,
+        policy,
+    )
+}
+
+pub fn file_disposition_summary(disposition: &AppliedFileDisposition) -> String {
+    CoreRuntime::default().file_disposition_summary(disposition)
 }
 
 #[cfg(test)]

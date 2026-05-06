@@ -293,7 +293,7 @@ pub(crate) fn open_location_button_label_for_report(
     }
 }
 
-pub fn open_location_button_label_for_facts(
+pub(crate) fn open_location_button_label_for_facts(
     hash_status: &str,
     policy_verdict: &str,
     disposition: &AppliedFileDisposition,
@@ -323,7 +323,7 @@ pub fn open_location_button_label_for_facts(
     }
 }
 
-pub fn file_disposition_summary(disposition: &AppliedFileDisposition) -> String {
+pub(crate) fn file_disposition_summary(disposition: &AppliedFileDisposition) -> String {
     match disposition.action {
         FileDispositionAction::Keep => "file kept".to_string(),
         FileDispositionAction::Delete => "file deleted by trust policy".to_string(),
