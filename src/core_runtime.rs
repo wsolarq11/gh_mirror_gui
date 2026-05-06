@@ -50,15 +50,27 @@ pub(crate) struct AppendDownloadHistoryInput<'a> {
 
 impl Default for CoreRuntime {
     fn default() -> Self {
-        Self {
-            source_adapter: Box::new(GitHubReleaseAdapter),
-            verifier_adapter: Box::new(GitHubReleaseVerifierAdapter),
-            evidence_ledger: Box::new(FileSystemEvidenceLedger),
-        }
+        Self::new(
+            Box::new(GitHubReleaseAdapter),
+            Box::new(GitHubReleaseVerifierAdapter),
+            Box::new(FileSystemEvidenceLedger),
+        )
     }
 }
 
 impl CoreRuntime {
+    pub(crate) fn new(
+        source_adapter: Box<dyn SourceAdapter>,
+        verifier_adapter: Box<dyn VerifierAdapter>,
+        evidence_ledger: Box<dyn EvidenceLedger>,
+    ) -> Self {
+        Self {
+            source_adapter,
+            verifier_adapter,
+            evidence_ledger,
+        }
+    }
+
     pub(crate) fn resolve_release_assets(
         &self,
         client: &Client,
@@ -269,5 +281,152 @@ impl CoreRuntime {
                 Err(e)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::releases::{ReleaseAsset, ReleaseQueryKind};
+    use std::path::Path;
+    use std::sync::{Arc, Mutex};
+
+    struct FakeSourceAdapter {
+        calls: Arc<Mutex<usize>>,
+        release: ResolvedRelease,
+    }
+
+    impl SourceAdapter for FakeSourceAdapter {
+        fn resolve_release_assets(
+            &self,
+            _client: &Client,
+            _api_base: Option<&str>,
+            _query: &ReleaseQuery,
+        ) -> Result<ResolvedRelease, String> {
+            *self.calls.lock().expect("lock") += 1;
+            Ok(self.release.clone())
+        }
+    }
+
+    struct FakeVerifierAdapter {
+        plan_calls: Arc<Mutex<usize>>,
+        verify_calls: Arc<Mutex<usize>>,
+    }
+
+    impl VerifierAdapter for FakeVerifierAdapter {
+        fn verification_plan_for_selected_asset(
+            &self,
+            _release: &ResolvedRelease,
+            _asset_index: usize,
+        ) -> Option<DownloadVerificationPlan> {
+            *self.plan_calls.lock().expect("lock") += 1;
+            None
+        }
+
+        fn verify_downloaded_file(
+            &self,
+            _client: &Client,
+            _path: &Path,
+            _asset_name: &str,
+            _plan: Option<&DownloadVerificationPlan>,
+            _source_trust_policy: &SourceTrustPolicyConfig,
+        ) -> Result<VerificationReport, String> {
+            *self.verify_calls.lock().expect("lock") += 1;
+            Err("fake verifier".to_string())
+        }
+    }
+
+    struct FakeEvidenceLedger {
+        lines: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl EvidenceLedger for FakeEvidenceLedger {
+        fn write_text(&self, _path: &Path, text: &str) -> Result<(), String> {
+            self.lines
+                .lock()
+                .expect("lock")
+                .push(format!("write:{text}"));
+            Ok(())
+        }
+
+        fn append_line(&self, _path: &Path, line: &str) -> Result<(), String> {
+            self.lines
+                .lock()
+                .expect("lock")
+                .push(format!("append:{line}"));
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn core_runtime_new_wires_phase5_seams() {
+        let source_calls = Arc::new(Mutex::new(0usize));
+        let plan_calls = Arc::new(Mutex::new(0usize));
+        let verify_calls = Arc::new(Mutex::new(0usize));
+        let lines = Arc::new(Mutex::new(Vec::<String>::new()));
+
+        let release = ResolvedRelease {
+            owner: "example".to_string(),
+            repo: "repo".to_string(),
+            tag_name: "v1.0.0".to_string(),
+            name: None,
+            html_url: "https://github.com/example/repo/releases/tag/v1.0.0".to_string(),
+            assets: vec![ReleaseAsset {
+                name: "asset.bin".to_string(),
+                size: 0,
+                browser_download_url:
+                    "https://github.com/example/repo/releases/download/v1.0.0/asset.bin".to_string(),
+                content_type: None,
+                api_url: None,
+            }],
+        };
+        let runtime = CoreRuntime::new(
+            Box::new(FakeSourceAdapter {
+                calls: Arc::clone(&source_calls),
+                release: release.clone(),
+            }),
+            Box::new(FakeVerifierAdapter {
+                plan_calls: Arc::clone(&plan_calls),
+                verify_calls: Arc::clone(&verify_calls),
+            }),
+            Box::new(FakeEvidenceLedger {
+                lines: Arc::clone(&lines),
+            }),
+        );
+
+        let client = Client::builder()
+            .build()
+            .expect("reqwest client build should succeed in unit tests");
+        let query = ReleaseQuery {
+            owner: "example".to_string(),
+            repo: "repo".to_string(),
+            kind: ReleaseQueryKind::Latest,
+        };
+        let got = runtime
+            .resolve_release_assets(&client, None, &query)
+            .expect("fake source adapter should return a release");
+        assert_eq!(got, release);
+        assert_eq!(*source_calls.lock().expect("lock"), 1);
+
+        let _ = runtime.verification_plan_for_selected_asset(&release, 0);
+        assert_eq!(*plan_calls.lock().expect("lock"), 1);
+
+        let policy = SourceTrustPolicyConfig {
+            require_trusted_source: true,
+            trusted_publisher_key: String::new(),
+        };
+        let err = runtime
+            .verify_downloaded_file(&client, Path::new("fake.bin"), "fake.bin", None, &policy)
+            .expect_err("fake verifier returns an error");
+        assert_eq!(err, "fake verifier");
+        assert_eq!(*verify_calls.lock().expect("lock"), 1);
+
+        runtime
+            .append_line(Path::new("fake.log"), "hello")
+            .expect("fake ledger should accept append");
+        assert_eq!(
+            lines.lock().expect("lock").as_slice(),
+            ["append:hello".to_string()]
+        );
     }
 }
