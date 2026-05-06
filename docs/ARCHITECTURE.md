@@ -156,6 +156,10 @@ Evidence must remain reviewable and machine-readable:
   stops refusing unsigned releases, stops staging signed assets, or stops
   uploading the required binary, checksum, provenance, publisher key, and
   `.sig` assets
+- target volume governance via `tools\target-gc.ps1`, which keeps only the
+  most recent delivery runs by default and can optionally prune incremental
+  caches; the receipt must capture its before/after report so retention changes
+  stay auditable
 - signed release staging dry-run, including `release-provenance.json` schema
   checks, detached signature verification for both signed source assets, and a
   headless app download selftest that re-downloads the staged binary, verifies
