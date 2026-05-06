@@ -5,6 +5,7 @@ use crate::evidence_ledger::{EvidenceLedger, FileSystemEvidenceLedger};
 use crate::releases::{ReleaseQuery, ResolvedRelease};
 use crate::source_adapter::{GitHubReleaseAdapter, SourceAdapter};
 use crate::source_trust::SourceTrustPolicyConfig;
+use crate::trust_policy::{AppliedFileDisposition, PlannedFileDisposition, TrustPolicyConfig};
 use crate::verification::{DownloadVerificationPlan, VerificationReport};
 use crate::verifier_adapter::{GitHubReleaseVerifierAdapter, VerifierAdapter};
 use reqwest::blocking::Client;
@@ -237,6 +238,35 @@ impl CoreRuntime {
                     &format!("[{ts}] append_download_history error: {e}"),
                 );
                 None
+            }
+        }
+    }
+
+    pub(crate) fn plan_file_disposition_for_report(
+        &self,
+        path: &Path,
+        report: &VerificationReport,
+        policy: &TrustPolicyConfig,
+    ) -> PlannedFileDisposition {
+        crate::trust_policy::plan_file_disposition_for_report(path, report, policy)
+    }
+
+    pub(crate) fn apply_file_disposition_contract(
+        &self,
+        plan: &PlannedFileDisposition,
+    ) -> Result<AppliedFileDisposition, String> {
+        match crate::trust_policy::apply_file_disposition(plan) {
+            Ok(applied) => Ok(applied),
+            Err(e) => {
+                let ts = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                let _ = self.append_line(
+                    Path::new("download_error.log"),
+                    &format!("[{ts}] apply_file_disposition error: {e}"),
+                );
+                Err(e)
             }
         }
     }

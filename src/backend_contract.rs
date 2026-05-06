@@ -5,7 +5,6 @@ use crate::download::build_client;
 use crate::github_intent::{parse_github_intent, ParsedGithubIntent};
 use crate::history::VerificationHistoryContext;
 use crate::source_trust::import_publisher_key_pin_from_release_asset;
-use crate::trust_policy::{apply_file_disposition, plan_file_disposition_for_report};
 use crate::update_candidate::{
     check_latest_update_candidate, refused_update_candidate_check_report,
     refused_update_candidate_stage_report, stage_latest_update_candidate,
@@ -371,7 +370,7 @@ pub fn run_download_contract(
     };
 
     let disposition_plan =
-        plan_file_disposition_for_report(&save_path, &verification, &trust_policy);
+        runtime.plan_file_disposition_for_report(&save_path, &verification, &trust_policy);
     let evidence_path = runtime.append_download_history_best_effort(AppendDownloadHistoryInput {
         history_path: &history_path,
         url: effective_url,
@@ -386,15 +385,9 @@ pub fn run_download_contract(
         }),
     });
 
-    let file_disposition = match apply_file_disposition(&disposition_plan) {
-        Ok(disposition) => disposition,
-        Err(e) => {
-            log_error(&format!("apply_file_disposition error: {e}"));
-            return Err(format!(
-                "Download completed but trust policy file disposition failed: {e}"
-            ));
-        }
-    };
+    let file_disposition = runtime
+        .apply_file_disposition_contract(&disposition_plan)
+        .map_err(|e| format!("Download completed but trust policy file disposition failed: {e}"))?;
 
     let policy_snapshot = trust_policy.snapshot();
     let publisher_key_source = if publisher_key_source_at_decision.trim().is_empty() {
