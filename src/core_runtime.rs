@@ -23,9 +23,9 @@ use std::sync::Arc;
 /// - this runtime becomes the internal pipeline entrypoint
 /// - adapters evolve behind seams to grow from "GitHub Release" toward an Artifact Trust Broker
 pub(crate) struct CoreRuntime {
-    source_adapter: GitHubReleaseAdapter,
-    verifier_adapter: GitHubReleaseVerifierAdapter,
-    evidence_ledger: FileSystemEvidenceLedger,
+    source_adapter: Box<dyn SourceAdapter>,
+    verifier_adapter: Box<dyn VerifierAdapter>,
+    evidence_ledger: Box<dyn EvidenceLedger>,
 }
 
 pub(crate) struct DownloadWithStrategyContractInput<'a> {
@@ -51,9 +51,9 @@ pub(crate) struct AppendDownloadHistoryInput<'a> {
 impl Default for CoreRuntime {
     fn default() -> Self {
         Self {
-            source_adapter: GitHubReleaseAdapter,
-            verifier_adapter: GitHubReleaseVerifierAdapter,
-            evidence_ledger: FileSystemEvidenceLedger,
+            source_adapter: Box::new(GitHubReleaseAdapter),
+            verifier_adapter: Box::new(GitHubReleaseVerifierAdapter),
+            evidence_ledger: Box::new(FileSystemEvidenceLedger),
         }
     }
 }
