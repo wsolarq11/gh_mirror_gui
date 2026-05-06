@@ -115,7 +115,7 @@ impl From<ParsedGithubIntent> for CoreDownloadIntent {
 }
 
 pub(crate) struct RunDownloadContractInput<'a> {
-    pub(crate) client: &'a Client,
+    pub(crate) settings: &'a CoreClientSettings,
     pub(crate) effective_url: &'a str,
     pub(crate) save_path: PathBuf,
     pub(crate) asset_name: String,
@@ -198,6 +198,76 @@ impl CoreRuntime {
         timeout_secs: u64,
     ) -> Result<Client, String> {
         crate::download::build_client(&settings.proxy, timeout_secs, settings.allow_invalid_certs)
+    }
+
+    pub(crate) fn resolve_release_assets_for_query(
+        &self,
+        settings: &CoreClientSettings,
+        query: &ReleaseQuery,
+    ) -> Result<ResolvedRelease, String> {
+        let client = self
+            .build_client(settings, 30)
+            .map_err(|e| format!("Release resolver client error: {e}"))?;
+        self.resolve_release_assets(&client, None, query)
+    }
+
+    pub(crate) fn import_publisher_key_from_release_asset_for_settings(
+        &self,
+        settings: &CoreClientSettings,
+        asset: &crate::releases::ReleaseAsset,
+    ) -> Result<crate::source_trust::ImportedPublisherKeyPin, String> {
+        let client = self
+            .build_client(settings, 30)
+            .map_err(|e| format!("Publisher key import client error: {e}"))?;
+        self.import_publisher_key_from_release_asset(&client, asset)
+    }
+
+    pub(crate) fn run_update_candidate_check(
+        &self,
+        settings: &CoreClientSettings,
+        current_version: &str,
+        source_trust_policy: &SourceTrustPolicyConfig,
+        evidence_dir: &Path,
+    ) -> UpdateCandidateCheckReport {
+        match self.build_client(settings, 60) {
+            Ok(client) => self.check_latest_update_candidate(
+                &client,
+                current_version,
+                source_trust_policy,
+                evidence_dir,
+                None,
+            ),
+            Err(e) => self.refused_update_candidate_check_report(
+                current_version,
+                format!("self-update client build failed: {e}"),
+                evidence_dir,
+            ),
+        }
+    }
+
+    pub(crate) fn run_update_candidate_stage(
+        &self,
+        settings: &CoreClientSettings,
+        current_version: &str,
+        source_trust_policy: &SourceTrustPolicyConfig,
+        evidence_dir: &Path,
+        stage_root: &Path,
+    ) -> UpdateCandidateStageReport {
+        match self.build_client(settings, 60) {
+            Ok(client) => self.stage_latest_update_candidate(
+                &client,
+                current_version,
+                source_trust_policy,
+                evidence_dir,
+                stage_root,
+                None,
+            ),
+            Err(e) => self.refused_update_candidate_stage_report(
+                current_version,
+                format!("self-update client build failed: {e}"),
+                evidence_dir,
+            ),
+        }
     }
 
     fn log_download_error(&self, msg: &str) {
@@ -468,7 +538,7 @@ impl CoreRuntime {
         input: RunDownloadContractInput<'_>,
     ) -> Result<RunDownloadContractOutput, String> {
         let RunDownloadContractInput {
-            client,
+            settings,
             effective_url,
             save_path,
             asset_name,
@@ -480,6 +550,15 @@ impl CoreRuntime {
             ctrl,
             progress_tx,
         } = input;
+
+        let client = match self.build_client(settings, 3600) {
+            Ok(client) => client,
+            Err(e) => {
+                let _ = progress_tx.send((0, 0, 0.0, 0.0));
+                return Err(format!("Client build error: {e}"));
+            }
+        };
+        let client = &client;
 
         crate::url_policy::parse_and_validate_https_github_official_url(
             effective_url,
@@ -894,14 +973,11 @@ mod tests {
     #[test]
     fn core_runtime_download_contract_owns_url_policy_gate() {
         let runtime = CoreRuntime::default();
-        let client = Client::builder()
-            .build()
-            .expect("reqwest client build should succeed in unit tests");
         let (tx, _rx) = mpsc::channel();
         let ctrl = Arc::new(DownloadControl::new());
 
         let result = runtime.run_download_contract(RunDownloadContractInput {
-            client: &client,
+            settings: &CoreClientSettings::new(String::new(), false),
             effective_url: "https://example.com/file.bin",
             save_path: PathBuf::from("target/core-runtime-url-policy.bin"),
             asset_name: "file.bin".to_string(),

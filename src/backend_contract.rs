@@ -206,22 +206,15 @@ pub fn resolve_release_assets_for_query(
     settings: &BackendClientSettings,
     query: &ReleaseQuery,
 ) -> Result<ResolvedRelease, String> {
-    let runtime = CoreRuntime::default();
-    let client = runtime
-        .build_client(&settings.core_settings(), 30)
-        .map_err(|e| format!("Release resolver client error: {e}"))?;
-    runtime.resolve_release_assets(&client, None, query)
+    CoreRuntime::default().resolve_release_assets_for_query(&settings.core_settings(), query)
 }
 
 pub fn import_publisher_key_from_release_asset(
     settings: &BackendClientSettings,
     asset: &ReleaseAsset,
 ) -> Result<ImportedPublisherKeyPin, String> {
-    let runtime = CoreRuntime::default();
-    let client = runtime
-        .build_client(&settings.core_settings(), 30)
-        .map_err(|e| format!("Publisher key import client error: {e}"))?;
-    runtime.import_publisher_key_from_release_asset(&client, asset)
+    CoreRuntime::default()
+        .import_publisher_key_from_release_asset_for_settings(&settings.core_settings(), asset)
 }
 
 pub fn run_update_candidate_check(
@@ -230,21 +223,12 @@ pub fn run_update_candidate_check(
     source_trust_policy: &SourceTrustPolicyConfig,
     evidence_dir: &Path,
 ) -> UpdateCandidateCheckReport {
-    let runtime = CoreRuntime::default();
-    match runtime.build_client(&settings.core_settings(), 60) {
-        Ok(client) => runtime.check_latest_update_candidate(
-            &client,
-            current_version,
-            source_trust_policy,
-            evidence_dir,
-            None,
-        ),
-        Err(e) => runtime.refused_update_candidate_check_report(
-            current_version,
-            format!("self-update client build failed: {e}"),
-            evidence_dir,
-        ),
-    }
+    CoreRuntime::default().run_update_candidate_check(
+        &settings.core_settings(),
+        current_version,
+        source_trust_policy,
+        evidence_dir,
+    )
 }
 
 pub fn run_update_candidate_stage(
@@ -254,22 +238,13 @@ pub fn run_update_candidate_stage(
     evidence_dir: &Path,
     stage_root: &Path,
 ) -> UpdateCandidateStageReport {
-    let runtime = CoreRuntime::default();
-    match runtime.build_client(&settings.core_settings(), 60) {
-        Ok(client) => runtime.stage_latest_update_candidate(
-            &client,
-            current_version,
-            source_trust_policy,
-            evidence_dir,
-            stage_root,
-            None,
-        ),
-        Err(e) => runtime.refused_update_candidate_stage_report(
-            current_version,
-            format!("self-update client build failed: {e}"),
-            evidence_dir,
-        ),
-    }
+    CoreRuntime::default().run_update_candidate_stage(
+        &settings.core_settings(),
+        current_version,
+        source_trust_policy,
+        evidence_dir,
+        stage_root,
+    )
 }
 
 pub fn build_update_apply_plan_for_stage2(
@@ -304,16 +279,9 @@ pub fn run_download_contract(
         history_path,
     } = input;
 
-    let runtime = CoreRuntime::default();
-    let client = match runtime.build_client(&settings.core_settings(), 3600) {
-        Ok(c) => c,
-        Err(e) => {
-            let _ = progress_tx.send((0, 0, 0.0, 0.0));
-            return Err(format!("Client build error: {e}"));
-        }
-    };
-    let completion = runtime.run_download_contract(RunDownloadContractInput {
-        client: &client,
+    let core_settings = settings.core_settings();
+    let completion = CoreRuntime::default().run_download_contract(RunDownloadContractInput {
+        settings: &core_settings,
         effective_url: effective_url.as_str(),
         save_path,
         asset_name,
