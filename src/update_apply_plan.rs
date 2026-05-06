@@ -232,20 +232,13 @@ pub(crate) fn write_update_apply_plan_evidence_for_stage2(
         "no_mutation": plan.no_mutation,
         "plan": plan,
     });
-    match serde_json::to_string_pretty(&payload) {
-        Ok(pretty) => match fs::write(&evidence_path, format!("{pretty}\n")) {
-            Ok(()) => {
-                record.ok = true;
-                record.evidence_path = Some(evidence_path.display().to_string());
-            }
-            Err(e) => {
-                record.evidence_path = Some(evidence_path.display().to_string());
-                record.write_error = Some(format!("write update apply plan evidence failed: {e}"));
-            }
-        },
+    record.evidence_path = Some(evidence_path.display().to_string());
+    match crate::evidence_ledger::write_json_pretty(&evidence_path, &payload) {
+        Ok(()) => {
+            record.ok = true;
+        }
         Err(e) => {
-            record.evidence_path = Some(evidence_path.display().to_string());
-            record.write_error = Some(format!("serialize update apply plan evidence failed: {e}"));
+            record.write_error = Some(format!("write update apply plan evidence failed: {e}"));
         }
     }
 
