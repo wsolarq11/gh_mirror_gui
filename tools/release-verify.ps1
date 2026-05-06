@@ -2781,6 +2781,7 @@ function Assert-CoreBackendConvergence {
         'pub use crate::update_candidate::run_update_candidate_contract_selftest',
         'pub use crate::update_candidate::run_update_candidate_latest_selftest',
         'pub use crate::update_candidate::run_update_candidate_stage_selftest',
+        'pub use crate::history::default_history_path',
         'DownloadWithStrategyContractInput',
         'AppendDownloadHistoryInput',
         'VerificationHistoryContext',
@@ -2820,6 +2821,7 @@ function Assert-CoreBackendConvergence {
         'pub(crate) fn build_update_apply_plan_for_stage2',
         'pub(crate) fn record_update_apply_plan_evidence_for_stage2',
         'pub(crate) fn resolve_download_intent',
+        'pub(crate) fn default_history_path',
         'pub(crate) fn verification_source_summary_for_selected_asset',
         'pub(crate) fn publisher_key_source_label_for_policy',
         'pub(crate) fn open_location_button_label_for_facts',
@@ -2857,7 +2859,7 @@ function Assert-CoreBackendConvergence {
 
     return [ordered]@{
         ok = $true
-        contract = 'backend_contract remains a stable DTO/use-case door; self-update, publisher-key import, apply-plan, intent DTO boundary, verification-source summary, trust display helpers, source-trust crypto helpers, bench and selftest CLI behavior, release-context DTO boundary, release-context enrichment, Trust Center snapshot, client construction, client-bound backend use cases, and download/verify/history/disposition orchestration route through CoreRuntime'
+        contract = 'backend_contract remains a stable DTO/use-case door; self-update, publisher-key import, apply-plan, intent DTO boundary, history-path helper, verification-source summary, trust display helpers, source-trust crypto helpers, bench and selftest CLI behavior, release-context DTO boundary, release-context enrichment, Trust Center snapshot, client construction, client-bound backend use cases, and download/verify/history/disposition orchestration route through CoreRuntime'
         backend_contract = [ordered]@{
             path = $backendPath
             sha256 = (Get-FileHash -LiteralPath $backendPath -Algorithm SHA256).Hash

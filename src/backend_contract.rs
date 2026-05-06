@@ -11,7 +11,6 @@ use std::sync::{mpsc, Arc};
 // ---------------------------------------------------------------------------
 
 pub use crate::download::DownloadControl;
-pub use crate::history::default_history_path;
 pub use crate::releases::{ReleaseAsset, ReleaseQuery, ReleaseQueryKind, ResolvedRelease};
 pub use crate::source_trust::ImportedPublisherKeyPin;
 pub use crate::source_trust::SourceTrustPolicyConfig;
@@ -117,6 +116,10 @@ pub fn resolve_download_intent(input: &str) -> IntentDTO {
 
 pub fn official_github_artifact_hosts() -> &'static [&'static str] {
     crate::url_policy::official_github_artifact_hosts()
+}
+
+pub fn default_history_path() -> PathBuf {
+    CoreRuntime::default().default_history_path()
 }
 
 pub fn publisher_key_source_label_for_policy(

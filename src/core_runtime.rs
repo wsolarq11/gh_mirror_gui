@@ -235,6 +235,10 @@ impl CoreRuntime {
         parse_github_intent(input).into()
     }
 
+    pub(crate) fn default_history_path(&self) -> PathBuf {
+        crate::history::default_history_path()
+    }
+
     pub(crate) fn build_client(
         &self,
         settings: &CoreClientSettings,
