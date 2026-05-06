@@ -506,17 +506,23 @@ function Assert-ReleaseSigningBootstrapContract {
 function Assert-TrustCenterBackendContract {
     $contractRelativePath = 'src\trust_center.rs'
     $mainRelativePath = 'src\main.rs'
+    $uiRelativePath = 'src\gui_app.rs'
     $contractPath = Join-Path $RepoRoot $contractRelativePath
     $mainPath = Join-Path $RepoRoot $mainRelativePath
+    $uiPath = Join-Path $RepoRoot $uiRelativePath
     if (!(Test-Path -LiteralPath $contractPath)) {
         throw "Trust Center backend contract module missing: $contractRelativePath"
     }
     if (!(Test-Path -LiteralPath $mainPath)) {
         throw "UI shell missing: $mainRelativePath"
     }
+    if (!(Test-Path -LiteralPath $uiPath)) {
+        throw "UI app module missing: $uiRelativePath"
+    }
 
     $contractText = Get-Content -LiteralPath $contractPath -Raw
     $mainText = Get-Content -LiteralPath $mainPath -Raw
+    $uiText = Get-Content -LiteralPath $uiPath -Raw
     $contractCovered = Assert-TextContainsAll `
         -Text $contractText `
         -Label $contractRelativePath `
@@ -535,9 +541,12 @@ function Assert-TrustCenterBackendContract {
     if ($mainText -match '(?m)^\s*fn\s+trust_center_snapshot\s*\(') {
         throw "$mainRelativePath must render Trust Center snapshots, not construct backend trust snapshots"
     }
-    $mainCovered = Assert-TextContainsAll `
-        -Text $mainText `
-        -Label $mainRelativePath `
+    if ($uiText -match '(?m)^\s*fn\s+trust_center_snapshot\s*\(') {
+        throw "$uiRelativePath must render Trust Center snapshots, not construct backend trust snapshots"
+    }
+    $uiCovered = Assert-TextContainsAll `
+        -Text $uiText `
+        -Label $uiRelativePath `
         -RequiredPatterns @(
             'gh_mirror_gui::backend_contract',
             'trust_center_snapshot',
@@ -546,7 +555,7 @@ function Assert-TrustCenterBackendContract {
 
     return [ordered]@{
         ok = $true
-        contract = 'Trust Center snapshot is a UI-framework-free backend/core DTO; main.rs renders it without owning final trust verdict construction'
+        contract = 'Trust Center snapshot is a UI-framework-free backend/core DTO; gui_app renders it without owning final trust verdict construction'
         module = [ordered]@{
             path = $contractPath
             sha256 = (Get-FileHash -LiteralPath $contractPath -Algorithm SHA256).Hash
@@ -556,7 +565,13 @@ function Assert-TrustCenterBackendContract {
         ui_shell = [ordered]@{
             path = $mainPath
             sha256 = (Get-FileHash -LiteralPath $mainPath -Algorithm SHA256).Hash
-            required_patterns = $mainCovered
+            required_patterns = @()
+            owns_rendering_only = $true
+        }
+        ui_app = [ordered]@{
+            path = $uiPath
+            sha256 = (Get-FileHash -LiteralPath $uiPath -Algorithm SHA256).Hash
+            required_patterns = $uiCovered
             owns_rendering_only = $true
         }
     }
