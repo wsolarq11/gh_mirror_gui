@@ -736,6 +736,35 @@ impl CoreRuntime {
         }
     }
 
+    pub(crate) fn update_apply_plan_summary_rows(
+        &self,
+        plan: &UpdateApplyPlan,
+        evidence: Option<&UpdateApplyPlanEvidenceRecord>,
+    ) -> Vec<CoreDisplayRow> {
+        vec![
+            CoreDisplayRow::new("Status", format!("{:?}", plan.status).to_lowercase()),
+            CoreDisplayRow::new("Reason", plan.reason.clone()),
+            CoreDisplayRow::new("Release", format!("{} @ {}", plan.repo, plan.release_tag)),
+            CoreDisplayRow::new(
+                "Target exe",
+                plan.target_exe_path.as_deref().unwrap_or("not recorded"),
+            ),
+            CoreDisplayRow::new(
+                "Backup exe",
+                plan.backup_exe_path.as_deref().unwrap_or("not planned"),
+            ),
+            CoreDisplayRow::new("Reversible", plan.reversible.to_string()),
+            CoreDisplayRow::new("No mutation", plan.no_mutation.to_string()),
+            CoreDisplayRow::new(
+                "Evidence path",
+                evidence
+                    .and_then(|record| record.evidence_path.as_deref())
+                    .unwrap_or("not recorded"),
+            ),
+            CoreDisplayRow::new("Steps", plan.steps.len().to_string()),
+        ]
+    }
+
     pub(crate) fn verification_plan_from_download_context(
         &self,
         release: Option<&ResolvedRelease>,

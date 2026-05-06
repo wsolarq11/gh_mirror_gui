@@ -100,45 +100,11 @@ pub(crate) fn render_update_apply_plan_preview(
             .num_columns(2)
             .striped(true)
             .show(ui, |ui| {
-                ui.label("Status");
-                ui.label(format!("{:?}", plan.status).to_lowercase());
-                ui.end_row();
-
-                ui.label("Reason");
-                ui.label(&plan.reason);
-                ui.end_row();
-
-                ui.label("Release");
-                ui.label(format!("{} @ {}", plan.repo, plan.release_tag));
-                ui.end_row();
-
-                ui.label("Target exe");
-                ui.label(plan.target_exe_path.as_deref().unwrap_or("not recorded"));
-                ui.end_row();
-
-                ui.label("Backup exe");
-                ui.label(plan.backup_exe_path.as_deref().unwrap_or("not planned"));
-                ui.end_row();
-
-                ui.label("Reversible");
-                ui.label(plan.reversible.to_string());
-                ui.end_row();
-
-                ui.label("No mutation");
-                ui.label(plan.no_mutation.to_string());
-                ui.end_row();
-
-                ui.label("Evidence path");
-                ui.label(
-                    evidence
-                        .and_then(|record| record.evidence_path.as_deref())
-                        .unwrap_or("not recorded"),
-                );
-                ui.end_row();
-
-                ui.label("Steps");
-                ui.label(plan.steps.len().to_string());
-                ui.end_row();
+                for row in backend_contract::update_apply_plan_summary_rows(plan, evidence) {
+                    ui.label(row.label);
+                    ui.label(row.value);
+                    ui.end_row();
+                }
             });
 
         if let Some(record) = evidence {

@@ -24,13 +24,13 @@ pub use crate::update_candidate::{UpdateCandidateCheckReport, UpdateCandidateSta
 pub type DownloadProgressMessage = (u64, u64, f64, f64);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct UpdateCandidateDisplayRow {
+pub struct BackendDisplayRow {
     pub label: &'static str,
     pub value: String,
 }
 
-fn update_candidate_display_row_from_core(row: CoreDisplayRow) -> UpdateCandidateDisplayRow {
-    UpdateCandidateDisplayRow {
+fn update_candidate_display_row_from_core(row: CoreDisplayRow) -> BackendDisplayRow {
+    BackendDisplayRow {
         label: row.label,
         value: row.value,
     }
@@ -313,9 +313,7 @@ pub fn update_candidate_check_status_summary(report: &UpdateCandidateCheckReport
     CoreRuntime::default().update_candidate_check_status_summary(report)
 }
 
-pub fn update_candidate_check_rows(
-    report: &UpdateCandidateCheckReport,
-) -> Vec<UpdateCandidateDisplayRow> {
+pub fn update_candidate_check_rows(report: &UpdateCandidateCheckReport) -> Vec<BackendDisplayRow> {
     CoreRuntime::default()
         .update_candidate_check_rows(report)
         .into_iter()
@@ -327,9 +325,7 @@ pub fn update_candidate_stage_status_summary(report: &UpdateCandidateStageReport
     CoreRuntime::default().update_candidate_stage_status_summary(report)
 }
 
-pub fn update_candidate_stage_rows(
-    report: &UpdateCandidateStageReport,
-) -> Vec<UpdateCandidateDisplayRow> {
+pub fn update_candidate_stage_rows(report: &UpdateCandidateStageReport) -> Vec<BackendDisplayRow> {
     CoreRuntime::default()
         .update_candidate_stage_rows(report)
         .into_iter()
@@ -339,6 +335,17 @@ pub fn update_candidate_stage_rows(
 
 pub fn describe_update_apply_step(step: &UpdateApplyStep) -> String {
     CoreRuntime::default().describe_update_apply_step(step)
+}
+
+pub fn update_apply_plan_summary_rows(
+    plan: &UpdateApplyPlan,
+    evidence: Option<&UpdateApplyPlanEvidenceRecord>,
+) -> Vec<BackendDisplayRow> {
+    CoreRuntime::default()
+        .update_apply_plan_summary_rows(plan, evidence)
+        .into_iter()
+        .map(update_candidate_display_row_from_core)
+        .collect()
 }
 
 #[cfg(test)]
@@ -522,6 +529,30 @@ mod tests {
             from: "current.exe".to_string(),
             to: "current.exe.bak".to_string(),
         };
+        let plan = UpdateApplyPlan {
+            schema_version: 1,
+            status: UpdateApplyPlanStatus::Planned,
+            reason: "planned staged update apply (no mutation)".to_string(),
+            repo: "owner/repo".to_string(),
+            release_tag: "v1.2.3".to_string(),
+            stage_dir: Some("stage".to_string()),
+            staged_asset_path: Some("stage/gh_mirror_gui.exe".to_string()),
+            expected_sha256: Some("abc".to_string()),
+            target_exe_path: Some("current.exe".to_string()),
+            backup_exe_path: Some("current.exe.bak".to_string()),
+            reversible: true,
+            no_mutation: true,
+            steps: vec![step.clone()],
+        };
+        let evidence = UpdateApplyPlanEvidenceRecord {
+            schema_version: 1,
+            ok: true,
+            no_mutation: true,
+            stage_dir: Some("stage".to_string()),
+            evidence_path: Some("apply-plan.json".to_string()),
+            write_error: None,
+            plan: plan.clone(),
+        };
 
         assert_eq!(
             update_candidate_check_status_summary(&check),
@@ -532,25 +563,25 @@ mod tests {
             "Self-update stage: staged (candidate staged)"
         );
         let check_rows = update_candidate_check_rows(&check);
-        assert!(check_rows.contains(&UpdateCandidateDisplayRow {
+        assert!(check_rows.contains(&BackendDisplayRow {
             label: "Release",
             value: "owner/repo @ v1.2.3".to_string()
         }));
-        assert!(check_rows.contains(&UpdateCandidateDisplayRow {
+        assert!(check_rows.contains(&BackendDisplayRow {
             label: "Reason",
             value: "candidate is newer".to_string()
         }));
-        assert!(check_rows.contains(&UpdateCandidateDisplayRow {
+        assert!(check_rows.contains(&BackendDisplayRow {
             label: "No mutation",
             value: "true".to_string()
         }));
 
         let stage_rows = update_candidate_stage_rows(&stage);
-        assert!(stage_rows.contains(&UpdateCandidateDisplayRow {
+        assert!(stage_rows.contains(&BackendDisplayRow {
             label: "Stage dir",
             value: "stage".to_string()
         }));
-        assert!(stage_rows.contains(&UpdateCandidateDisplayRow {
+        assert!(stage_rows.contains(&BackendDisplayRow {
             label: "Staged asset",
             value: "stage/gh_mirror_gui.exe".to_string()
         }));
@@ -558,6 +589,20 @@ mod tests {
             describe_update_apply_step(&step),
             "Backup current executable current.exe -> current.exe.bak"
         );
+
+        let plan_rows = update_apply_plan_summary_rows(&plan, Some(&evidence));
+        assert!(plan_rows.contains(&BackendDisplayRow {
+            label: "Status",
+            value: "planned".to_string()
+        }));
+        assert!(plan_rows.contains(&BackendDisplayRow {
+            label: "Evidence path",
+            value: "apply-plan.json".to_string()
+        }));
+        assert!(plan_rows.contains(&BackendDisplayRow {
+            label: "Steps",
+            value: "1".to_string()
+        }));
     }
 }
 
