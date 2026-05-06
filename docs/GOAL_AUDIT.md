@@ -51,6 +51,8 @@ The system should:
   - Evidence: `src/backend_contract.rs`, `src/gui_app.rs` (UI shell) + `src/main.rs` (entrypoint), receipt `checks.trust_center_backend_contract`.
 - [ ] UI shell stays thin (no direct dependency on core pipeline modules; rendering-only modules depend on `backend_contract` DTOs).
   - Evidence: `src/gui_app.rs`, `src/gui_trust_center.rs`, `src/gui_update_candidate.rs`, receipt `checks.ui_shell_thinness`.
+- [ ] UI apply-plan preview is read-only and backend-generated (no second execution path).
+  - Evidence: `src/gui_app.rs`, `src/gui_update_candidate.rs`, `src/backend_contract.rs`, receipt `checks.ui_shell_thinness`.
 - [ ] Core seams exist for Phase 5 evolution (Artifact Trust Broker shape).
   - Evidence: `src/source_adapter.rs`, `src/verifier_adapter.rs`, `src/evidence_ledger.rs`,
     `docs/ARCHITECTURE.md`.

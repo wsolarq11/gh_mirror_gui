@@ -29,6 +29,7 @@ UI Shell
 - `src/trust_policy.rs`: trust policy, file disposition, quarantine/delete/open-location decisions.
 - `src/trust_center.rs`: UI-framework-free Trust Center snapshot contract built from backend/core verification reports, policy snapshots, and evidence paths.
 - `src/update_candidate.rs`: no-mutation self-update candidate contract; it accepts only newer trusted signed releases and refuses same-version, unsigned, bad-signature, or missing-key candidates.
+- `src/update_apply_plan.rs`: pure staged apply/install/rollback plan DTO; it describes a reversible no-mutation plan for a staged candidate and is previewable by the UI through `backend_contract`.
 - `src/evidence_ledger.rs`: evidence ledger seam (Phase 5); today it writes JSON/JSONL evidence to the filesystem.
 - `src/history.rs`: benchmark history and verification evidence JSON.
 - `src/gui_app.rs`: egui application state and UI orchestration. This layer should stay thin over `backend_contract` and only render backend/core DTO verdicts (Trust Center snapshot, update candidate status, evidence paths, etc.).
@@ -174,6 +175,8 @@ Evidence must remain reviewable and machine-readable:
 - update apply plan contract selftest that produces a pure reversible
   `UpdateApplyPlan` DTO for a staged candidate, describing backup/replace/
   rollback steps without mutating the filesystem yet
+- UI apply-plan preview that renders the backend contract DTO through
+  `backend_contract` without creating a second execution path
 - UI shell thinness gate (`checks.ui_shell_thinness`) that fails fast if GUI
   modules start depending directly on core pipeline layers instead of routing
   through `backend_contract`

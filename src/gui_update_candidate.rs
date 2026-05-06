@@ -1,5 +1,7 @@
 use eframe::egui;
-use gh_mirror_gui::backend_contract::{UpdateCandidateCheckReport, UpdateCandidateStageReport};
+use gh_mirror_gui::backend_contract::{
+    UpdateApplyPlan, UpdateApplyStep, UpdateCandidateCheckReport, UpdateCandidateStageReport,
+};
 use std::path::Path;
 
 pub(crate) fn render_update_candidate_check(
@@ -149,6 +151,79 @@ pub(crate) fn render_update_candidate_stage(
             if evidence_path.is_file() && ui.button("📄 Open stage evidence").clicked() {
                 let _ = open::that(evidence_path);
             }
+        }
+    });
+}
+
+fn describe_update_apply_step(step: &UpdateApplyStep) -> String {
+    match step {
+        UpdateApplyStep::VerifyStagedCandidateSha256 {
+            path,
+            expected_sha256,
+        } => format!("Verify staged candidate SHA256 at {path} == {expected_sha256}"),
+        UpdateApplyStep::BackupCurrentExecutable { from, to } => {
+            format!("Backup current executable {from} -> {to}")
+        }
+        UpdateApplyStep::ReplaceExecutableFromStage { from, to } => {
+            format!("Replace executable from staged asset {from} -> {to}")
+        }
+        UpdateApplyStep::VerifyInstalledExecutableSha256 {
+            path,
+            expected_sha256,
+        } => format!("Verify installed executable SHA256 at {path} == {expected_sha256}"),
+        UpdateApplyStep::RollbackByRestoringBackup {
+            from_backup,
+            to_target,
+        } => format!("Rollback by restoring backup {from_backup} -> {to_target}"),
+    }
+}
+
+pub(crate) fn render_update_apply_plan_preview(ui: &mut egui::Ui, plan: &UpdateApplyPlan) {
+    ui.group(|ui| {
+        ui.label(egui::RichText::new("Self-update Stage 3 (apply plan preview)").strong());
+        ui.small(
+            "Pure backend plan only: no mutation, no install, no exe replacement; preview is reversible.",
+        );
+
+        egui::Grid::new("trust_center_update_apply_plan")
+            .num_columns(2)
+            .striped(true)
+            .show(ui, |ui| {
+                ui.label("Status");
+                ui.label(format!("{:?}", plan.status).to_lowercase());
+                ui.end_row();
+
+                ui.label("Reason");
+                ui.label(&plan.reason);
+                ui.end_row();
+
+                ui.label("Release");
+                ui.label(format!("{} @ {}", plan.repo, plan.release_tag));
+                ui.end_row();
+
+                ui.label("Target exe");
+                ui.label(plan.target_exe_path.as_deref().unwrap_or("not recorded"));
+                ui.end_row();
+
+                ui.label("Backup exe");
+                ui.label(plan.backup_exe_path.as_deref().unwrap_or("not planned"));
+                ui.end_row();
+
+                ui.label("Reversible");
+                ui.label(plan.reversible.to_string());
+                ui.end_row();
+
+                ui.label("No mutation");
+                ui.label(plan.no_mutation.to_string());
+                ui.end_row();
+
+                ui.label("Steps");
+                ui.label(plan.steps.len().to_string());
+                ui.end_row();
+            });
+
+        for (idx, step) in plan.steps.iter().enumerate() {
+            ui.small(format!("{}: {}", idx + 1, describe_update_apply_step(step)));
         }
     });
 }

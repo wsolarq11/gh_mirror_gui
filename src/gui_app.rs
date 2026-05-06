@@ -10,7 +10,9 @@ use crate::gui_trust_center::{
     format_download_completion_status, format_download_notification_status,
     render_trust_center_snapshot, source_trust_status_summary,
 };
-use crate::gui_update_candidate::{render_update_candidate_check, render_update_candidate_stage};
+use crate::gui_update_candidate::{
+    render_update_apply_plan_preview, render_update_candidate_check, render_update_candidate_stage,
+};
 use crate::RELEASE_PUBLIC_KEY_ASSET;
 use backend_contract::{
     AppliedFileDisposition, DownloadControl, ImportedPublisherKeyPin, MismatchFilePolicy,
@@ -1323,6 +1325,21 @@ impl eframe::App for GhMirrorGui {
                 });
                 if let Some(report) = &self.update_stage_report {
                     render_update_candidate_stage(ui, report);
+                    ui.separator();
+                    match std::env::current_exe() {
+                        Ok(target_exe_path) => {
+                            let plan = backend_contract::build_update_apply_plan_for_stage2(
+                                report,
+                                &target_exe_path,
+                            );
+                            render_update_apply_plan_preview(ui, &plan);
+                        }
+                        Err(e) => {
+                            ui.small(format!(
+                                "Update apply plan preview unavailable (current_exe error): {e}"
+                            ));
+                        }
+                    }
                 }
             });
 

@@ -584,7 +584,8 @@ function Assert-UiShellThinness {
             required = @(
                 'gh_mirror_gui::backend_contract',
                 'crate::gui_trust_center',
-                'crate::gui_update_candidate'
+                'crate::gui_update_candidate',
+                'build_update_apply_plan_for_stage2'
             )
             forbidden = @(
                 'crate::download',
@@ -623,7 +624,11 @@ function Assert-UiShellThinness {
         }
         [ordered]@{
             path = 'src\gui_update_candidate.rs'
-            required = @('gh_mirror_gui::backend_contract')
+            required = @(
+                'gh_mirror_gui::backend_contract',
+                'render_update_apply_plan_preview',
+                'UpdateApplyPlan'
+            )
             forbidden = @(
                 'crate::download',
                 'crate::verification',
