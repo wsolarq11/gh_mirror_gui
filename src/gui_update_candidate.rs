@@ -128,12 +128,8 @@ pub(crate) fn render_update_apply_plan_preview(
             ui.small("Apply plan evidence is not recorded for this preview.");
         }
 
-        for (idx, step) in plan.steps.iter().enumerate() {
-            ui.small(format!(
-                "{}: {}",
-                idx + 1,
-                backend_contract::describe_update_apply_step(step)
-            ));
+        for step_row in backend_contract::update_apply_plan_step_rows(plan) {
+            ui.small(step_row);
         }
     });
 }

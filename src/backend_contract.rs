@@ -29,7 +29,7 @@ pub struct BackendDisplayRow {
     pub value: String,
 }
 
-fn update_candidate_display_row_from_core(row: CoreDisplayRow) -> BackendDisplayRow {
+fn backend_display_row_from_core(row: CoreDisplayRow) -> BackendDisplayRow {
     BackendDisplayRow {
         label: row.label,
         value: row.value,
@@ -317,7 +317,7 @@ pub fn update_candidate_check_rows(report: &UpdateCandidateCheckReport) -> Vec<B
     CoreRuntime::default()
         .update_candidate_check_rows(report)
         .into_iter()
-        .map(update_candidate_display_row_from_core)
+        .map(backend_display_row_from_core)
         .collect()
 }
 
@@ -329,7 +329,7 @@ pub fn update_candidate_stage_rows(report: &UpdateCandidateStageReport) -> Vec<B
     CoreRuntime::default()
         .update_candidate_stage_rows(report)
         .into_iter()
-        .map(update_candidate_display_row_from_core)
+        .map(backend_display_row_from_core)
         .collect()
 }
 
@@ -344,8 +344,12 @@ pub fn update_apply_plan_summary_rows(
     CoreRuntime::default()
         .update_apply_plan_summary_rows(plan, evidence)
         .into_iter()
-        .map(update_candidate_display_row_from_core)
+        .map(backend_display_row_from_core)
         .collect()
+}
+
+pub fn update_apply_plan_step_rows(plan: &UpdateApplyPlan) -> Vec<String> {
+    CoreRuntime::default().update_apply_plan_step_rows(plan)
 }
 
 #[cfg(test)]
@@ -603,6 +607,10 @@ mod tests {
             label: "Steps",
             value: "1".to_string()
         }));
+        assert_eq!(
+            update_apply_plan_step_rows(&plan),
+            vec!["1: Backup current executable current.exe -> current.exe.bak".to_string()]
+        );
     }
 }
 

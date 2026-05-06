@@ -765,6 +765,14 @@ impl CoreRuntime {
         ]
     }
 
+    pub(crate) fn update_apply_plan_step_rows(&self, plan: &UpdateApplyPlan) -> Vec<String> {
+        plan.steps
+            .iter()
+            .enumerate()
+            .map(|(idx, step)| format!("{}: {}", idx + 1, self.describe_update_apply_step(step)))
+            .collect()
+    }
+
     pub(crate) fn verification_plan_from_download_context(
         &self,
         release: Option<&ResolvedRelease>,

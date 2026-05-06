@@ -2869,6 +2869,7 @@ function Assert-CoreBackendConvergence {
         'pub(crate) fn update_candidate_stage_rows',
         'pub(crate) fn describe_update_apply_step',
         'pub(crate) fn update_apply_plan_summary_rows',
+        'pub(crate) fn update_apply_plan_step_rows',
         'pub(crate) fn resolve_release_context_for_download_best_effort',
         'pub(crate) fn trust_center_snapshot',
         'pub(crate) fn run_download_contract',
@@ -2937,7 +2938,9 @@ function Assert-CoreBackendConvergence {
         'plan.reversible.to_string()',
         'plan.no_mutation.to_string()',
         'plan.steps.len().to_string()',
-        'evidence.and_then(|record| record.evidence_path.as_deref())'
+        'evidence.and_then(|record| record.evidence_path.as_deref())',
+        'plan.steps.iter()',
+        'backend_contract::describe_update_apply_step('
     )
     $guiUpdatePresent = @($guiUpdateForbidden | Where-Object {
         $guiUpdateText.IndexOf($_, [System.StringComparison]::Ordinal) -ge 0
