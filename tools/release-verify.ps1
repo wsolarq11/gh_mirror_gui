@@ -2180,7 +2180,9 @@ $Receipt.checks.update_candidate_unit_tests = [ordered]@{
             'latest_update_check_reports_no_update_without_downloading_candidate',
             'latest_update_check_accepts_newer_signed_candidate_with_pinned_key',
             'latest_update_check_refuses_newer_candidate_without_pinned_key_before_download',
-            'latest_update_stage_stages_newer_signed_candidate_to_local_directory'
+            'latest_update_stage_stages_newer_signed_candidate_to_local_directory',
+            'update_apply_plan_refuses_non_staged_report',
+            'update_apply_plan_builds_reversible_steps_without_mutation'
         )
 }
 Invoke-LoggedNative -Name 'cargo-clippy-all-targets' -Exe 'cargo' -Arguments @('clippy', '--all-targets', '--locked', '--', '-D', 'warnings')
