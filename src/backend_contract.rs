@@ -336,8 +336,8 @@ pub fn run_download_contract(
     let effective_url = input.effective_url.as_str();
     let save_path = input.save_path;
     let asset_name = input.asset_name;
-    let verification_release = input.verification_release;
-    let verification_asset_index = input.verification_asset_index;
+    let mut verification_release = input.verification_release;
+    let mut verification_asset_index = input.verification_asset_index;
     let trust_policy = input.trust_policy;
     let publisher_key_source_at_decision = input.publisher_key_source_at_decision;
     let history_path = input.history_path;
@@ -362,6 +362,30 @@ pub fn run_download_contract(
     let strategy = runtime.choose_download_strategy(Some(&history_path), effective_url, &probe);
     let save_path_str = save_path.to_string_lossy().to_string();
     let download_start = Instant::now();
+
+    // Best-effort: when the UI provided no release context (direct URL input), try to map a GitHub
+    // release asset download URL back to its release, so checksum/provenance verification can run.
+    if verification_release.is_none() && verification_asset_index.is_none() {
+        let spec = crate::source_spec::SourceSpec::GitHubReleaseAssetUrl {
+            url: effective_url.to_string(),
+        };
+        if let Ok(release) = runtime.resolve_source_spec(&client, None, &spec) {
+            let idx = release
+                .assets
+                .iter()
+                .position(|asset| asset.browser_download_url == effective_url)
+                .or_else(|| {
+                    release
+                        .assets
+                        .iter()
+                        .position(|asset| asset.name == asset_name)
+                });
+            if let Some(idx) = idx {
+                verification_release = Some(release);
+                verification_asset_index = Some(idx);
+            }
+        }
+    }
 
     let verification_plan = runtime.verification_plan_from_download_context(
         verification_release.as_ref(),

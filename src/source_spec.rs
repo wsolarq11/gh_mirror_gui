@@ -8,5 +8,16 @@ use crate::releases::ReleaseQuery;
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub(crate) enum SourceSpec {
-    GitHubRelease { query: ReleaseQuery },
+    GitHubRelease {
+        query: ReleaseQuery,
+    },
+    /// A GitHub release asset download URL, for example:
+    /// - https://github.com/owner/repo/releases/download/v1.2.3/asset.zip
+    /// - https://github.com/owner/repo/releases/latest/download/asset.zip
+    ///
+    /// The resolver maps this back to a release query so the verification engine can
+    /// discover checksum/provenance assets for that release.
+    GitHubReleaseAssetUrl {
+        url: String,
+    },
 }
