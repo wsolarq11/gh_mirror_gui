@@ -10,7 +10,6 @@ use std::sync::{mpsc, Arc};
 // Public backend contract surface (the single runtime "door")
 // ---------------------------------------------------------------------------
 
-pub use crate::bench::run_bench_download;
 pub use crate::download::DownloadControl;
 pub use crate::history::default_history_path;
 pub use crate::releases::{ReleaseAsset, ReleaseQuery, ReleaseQueryKind, ResolvedRelease};
@@ -172,6 +171,10 @@ pub fn normalize_public_key_pin(public_key_text: &str) -> Result<String, String>
 
 pub fn trusted_key_fingerprint(public_key_text: &str) -> Option<String> {
     CoreRuntime::default().trusted_key_fingerprint(public_key_text)
+}
+
+pub fn run_bench_download(args: &[String]) -> Result<(), String> {
+    CoreRuntime::default().run_bench_download(args)
 }
 
 #[cfg(test)]

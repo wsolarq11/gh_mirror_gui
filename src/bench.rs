@@ -450,7 +450,7 @@ fn choose_adaptive_candidate(
     Ok((candidate, samples))
 }
 
-pub fn run_bench_download(args: &[String]) -> Result<(), String> {
+pub(crate) fn run_bench_download(args: &[String]) -> Result<(), String> {
     let config = parse_bench_config(args)?;
     if config.allow_local_http {
         crate::url_policy::enable_loopback_for_selftests();

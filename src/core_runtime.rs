@@ -405,6 +405,10 @@ impl CoreRuntime {
         crate::source_trust::trusted_key_fingerprint(public_key_text)
     }
 
+    pub(crate) fn run_bench_download(&self, args: &[String]) -> Result<(), String> {
+        crate::bench::run_bench_download(args)
+    }
+
     pub(crate) fn verification_plan_from_download_context(
         &self,
         release: Option<&ResolvedRelease>,
