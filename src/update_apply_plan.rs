@@ -1,5 +1,7 @@
 use crate::update_candidate::{UpdateCandidateStageReport, UpdateCandidateStageStatus};
+use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const UPDATE_APPLY_PLAN_SCHEMA_VERSION: u32 = 1;
 
@@ -60,6 +62,18 @@ fn backup_path_for_target(target_exe_path: &Path, suffix: &str) -> Result<PathBu
         .to_string();
     let backup_name = format!("{file_name}.bak-{suffix}");
     Ok(target_exe_path.with_file_name(backup_name))
+}
+
+fn unique_update_apply_plan_selftest_root() -> PathBuf {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    std::env::temp_dir().join(format!(
+        "gh_mirror_gui_update_apply_plan_selftest_{}_{}",
+        std::process::id(),
+        nonce
+    ))
 }
 
 /// Build a pure, no-mutation update apply/install/rollback plan.
@@ -162,6 +176,121 @@ pub(crate) fn build_update_apply_plan(
     }
 
     base
+}
+
+pub fn run_update_apply_plan_contract_selftest(args: &[String]) -> Result<(), String> {
+    let mut json_out = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--json" => {
+                i += 1;
+                json_out = args.get(i).map(PathBuf::from);
+            }
+            other => {
+                return Err(format!(
+                    "unknown --update-apply-plan-contract-selftest option: {other}"
+                ))
+            }
+        }
+        i += 1;
+    }
+
+    let root = unique_update_apply_plan_selftest_root();
+    let stage_dir = root.join("stage");
+    fs::create_dir_all(&stage_dir).map_err(|e| format!("Create apply-plan selftest dir: {e}"))?;
+    let staged_asset_path = stage_dir.join("gh_mirror_gui.exe");
+    fs::write(&staged_asset_path, b"staged apply candidate bytes")
+        .map_err(|e| format!("Write staged asset fixture: {e}"))?;
+    let target_exe_path = root.join("gh_mirror_gui.exe");
+    let expected_sha256 =
+        "ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789".to_string();
+    let stage_report = UpdateCandidateStageReport {
+        schema_version: 1,
+        status: UpdateCandidateStageStatus::Staged,
+        repo: "wsolarq11/gh_mirror_gui".to_string(),
+        release_tag: "v9.9.9".to_string(),
+        release_url: "https://example.invalid/releases/tag/v9.9.9".to_string(),
+        stage_dir: Some(stage_dir.display().to_string()),
+        staged_asset_path: Some(staged_asset_path.display().to_string()),
+        staged_sha256: Some(expected_sha256.clone()),
+        expected_sha256: Some(expected_sha256.clone()),
+        publisher_key_fingerprint_sha256: Some("FINGERPRINT".to_string()),
+        reason: "staged verified candidate (no install)".to_string(),
+        no_install: true,
+        check_report: crate::update_candidate::UpdateCandidateCheckReport {
+            schema_version: 1,
+            repo: "wsolarq11/gh_mirror_gui".to_string(),
+            release_tag: "v9.9.9".to_string(),
+            release_url: "https://example.invalid/releases/tag/v9.9.9".to_string(),
+            asset_name: "gh_mirror_gui.exe".to_string(),
+            release_publisher_key_fingerprint_sha256: Some("FINGERPRINT".to_string()),
+            evaluation: crate::update_candidate::UpdateCandidateEvaluation {
+                schema_version: 1,
+                status: crate::update_candidate::UpdateCandidateStatus::Candidate,
+                current_version: "v9.9.8".to_string(),
+                candidate_version: "9.9.9".to_string(),
+                release_tag: "v9.9.9".to_string(),
+                asset_name: "gh_mirror_gui.exe".to_string(),
+                reason: "fixture".to_string(),
+                verification_status: "VERIFIED".to_string(),
+                file_sha256: Some(expected_sha256.clone()),
+                expected_sha256: Some(expected_sha256.clone()),
+                verification_source: Some("SHA256SUMS.txt".to_string()),
+                source_authenticity_status: Some("TRUSTED_SIGNATURE".to_string()),
+                source_trust_decision: Some("TRUSTED".to_string()),
+                publisher_key_fingerprint_sha256: Some("FINGERPRINT".to_string()),
+                evidence_path: Some(
+                    root.join("update-candidate-check.json")
+                        .display()
+                        .to_string(),
+                ),
+                no_mutation: true,
+            },
+            evidence_write_error: None,
+        },
+        evidence_path: Some(
+            root.join("update-candidate-stage.json")
+                .display()
+                .to_string(),
+        ),
+        evidence_write_error: None,
+    };
+    let plan = build_update_apply_plan(&stage_report, &target_exe_path, "selftest");
+    let ok = matches!(plan.status, UpdateApplyPlanStatus::Planned)
+        && plan.no_mutation
+        && plan.reversible
+        && plan.steps.len() >= 5;
+    let report = serde_json::json!({
+        "schema_version": UPDATE_APPLY_PLAN_SCHEMA_VERSION,
+        "ok": ok,
+        "no_mutation": plan.no_mutation,
+        "reversible": plan.reversible,
+        "status": plan.status,
+        "reason": plan.reason,
+        "plan": plan,
+        "fixture": {
+            "root": root,
+            "stage_dir": stage_dir,
+            "staged_asset_path": staged_asset_path,
+            "target_exe_path": target_exe_path,
+            "expected_sha256": expected_sha256,
+        }
+    });
+    let pretty_report = serde_json::to_string_pretty(&report)
+        .map_err(|e| format!("Serialize selftest JSON: {e}"))?;
+    if let Some(json_path) = json_out {
+        if let Some(parent) = json_path.parent() {
+            fs::create_dir_all(parent).map_err(|e| format!("Create selftest JSON dir: {e}"))?;
+        }
+        fs::write(&json_path, format!("{pretty_report}\n"))
+            .map_err(|e| format!("Write update apply plan selftest JSON: {e}"))?;
+    }
+    println!("{pretty_report}");
+    if !ok {
+        return Err("update apply plan contract selftest did not produce a planned reversible no-mutation plan".to_string());
+    }
+    Ok(())
 }
 
 #[cfg(test)]

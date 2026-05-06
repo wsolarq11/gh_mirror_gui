@@ -400,5 +400,13 @@ pub(crate) fn dispatch_cli(args: &[String]) -> bool {
         return true;
     }
 
+    if args.first().map(|s| s.as_str()) == Some("--update-apply-plan-contract-selftest") {
+        if let Err(e) = backend_contract::run_update_apply_plan_contract_selftest(&args[1..]) {
+            eprintln!("update apply plan contract selftest failed: {e}");
+            std::process::exit(2);
+        }
+        return true;
+    }
+
     false
 }

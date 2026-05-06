@@ -1656,6 +1656,39 @@ function Invoke-UpdateCandidateContractSelfTest {
     return $selftest
 }
 
+function Invoke-UpdateApplyPlanContractSelfTest {
+    param(
+        [string]$Exe,
+        [string]$JsonFile
+    )
+
+    Invoke-LoggedNative `
+        -Name 'update-apply-plan-contract-selftest' `
+        -Exe $Exe `
+        -Arguments @(
+            '--update-apply-plan-contract-selftest',
+            '--json', $JsonFile
+        )
+    if (!(Test-Path -LiteralPath $JsonFile)) {
+        throw "update apply plan contract selftest JSON missing: $JsonFile"
+    }
+    $selftest = Get-Content -LiteralPath $JsonFile -Raw | ConvertFrom-Json
+    if (!$selftest.ok) {
+        throw 'update apply plan contract selftest did not report ok=true'
+    }
+    if (!$selftest.no_mutation) {
+        throw 'update apply plan contract selftest must be no-mutation'
+    }
+    if (!$selftest.reversible) {
+        throw 'update apply plan contract selftest must be reversible'
+    }
+    if ([string]$selftest.status -ne 'PLANNED') {
+        throw "update apply plan contract selftest status $($selftest.status) was not PLANNED"
+    }
+
+    return $selftest
+}
+
 function Invoke-UpdateCandidateLatestSelfTest {
     param(
         [string]$Exe,
@@ -2252,7 +2285,10 @@ $Receipt.checks.signed_release_staging = Invoke-SignedReleaseStagingSelfTest `
 $Receipt.checks.update_candidate_contract = Invoke-UpdateCandidateContractSelfTest `
     -Exe $exe `
     -JsonFile (Join-Path $EvidenceDir 'update-candidate-contract.json')
-
+$Receipt.checks.update_apply_plan_contract = Invoke-UpdateApplyPlanContractSelfTest `
+    -Exe $exe `
+    -JsonFile (Join-Path $EvidenceDir 'update-apply-plan-contract.json')
+ 
 # Private repo compatibility:
 # - PowerShell GitHub probes use `Get-GitHubAccessToken` directly.
 # - Rust GitHub resolvers/selftests use `GITHUB_TOKEN` env var (see `src/releases.rs`).
