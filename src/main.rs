@@ -9,7 +9,6 @@ use eframe::Storage;
 use gh_mirror_gui::backend_contract;
 use gh_mirror_gui::backend_contract::{BackendClientSettings, DownloadCompletion};
 use notify_rust::Notification;
-use reqwest::blocking::Client;
 use rfd::FileDialog;
 use std::env;
 #[cfg(test)]
@@ -17,7 +16,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::{mpsc, Arc};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 mod cli;
 
@@ -25,6 +24,15 @@ mod gui_common;
 use gui_common::apply_imported_publisher_key_pin;
 use gui_common::import_publisher_key_pin_from_path;
 use gui_common::status_color;
+
+mod gui_helpers;
+use gui_helpers::asset_picker_label;
+use gui_helpers::build_effective_url;
+use gui_helpers::extract_filename;
+use gui_helpers::format_speed;
+use gui_helpers::history_path_from_setting;
+use gui_helpers::latency_color;
+use gui_helpers::run_speed_test;
 
 mod gui_trust_center;
 use gui_trust_center::format_download_completion_status;
@@ -211,7 +219,7 @@ impl GhMirrorGui {
             let (progress_tx, progress_rx) = mpsc::channel();
             let test_urls = urls.clone();
             let handle = thread::spawn(move || {
-                let best = run_speed_test(&test_urls, &progress_tx);
+                let best = run_speed_test(&test_urls, SPEED_TEST_TIMEOUT_SECS, &progress_tx);
                 let _ = final_tx.send(best);
             });
 
@@ -295,7 +303,7 @@ impl GhMirrorGui {
         let (progress_tx, progress_rx) = mpsc::channel();
         let test_urls = self.mirror_urls.clone();
         let handle = thread::spawn(move || {
-            let best = run_speed_test(&test_urls, &progress_tx);
+            let best = run_speed_test(&test_urls, SPEED_TEST_TIMEOUT_SECS, &progress_tx);
             let _ = final_tx.send(best);
         });
         self.speed_test_status = String::from("Testing mirrors...");
@@ -1484,109 +1492,6 @@ impl eframe::App for GhMirrorGui {
 // ---------------------------------------------------------------------------
 // UI helpers
 // ---------------------------------------------------------------------------
-
-fn history_path_from_setting(value: &str) -> PathBuf {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        backend_contract::default_history_path()
-    } else {
-        PathBuf::from(trimmed)
-    }
-}
-
-fn extract_filename(url: &str) -> Option<String> {
-    let parts: Vec<&str> = url.rsplitn(2, '/').collect();
-    if parts.len() >= 2 && !parts[0].is_empty() {
-        Some(parts[0].to_string())
-    } else {
-        None
-    }
-}
-
-fn build_effective_url(mirror_url: &str, raw_url: &str) -> String {
-    if mirror_url.is_empty() {
-        raw_url.to_string()
-    } else {
-        format!("{}{}", mirror_url, raw_url)
-    }
-}
-
-fn format_speed(speed_kbps: f64) -> String {
-    if speed_kbps > 1024.0 {
-        format!("{:.1} MB/s", speed_kbps / 1024.0)
-    } else if speed_kbps > 1.0 {
-        format!("{:.0} KB/s", speed_kbps)
-    } else {
-        format!("{:.1} B/s", speed_kbps * 1024.0)
-    }
-}
-
-fn format_asset_size(bytes: u64) -> String {
-    if bytes >= 1024 * 1024 * 1024 {
-        format!("{:.2} GiB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
-    } else if bytes >= 1024 * 1024 {
-        format!("{:.1} MiB", bytes as f64 / (1024.0 * 1024.0))
-    } else if bytes >= 1024 {
-        format!("{:.1} KiB", bytes as f64 / 1024.0)
-    } else {
-        format!("{bytes} B")
-    }
-}
-
-fn asset_picker_label(asset: &backend_contract::ReleaseAsset) -> String {
-    format!("{} ({})", asset.name, format_asset_size(asset.size))
-}
-
-fn latency_color(ms: f64) -> egui::Color32 {
-    if ms < 200.0 {
-        egui::Color32::from_rgb(0, 200, 0) // green
-    } else if ms < 500.0 {
-        egui::Color32::from_rgb(255, 200, 0) // yellow/orange
-    } else {
-        egui::Color32::from_rgb(255, 80, 80) // red
-    }
-}
-
-fn run_speed_test(
-    mirror_urls: &[String],
-    progress_tx: &mpsc::Sender<(usize, Option<Duration>)>,
-) -> usize {
-    let client = match Client::builder()
-        .timeout(Duration::from_secs(SPEED_TEST_TIMEOUT_SECS))
-        .build()
-    {
-        Ok(c) => c,
-        Err(_) => return 0,
-    };
-
-    let test_target = "https://github.com";
-    let mut best_idx = 0;
-    let mut best_time = Duration::from_secs(999);
-
-    for (i, url) in mirror_urls.iter().enumerate() {
-        let test_url = if url.is_empty() {
-            test_target.to_string()
-        } else {
-            format!("{}{}", url, test_target)
-        };
-
-        let start = Instant::now();
-        let result = client.head(&test_url).send();
-        let elapsed = start.elapsed();
-
-        if result.is_ok() {
-            let _ = progress_tx.send((i, Some(elapsed)));
-            if elapsed < best_time {
-                best_time = elapsed;
-                best_idx = i;
-            }
-        } else {
-            let _ = progress_tx.send((i, None));
-        }
-    }
-
-    best_idx
-}
 
 fn main() -> Result<(), eframe::Error> {
     let args = env::args().skip(1).collect::<Vec<_>>();
