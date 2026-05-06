@@ -18,47 +18,11 @@ pub(crate) fn render_update_candidate_check(
             .num_columns(2)
             .striped(true)
             .show(ui, |ui| {
-                ui.label("Status");
-                ui.label(report.status_display());
-                ui.end_row();
-
-                ui.label("Release");
-                ui.label(format!("{} @ {}", report.repo, report.release_tag));
-                ui.end_row();
-
-                ui.label("Asset");
-                ui.label(&report.asset_name);
-                ui.end_row();
-
-                ui.label("Reason");
-                ui.label(&report.evaluation.reason);
-                ui.end_row();
-
-                ui.label("refusal_reason");
-                ui.label(report.refusal_reason().unwrap_or("none"));
-                ui.end_row();
-
-                ui.label("Publisher fingerprint");
-                ui.label(
-                    report
-                        .publisher_key_fingerprint_sha256()
-                        .unwrap_or("not available"),
-                );
-                ui.end_row();
-
-                ui.label("Evidence path");
-                ui.label(
-                    report
-                        .evaluation
-                        .evidence_path
-                        .as_deref()
-                        .unwrap_or("not recorded"),
-                );
-                ui.end_row();
-
-                ui.label("No mutation");
-                ui.label(report.evaluation.no_mutation.to_string());
-                ui.end_row();
+                for row in backend_contract::update_candidate_check_rows(report) {
+                    ui.label(row.label);
+                    ui.label(row.value);
+                    ui.end_row();
+                }
             });
 
         if let Some(error) = &report.evidence_write_error {
@@ -92,46 +56,11 @@ pub(crate) fn render_update_candidate_stage(
             .num_columns(2)
             .striped(true)
             .show(ui, |ui| {
-                ui.label("Status");
-                ui.label(format!("{:?}", report.status).to_lowercase());
-                ui.end_row();
-
-                ui.label("Release");
-                ui.label(format!("{} @ {}", report.repo, report.release_tag));
-                ui.end_row();
-
-                ui.label("Reason");
-                ui.label(&report.reason);
-                ui.end_row();
-
-                ui.label("Publisher fingerprint");
-                ui.label(
-                    report
-                        .publisher_key_fingerprint_sha256
-                        .as_deref()
-                        .unwrap_or("not available"),
-                );
-                ui.end_row();
-
-                ui.label("Stage dir");
-                ui.label(report.stage_dir.as_deref().unwrap_or("not staged"));
-                ui.end_row();
-
-                ui.label("Staged asset");
-                ui.label(report.staged_asset_path.as_deref().unwrap_or("none"));
-                ui.end_row();
-
-                ui.label("Expected SHA256");
-                ui.label(report.expected_sha256.as_deref().unwrap_or("unknown"));
-                ui.end_row();
-
-                ui.label("Staged SHA256");
-                ui.label(report.staged_sha256.as_deref().unwrap_or("unknown"));
-                ui.end_row();
-
-                ui.label("Evidence path");
-                ui.label(report.evidence_path.as_deref().unwrap_or("not recorded"));
-                ui.end_row();
+                for row in backend_contract::update_candidate_stage_rows(report) {
+                    ui.label(row.label);
+                    ui.label(row.value);
+                    ui.end_row();
+                }
             });
 
         if let Some(error) = &report.evidence_write_error {

@@ -1,5 +1,5 @@
 use crate::core_runtime::{
-    CoreClientSettings, CoreDownloadIntent, CoreRuntime, CoreTrustCenterSnapshot,
+    CoreClientSettings, CoreDisplayRow, CoreDownloadIntent, CoreRuntime, CoreTrustCenterSnapshot,
     RunDownloadContractInput,
 };
 use std::path::Path;
@@ -22,6 +22,19 @@ pub use crate::update_apply_plan::{
 pub use crate::update_candidate::{UpdateCandidateCheckReport, UpdateCandidateStageReport};
 
 pub type DownloadProgressMessage = (u64, u64, f64, f64);
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UpdateCandidateDisplayRow {
+    pub label: &'static str,
+    pub value: String,
+}
+
+fn update_candidate_display_row_from_core(row: CoreDisplayRow) -> UpdateCandidateDisplayRow {
+    UpdateCandidateDisplayRow {
+        label: row.label,
+        value: row.value,
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DownloadSpec {
@@ -300,8 +313,28 @@ pub fn update_candidate_check_status_summary(report: &UpdateCandidateCheckReport
     CoreRuntime::default().update_candidate_check_status_summary(report)
 }
 
+pub fn update_candidate_check_rows(
+    report: &UpdateCandidateCheckReport,
+) -> Vec<UpdateCandidateDisplayRow> {
+    CoreRuntime::default()
+        .update_candidate_check_rows(report)
+        .into_iter()
+        .map(update_candidate_display_row_from_core)
+        .collect()
+}
+
 pub fn update_candidate_stage_status_summary(report: &UpdateCandidateStageReport) -> String {
     CoreRuntime::default().update_candidate_stage_status_summary(report)
+}
+
+pub fn update_candidate_stage_rows(
+    report: &UpdateCandidateStageReport,
+) -> Vec<UpdateCandidateDisplayRow> {
+    CoreRuntime::default()
+        .update_candidate_stage_rows(report)
+        .into_iter()
+        .map(update_candidate_display_row_from_core)
+        .collect()
 }
 
 pub fn describe_update_apply_step(step: &UpdateApplyStep) -> String {
@@ -498,6 +531,29 @@ mod tests {
             update_candidate_stage_status_summary(&stage),
             "Self-update stage: staged (candidate staged)"
         );
+        let check_rows = update_candidate_check_rows(&check);
+        assert!(check_rows.contains(&UpdateCandidateDisplayRow {
+            label: "Release",
+            value: "owner/repo @ v1.2.3".to_string()
+        }));
+        assert!(check_rows.contains(&UpdateCandidateDisplayRow {
+            label: "Reason",
+            value: "candidate is newer".to_string()
+        }));
+        assert!(check_rows.contains(&UpdateCandidateDisplayRow {
+            label: "No mutation",
+            value: "true".to_string()
+        }));
+
+        let stage_rows = update_candidate_stage_rows(&stage);
+        assert!(stage_rows.contains(&UpdateCandidateDisplayRow {
+            label: "Stage dir",
+            value: "stage".to_string()
+        }));
+        assert!(stage_rows.contains(&UpdateCandidateDisplayRow {
+            label: "Staged asset",
+            value: "stage/gh_mirror_gui.exe".to_string()
+        }));
         assert_eq!(
             describe_update_apply_step(&step),
             "Backup current executable current.exe -> current.exe.bak"

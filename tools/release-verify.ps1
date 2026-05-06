@@ -2862,8 +2862,11 @@ function Assert-CoreBackendConvergence {
         'pub(crate) fn run_update_candidate_latest_selftest',
         'pub(crate) fn run_update_candidate_stage_selftest',
         'pub(crate) fn run_update_apply_plan_contract_selftest',
+        'pub(crate) struct CoreDisplayRow',
         'pub(crate) fn update_candidate_check_status_summary',
+        'pub(crate) fn update_candidate_check_rows',
         'pub(crate) fn update_candidate_stage_status_summary',
+        'pub(crate) fn update_candidate_stage_rows',
         'pub(crate) fn describe_update_apply_step',
         'pub(crate) fn resolve_release_context_for_download_best_effort',
         'pub(crate) fn trust_center_snapshot',
@@ -2919,7 +2922,13 @@ function Assert-CoreBackendConvergence {
     $guiUpdateText = Get-Content -LiteralPath $guiUpdatePath -Raw
     $guiUpdateForbidden = @(
         'UpdateApplyStep::',
-        'fn describe_update_apply_step'
+        'fn describe_update_apply_step',
+        'report.status_display()',
+        'report.refusal_reason()',
+        'publisher_key_fingerprint_sha256',
+        'format!("{:?}", report.status).to_lowercase()',
+        'ui.label(&report.evaluation.reason)',
+        'ui.label(&report.reason)'
     )
     $guiUpdatePresent = @($guiUpdateForbidden | Where-Object {
         $guiUpdateText.IndexOf($_, [System.StringComparison]::Ordinal) -ge 0
@@ -2930,7 +2939,7 @@ function Assert-CoreBackendConvergence {
 
     return [ordered]@{
         ok = $true
-        contract = 'backend_contract remains a stable DTO/use-case door; self-update, publisher-key import, imported publisher key application, apply-plan, update status/apply-step display helpers, intent DTO boundary, official-artifact-host helper, history-path helper, release DTO display helpers, trust policy settings helper, trusted publisher key mutation helpers, verification-source summary, trust display helpers, source-trust crypto helpers, bench and selftest CLI behavior, release-context DTO boundary, release-context enrichment, Trust Center snapshot, client construction, client-bound backend use cases, and download/verify/history/disposition orchestration route through CoreRuntime'
+        contract = 'backend_contract remains a stable DTO/use-case door; self-update, publisher-key import, imported publisher key application, apply-plan, update status/apply-step display helpers, update candidate row display helpers, intent DTO boundary, official-artifact-host helper, history-path helper, release DTO display helpers, trust policy settings helper, trusted publisher key mutation helpers, verification-source summary, trust display helpers, source-trust crypto helpers, bench and selftest CLI behavior, release-context DTO boundary, release-context enrichment, Trust Center snapshot, client construction, client-bound backend use cases, and download/verify/history/disposition orchestration route through CoreRuntime'
         backend_contract = [ordered]@{
             path = $backendPath
             sha256 = (Get-FileHash -LiteralPath $backendPath -Algorithm SHA256).Hash

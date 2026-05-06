@@ -155,6 +155,21 @@ pub(crate) struct CoreTrustCenterSnapshot {
     pub(crate) final_path: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CoreDisplayRow {
+    pub(crate) label: &'static str,
+    pub(crate) value: String,
+}
+
+impl CoreDisplayRow {
+    pub(crate) fn new(label: &'static str, value: impl Into<String>) -> Self {
+        Self {
+            label,
+            value: value.into(),
+        }
+    }
+}
+
 impl From<crate::trust_center::TrustCenterSnapshot> for CoreTrustCenterSnapshot {
     fn from(snapshot: crate::trust_center::TrustCenterSnapshot) -> Self {
         Self {
@@ -612,6 +627,37 @@ impl CoreRuntime {
         )
     }
 
+    pub(crate) fn update_candidate_check_rows(
+        &self,
+        report: &UpdateCandidateCheckReport,
+    ) -> Vec<CoreDisplayRow> {
+        vec![
+            CoreDisplayRow::new("Status", report.status_display()),
+            CoreDisplayRow::new(
+                "Release",
+                format!("{} @ {}", report.repo, report.release_tag),
+            ),
+            CoreDisplayRow::new("Asset", report.asset_name.clone()),
+            CoreDisplayRow::new("Reason", report.evaluation.reason.clone()),
+            CoreDisplayRow::new("refusal_reason", report.refusal_reason().unwrap_or("none")),
+            CoreDisplayRow::new(
+                "Publisher fingerprint",
+                report
+                    .publisher_key_fingerprint_sha256()
+                    .unwrap_or("not available"),
+            ),
+            CoreDisplayRow::new(
+                "Evidence path",
+                report
+                    .evaluation
+                    .evidence_path
+                    .as_deref()
+                    .unwrap_or("not recorded"),
+            ),
+            CoreDisplayRow::new("No mutation", report.evaluation.no_mutation.to_string()),
+        ]
+    }
+
     pub(crate) fn update_candidate_stage_status_summary(
         &self,
         report: &UpdateCandidateStageReport,
@@ -621,6 +667,47 @@ impl CoreRuntime {
             format!("{:?}", report.status).to_lowercase(),
             report.reason
         )
+    }
+
+    pub(crate) fn update_candidate_stage_rows(
+        &self,
+        report: &UpdateCandidateStageReport,
+    ) -> Vec<CoreDisplayRow> {
+        vec![
+            CoreDisplayRow::new("Status", format!("{:?}", report.status).to_lowercase()),
+            CoreDisplayRow::new(
+                "Release",
+                format!("{} @ {}", report.repo, report.release_tag),
+            ),
+            CoreDisplayRow::new("Reason", report.reason.clone()),
+            CoreDisplayRow::new(
+                "Publisher fingerprint",
+                report
+                    .publisher_key_fingerprint_sha256
+                    .as_deref()
+                    .unwrap_or("not available"),
+            ),
+            CoreDisplayRow::new(
+                "Stage dir",
+                report.stage_dir.as_deref().unwrap_or("not staged"),
+            ),
+            CoreDisplayRow::new(
+                "Staged asset",
+                report.staged_asset_path.as_deref().unwrap_or("none"),
+            ),
+            CoreDisplayRow::new(
+                "Expected SHA256",
+                report.expected_sha256.as_deref().unwrap_or("unknown"),
+            ),
+            CoreDisplayRow::new(
+                "Staged SHA256",
+                report.staged_sha256.as_deref().unwrap_or("unknown"),
+            ),
+            CoreDisplayRow::new(
+                "Evidence path",
+                report.evidence_path.as_deref().unwrap_or("not recorded"),
+            ),
+        ]
     }
 
     pub(crate) fn describe_update_apply_step(
