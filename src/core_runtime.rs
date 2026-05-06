@@ -305,6 +305,93 @@ impl CoreRuntime {
         )
     }
 
+    pub(crate) fn source_trust_policy_config(
+        &self,
+        trust_policy: &TrustPolicyConfig,
+    ) -> SourceTrustPolicyConfig {
+        trust_policy.source_trust.clone()
+    }
+
+    pub(crate) fn source_trust_requires_signed(&self, trust_policy: &TrustPolicyConfig) -> bool {
+        trust_policy.source_trust.require_trusted_source
+    }
+
+    pub(crate) fn set_source_trust_requires_signed(
+        &self,
+        trust_policy: &mut TrustPolicyConfig,
+        require_trusted_source: bool,
+    ) {
+        trust_policy.source_trust.require_trusted_source = require_trusted_source;
+    }
+
+    pub(crate) fn trusted_publisher_key_text(&self, trust_policy: &TrustPolicyConfig) -> String {
+        trust_policy.source_trust.trusted_publisher_key.clone()
+    }
+
+    pub(crate) fn set_trusted_publisher_key_from_manual_input(
+        &self,
+        trust_policy: &mut TrustPolicyConfig,
+        publisher_key_source: &mut String,
+        trusted_publisher_key: String,
+    ) {
+        if trust_policy.source_trust.trusted_publisher_key != trusted_publisher_key {
+            *publisher_key_source = "manual/pasted key in Trust policy UI".to_string();
+        }
+        trust_policy.source_trust.trusted_publisher_key = trusted_publisher_key;
+    }
+
+    pub(crate) fn set_trusted_publisher_key_pin(
+        &self,
+        trust_policy: &mut TrustPolicyConfig,
+        publisher_key_source: &mut String,
+        trusted_publisher_key: String,
+        source_label: String,
+    ) -> String {
+        trust_policy.source_trust.trusted_publisher_key = trusted_publisher_key;
+        *publisher_key_source = source_label.clone();
+        let fingerprint = self
+            .trusted_publisher_key_fingerprint(trust_policy)
+            .unwrap_or_else(|| "unknown".to_string());
+        let short_fingerprint = fingerprint.chars().take(12).collect::<String>();
+        format!(
+            "Imported Ed25519 publisher key from {} · fingerprint {}…",
+            source_label, short_fingerprint
+        )
+    }
+
+    pub(crate) fn normalize_trusted_publisher_key(
+        &self,
+        trust_policy: &mut TrustPolicyConfig,
+        publisher_key_source: &mut String,
+    ) -> Result<String, String> {
+        let pin = crate::source_trust::normalize_public_key_pin(
+            &trust_policy.source_trust.trusted_publisher_key,
+        )?;
+        trust_policy.source_trust.trusted_publisher_key = pin;
+        if publisher_key_source.trim().is_empty() {
+            *publisher_key_source = "manual/pasted key normalized locally".to_string();
+        }
+        Ok("Normalized Ed25519 publisher key".to_string())
+    }
+
+    pub(crate) fn clear_trusted_publisher_key(
+        &self,
+        trust_policy: &mut TrustPolicyConfig,
+        publisher_key_source: &mut String,
+    ) {
+        trust_policy.source_trust.trusted_publisher_key.clear();
+        publisher_key_source.clear();
+    }
+
+    pub(crate) fn trusted_publisher_key_fingerprint(
+        &self,
+        trust_policy: &TrustPolicyConfig,
+    ) -> Option<String> {
+        crate::source_trust::trusted_key_fingerprint(
+            &trust_policy.source_trust.trusted_publisher_key,
+        )
+    }
+
     pub(crate) fn build_client(
         &self,
         settings: &CoreClientSettings,

@@ -313,7 +313,7 @@ impl GhMirrorGui {
 
         let proxy = self.proxy.clone();
         let allow_invalid_certs = self.allow_invalid_certs;
-        let source_trust_policy = self.trust_policy.source_trust.clone();
+        let source_trust_policy = backend_contract::source_trust_policy_config(&self.trust_policy);
         let evidence_dir = self.update_candidate_evidence_dir();
         let (tx, rx) = mpsc::channel::<UpdateCandidateCheckMessage>();
         self.update_candidate_status =
@@ -339,7 +339,7 @@ impl GhMirrorGui {
 
         let proxy = self.proxy.clone();
         let allow_invalid_certs = self.allow_invalid_certs;
-        let source_trust_policy = self.trust_policy.source_trust.clone();
+        let source_trust_policy = backend_contract::source_trust_policy_config(&self.trust_policy);
         let evidence_dir = self.update_candidate_evidence_dir();
         let stage_root = self.update_candidate_stage_root();
         let (tx, rx) = mpsc::channel::<UpdateCandidateStageMessage>();
@@ -616,12 +616,12 @@ impl eframe::App for GhMirrorGui {
             trust_unknown_keep_file: self.trust_policy.unknown_keep_file,
             trust_unknown_allow_open: self.trust_policy.unknown_allow_open,
             trust_mismatch_file_policy: self.trust_policy.mismatch_file_policy,
-            source_trust_require_signed: self.trust_policy.source_trust.require_trusted_source,
-            source_trust_publisher_key: self
-                .trust_policy
-                .source_trust
-                .trusted_publisher_key
-                .clone(),
+            source_trust_require_signed: backend_contract::source_trust_requires_signed(
+                &self.trust_policy,
+            ),
+            source_trust_publisher_key: backend_contract::trusted_publisher_key_text(
+                &self.trust_policy,
+            ),
             source_trust_publisher_key_source: self.publisher_key_source.clone(),
             history_path: self.history_path.clone(),
         };
@@ -1186,25 +1186,31 @@ impl eframe::App for GhMirrorGui {
                 });
                 ui.separator();
                 ui.label(egui::RichText::new("Verification source trust").strong());
-                ui.checkbox(
-                    &mut self.trust_policy.source_trust.require_trusted_source,
-                    "Require signed checksum/provenance source",
-                );
+                let mut require_trusted_source =
+                    backend_contract::source_trust_requires_signed(&self.trust_policy);
+                if ui
+                    .checkbox(
+                        &mut require_trusted_source,
+                        "Require signed checksum/provenance source",
+                    )
+                    .changed()
+                {
+                    backend_contract::set_source_trust_requires_signed(
+                        &mut self.trust_policy,
+                        require_trusted_source,
+                    );
+                }
                 ui.horizontal(|ui| {
                     ui.label("Pinned Ed25519 publisher key:");
-                    let publisher_key_before =
-                        self.trust_policy.source_trust.trusted_publisher_key.clone();
-                    let changed = ui
-                        .text_edit_singleline(
-                        &mut self.trust_policy.source_trust.trusted_publisher_key,
-                        )
-                        .changed();
-                    if changed
-                        && self.trust_policy.source_trust.trusted_publisher_key
-                            != publisher_key_before
+                    let mut trusted_publisher_key =
+                        backend_contract::trusted_publisher_key_text(&self.trust_policy);
+                    if ui.text_edit_singleline(&mut trusted_publisher_key).changed()
                     {
-                        self.publisher_key_source =
-                            "manual/pasted key in Trust policy UI".to_string();
+                        backend_contract::set_trusted_publisher_key_from_manual_input(
+                            &mut self.trust_policy,
+                            &mut self.publisher_key_source,
+                            trusted_publisher_key,
+                        );
                     }
                 });
                 ui.horizontal(|ui| {
@@ -1215,18 +1221,11 @@ impl eframe::App for GhMirrorGui {
                         {
                             match import_publisher_key_pin_from_path(&path) {
                                 Ok(pin) => {
-                                    self.trust_policy.source_trust.trusted_publisher_key = pin;
-                                    self.publisher_key_source =
-                                        format!("local file {}", path.display());
-                                    let fingerprint = backend_contract::trusted_key_fingerprint(
-                                        &self.trust_policy.source_trust.trusted_publisher_key,
-                                    )
-                                    .unwrap_or_else(|| "unknown".to_string());
-                                    let short_fingerprint =
-                                        fingerprint.chars().take(12).collect::<String>();
-                                    self.status = format!(
-                                        "Imported Ed25519 publisher key from {} · fingerprint {}…",
-                                        self.publisher_key_source, short_fingerprint
+                                    self.status = backend_contract::set_trusted_publisher_key_pin(
+                                        &mut self.trust_policy,
+                                        &mut self.publisher_key_source,
+                                        pin,
+                                        format!("local file {}", path.display()),
                                     );
                                 }
                                 Err(e) => {
@@ -1237,30 +1236,25 @@ impl eframe::App for GhMirrorGui {
                         }
                     }
                     if ui.button("Normalize key").clicked() {
-                        match backend_contract::normalize_public_key_pin(
-                            &self.trust_policy.source_trust.trusted_publisher_key,
+                        match backend_contract::normalize_trusted_publisher_key(
+                            &mut self.trust_policy,
+                            &mut self.publisher_key_source,
                         ) {
-                            Ok(pin) => {
-                                self.trust_policy.source_trust.trusted_publisher_key = pin;
-                                if self.publisher_key_source.trim().is_empty() {
-                                    self.publisher_key_source =
-                                        "manual/pasted key normalized locally".to_string();
-                                }
-                                self.status = "Normalized Ed25519 publisher key".to_string();
-                            }
+                            Ok(status) => self.status = status,
                             Err(e) => {
                                 self.status = format!("❌ Publisher key is invalid: {e}");
                             }
                         }
                     }
                     if ui.button("Clear key").clicked() {
-                        self.trust_policy.source_trust.trusted_publisher_key.clear();
-                        self.publisher_key_source.clear();
+                        backend_contract::clear_trusted_publisher_key(
+                            &mut self.trust_policy,
+                            &mut self.publisher_key_source,
+                        );
                     }
                 });
-                if let Some(fingerprint) = backend_contract::trusted_key_fingerprint(
-                    &self.trust_policy.source_trust.trusted_publisher_key,
-                )
+                if let Some(fingerprint) =
+                    backend_contract::trusted_publisher_key_fingerprint(&self.trust_policy)
                 {
                     ui.small(format!("Pinned key SHA256 fingerprint: {fingerprint}"));
                     ui.small(format!(
@@ -1270,7 +1264,7 @@ impl eframe::App for GhMirrorGui {
                             &self.publisher_key_source
                         )
                     ));
-                } else if self.trust_policy.source_trust.require_trusted_source {
+                } else if backend_contract::source_trust_requires_signed(&self.trust_policy) {
                     ui.colored_label(
                         egui::Color32::from_rgb(220, 70, 70),
                         "Required policy needs a pinned Ed25519 public key and .sig source assets.",

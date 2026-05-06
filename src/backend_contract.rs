@@ -160,6 +160,69 @@ pub fn apply_imported_publisher_key_pin(
     )
 }
 
+pub fn source_trust_policy_config(trust_policy: &TrustPolicyConfig) -> SourceTrustPolicyConfig {
+    CoreRuntime::default().source_trust_policy_config(trust_policy)
+}
+
+pub fn source_trust_requires_signed(trust_policy: &TrustPolicyConfig) -> bool {
+    CoreRuntime::default().source_trust_requires_signed(trust_policy)
+}
+
+pub fn set_source_trust_requires_signed(
+    trust_policy: &mut TrustPolicyConfig,
+    require_trusted_source: bool,
+) {
+    CoreRuntime::default().set_source_trust_requires_signed(trust_policy, require_trusted_source);
+}
+
+pub fn trusted_publisher_key_text(trust_policy: &TrustPolicyConfig) -> String {
+    CoreRuntime::default().trusted_publisher_key_text(trust_policy)
+}
+
+pub fn set_trusted_publisher_key_from_manual_input(
+    trust_policy: &mut TrustPolicyConfig,
+    publisher_key_source: &mut String,
+    trusted_publisher_key: String,
+) {
+    CoreRuntime::default().set_trusted_publisher_key_from_manual_input(
+        trust_policy,
+        publisher_key_source,
+        trusted_publisher_key,
+    );
+}
+
+pub fn set_trusted_publisher_key_pin(
+    trust_policy: &mut TrustPolicyConfig,
+    publisher_key_source: &mut String,
+    trusted_publisher_key: String,
+    source_label: impl Into<String>,
+) -> String {
+    CoreRuntime::default().set_trusted_publisher_key_pin(
+        trust_policy,
+        publisher_key_source,
+        trusted_publisher_key,
+        source_label.into(),
+    )
+}
+
+pub fn normalize_trusted_publisher_key(
+    trust_policy: &mut TrustPolicyConfig,
+    publisher_key_source: &mut String,
+) -> Result<String, String> {
+    CoreRuntime::default().normalize_trusted_publisher_key(trust_policy, publisher_key_source)
+}
+
+pub fn clear_trusted_publisher_key(
+    trust_policy: &mut TrustPolicyConfig,
+    publisher_key_source: &mut String,
+) {
+    CoreRuntime::default().clear_trusted_publisher_key(trust_policy, publisher_key_source);
+}
+
+pub fn trusted_publisher_key_fingerprint(trust_policy: &TrustPolicyConfig) -> Option<String> {
+    CoreRuntime::default().trusted_publisher_key_fingerprint(trust_policy)
+}
+
 pub fn publisher_key_source_label_for_policy(
     trust_policy: &TrustPolicyConfig,
     publisher_key_source: &str,
@@ -327,6 +390,41 @@ mod tests {
         );
         assert!(status.contains("publisher-key.ed25519.pub"));
         assert!(status.contains(&fingerprint[..12]));
+    }
+
+    #[test]
+    fn source_trust_key_helpers_keep_gui_out_of_nested_policy_mutation() {
+        let private_key = "1111111111111111111111111111111111111111111111111111111111111111";
+        let public_key = public_key_from_private_seed(private_key).unwrap();
+        let prefixed_key = format!("ed25519:{public_key}");
+        let mut policy = TrustPolicyConfig::default();
+        let mut source = String::new();
+
+        assert!(!source_trust_requires_signed(&policy));
+        set_source_trust_requires_signed(&mut policy, true);
+        assert!(source_trust_requires_signed(&policy));
+
+        set_trusted_publisher_key_from_manual_input(&mut policy, &mut source, prefixed_key.clone());
+        assert_eq!(source, "manual/pasted key in Trust policy UI");
+        assert_eq!(trusted_publisher_key_text(&policy), prefixed_key);
+
+        let status = normalize_trusted_publisher_key(&mut policy, &mut source).unwrap();
+        assert_eq!(status, "Normalized Ed25519 publisher key");
+        assert_eq!(trusted_publisher_key_text(&policy), public_key);
+        assert!(trusted_publisher_key_fingerprint(&policy).is_some());
+        assert!(source_trust_policy_config(&policy).require_trusted_source);
+
+        let status = set_trusted_publisher_key_pin(
+            &mut policy,
+            &mut source,
+            public_key,
+            "local file C:\\key.pub",
+        );
+        assert!(status.contains("local file C:\\key.pub"));
+
+        clear_trusted_publisher_key(&mut policy, &mut source);
+        assert!(trusted_publisher_key_text(&policy).is_empty());
+        assert!(source.is_empty());
     }
 }
 
