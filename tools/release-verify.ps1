@@ -2760,7 +2760,11 @@ function Assert-CoreBackendConvergence {
         'crate::update_candidate::UpdateCandidateCheckConfig',
         'crate::update_candidate::UpdateCandidateStageConfig',
         'crate::update_apply_plan::build_update_apply_plan',
-        'crate::update_apply_plan::write_update_apply_plan_evidence_for_stage2'
+        'crate::update_apply_plan::write_update_apply_plan_evidence_for_stage2',
+        'parse_github_intent(',
+        'crate::source_spec::SourceSpec',
+        'crate::verification::verification_source_summary',
+        'crate::trust_center::trust_center_snapshot'
     )
     $backendForbiddenRegex = @(
         '(?m)^\s*use\s+crate::source_trust::import_publisher_key_pin_from_release_asset',
@@ -2781,7 +2785,11 @@ function Assert-CoreBackendConvergence {
         'pub(crate) fn stage_latest_update_candidate',
         'pub(crate) fn refused_update_candidate_stage_report',
         'pub(crate) fn build_update_apply_plan_for_stage2',
-        'pub(crate) fn record_update_apply_plan_evidence_for_stage2'
+        'pub(crate) fn record_update_apply_plan_evidence_for_stage2',
+        'pub(crate) fn resolve_download_intent',
+        'pub(crate) fn verification_source_summary_for_selected_asset',
+        'pub(crate) fn resolve_release_context_for_download_best_effort',
+        'pub(crate) fn trust_center_snapshot'
     )
     $missing = @($runtimeRequired | Where-Object {
         $runtimeText.IndexOf($_, [System.StringComparison]::Ordinal) -lt 0
@@ -2792,7 +2800,7 @@ function Assert-CoreBackendConvergence {
 
     return [ordered]@{
         ok = $true
-        contract = 'backend_contract remains a stable DTO/use-case door; self-update, publisher-key import, and apply-plan orchestration route through CoreRuntime'
+        contract = 'backend_contract remains a stable DTO/use-case door; self-update, publisher-key import, apply-plan, intent, verification-source summary, release-context enrichment, and Trust Center snapshot orchestration route through CoreRuntime'
         backend_contract = [ordered]@{
             path = $backendPath
             sha256 = (Get-FileHash -LiteralPath $backendPath -Algorithm SHA256).Hash

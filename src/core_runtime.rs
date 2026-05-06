@@ -2,6 +2,7 @@ use crate::download::DownloadControl;
 use crate::download::DownloadProbe;
 use crate::download::SelectedDownloadStrategy;
 use crate::evidence_ledger::{EvidenceLedger, FileSystemEvidenceLedger};
+use crate::github_intent::{parse_github_intent, ParsedGithubIntent};
 use crate::releases::{ReleaseQuery, ResolvedRelease};
 use crate::source_adapter::{GitHubReleaseAdapter, SourceAdapter};
 use crate::source_spec::SourceSpec;
@@ -104,6 +105,10 @@ impl CoreRuntime {
         crate::source_trust::import_publisher_key_pin_from_release_asset(client, asset)
     }
 
+    pub(crate) fn resolve_download_intent(&self, input: &str) -> ParsedGithubIntent {
+        parse_github_intent(input)
+    }
+
     pub(crate) fn verification_plan_for_selected_asset(
         &self,
         release: &ResolvedRelease,
@@ -111,6 +116,18 @@ impl CoreRuntime {
     ) -> Option<DownloadVerificationPlan> {
         self.verifier_adapter
             .verification_plan_for_selected_asset(release, asset_index)
+    }
+
+    pub(crate) fn verification_source_summary_for_selected_asset(
+        &self,
+        release: &ResolvedRelease,
+        asset_index: usize,
+    ) -> String {
+        self.verification_plan_for_selected_asset(release, asset_index)
+            .map(|plan| crate::verification::verification_source_summary(&plan))
+            .unwrap_or_else(|| {
+                "No checksum/provenance assets detected; result will be UNKNOWN".to_string()
+            })
     }
 
     pub(crate) fn verification_plan_from_download_context(
@@ -134,6 +151,29 @@ impl CoreRuntime {
                     .to_string(),
             ),
         }
+    }
+
+    pub(crate) fn resolve_release_context_for_download_best_effort(
+        &self,
+        client: &Client,
+        effective_url: &str,
+        asset_name: &str,
+    ) -> Option<(ResolvedRelease, usize)> {
+        let spec = SourceSpec::GitHubReleaseAssetUrl {
+            url: effective_url.to_string(),
+        };
+        let release = self.resolve_source_spec(client, None, &spec).ok()?;
+        let idx = release
+            .assets
+            .iter()
+            .position(|asset| asset.browser_download_url == effective_url)
+            .or_else(|| {
+                release
+                    .assets
+                    .iter()
+                    .position(|asset| asset.name == asset_name)
+            })?;
+        Some((release, idx))
     }
 
     pub(crate) fn probe_download_best_effort(
@@ -304,6 +344,23 @@ impl CoreRuntime {
                 Err(e)
             }
         }
+    }
+
+    pub(crate) fn trust_center_snapshot(
+        &self,
+        report: &crate::verification::VerificationReport,
+        evidence_path: Option<&Path>,
+        disposition: &AppliedFileDisposition,
+        policy_snapshot: &crate::trust_policy::TrustPolicySnapshot,
+        publisher_key_source: Option<&str>,
+    ) -> crate::trust_center::TrustCenterSnapshot {
+        crate::trust_center::trust_center_snapshot(
+            report,
+            evidence_path,
+            disposition,
+            policy_snapshot,
+            publisher_key_source,
+        )
     }
 
     pub(crate) fn check_latest_update_candidate(
@@ -540,5 +597,77 @@ mod tests {
             lines.lock().expect("lock").as_slice(),
             ["append:hello".to_string()]
         );
+    }
+
+    #[test]
+    fn core_runtime_owns_intent_and_verification_summary_routing() {
+        let runtime = CoreRuntime::default();
+
+        let intent = runtime.resolve_download_intent(
+            "https://github.com/example/repo/releases/download/v1.0.0/asset.bin",
+        );
+        assert!(matches!(intent, ParsedGithubIntent::DirectDownload { .. }));
+
+        let release = ResolvedRelease {
+            owner: "example".to_string(),
+            repo: "repo".to_string(),
+            tag_name: "v1.0.0".to_string(),
+            name: None,
+            html_url: "https://github.com/example/repo/releases/tag/v1.0.0".to_string(),
+            assets: vec![ReleaseAsset {
+                name: "asset.bin".to_string(),
+                size: 0,
+                browser_download_url:
+                    "https://github.com/example/repo/releases/download/v1.0.0/asset.bin".to_string(),
+                content_type: None,
+                api_url: None,
+            }],
+        };
+        let summary = runtime.verification_source_summary_for_selected_asset(&release, 0);
+        assert!(summary.contains("No checksum/provenance assets detected"));
+    }
+
+    #[test]
+    fn core_runtime_resolves_download_release_context_via_source_adapter() {
+        let source_calls = Arc::new(Mutex::new(0usize));
+        let asset_url = "https://github.com/example/repo/releases/download/v1.0.0/asset.bin";
+        let release = ResolvedRelease {
+            owner: "example".to_string(),
+            repo: "repo".to_string(),
+            tag_name: "v1.0.0".to_string(),
+            name: None,
+            html_url: "https://github.com/example/repo/releases/tag/v1.0.0".to_string(),
+            assets: vec![ReleaseAsset {
+                name: "asset.bin".to_string(),
+                size: 0,
+                browser_download_url: asset_url.to_string(),
+                content_type: None,
+                api_url: None,
+            }],
+        };
+        let runtime = CoreRuntime::new(
+            Box::new(FakeSourceAdapter {
+                calls: Arc::clone(&source_calls),
+                release,
+            }),
+            Box::new(FakeVerifierAdapter {
+                plan_calls: Arc::new(Mutex::new(0)),
+                verify_calls: Arc::new(Mutex::new(0)),
+            }),
+            Box::new(FakeEvidenceLedger {
+                lines: Arc::new(Mutex::new(Vec::new())),
+            }),
+        );
+        let client = Client::builder()
+            .build()
+            .expect("reqwest client build should succeed in unit tests");
+
+        let (resolved, idx) = runtime
+            .resolve_release_context_for_download_best_effort(&client, asset_url, "asset.bin")
+            .expect("fake source adapter should map the asset URL back to release context");
+
+        assert_eq!(idx, 0);
+        assert_eq!(resolved.assets[0].browser_download_url, asset_url);
+        assert_eq!(*source_calls.lock().expect("lock"), 1);
     }
 }

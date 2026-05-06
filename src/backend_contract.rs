@@ -2,7 +2,7 @@ use crate::core_runtime::{
     AppendDownloadHistoryInput, CoreRuntime, DownloadWithStrategyContractInput,
 };
 use crate::download::build_client;
-use crate::github_intent::{parse_github_intent, ParsedGithubIntent};
+use crate::github_intent::ParsedGithubIntent;
 use crate::history::VerificationHistoryContext;
 use std::path::Path;
 use std::path::PathBuf;
@@ -90,7 +90,7 @@ fn trust_center_snapshot(
     policy_snapshot: &crate::trust_policy::TrustPolicySnapshot,
     publisher_key_source: Option<&str>,
 ) -> TrustCenterSnapshot {
-    let snapshot = crate::trust_center::trust_center_snapshot(
+    let snapshot = CoreRuntime::default().trust_center_snapshot(
         report,
         evidence_path,
         disposition,
@@ -119,7 +119,7 @@ fn trust_center_snapshot(
 }
 
 pub fn resolve_download_intent(input: &str) -> IntentDTO {
-    match parse_github_intent(input) {
+    match CoreRuntime::default().resolve_download_intent(input) {
         ParsedGithubIntent::DirectDownload {
             url,
             filename,
@@ -195,12 +195,7 @@ pub fn verification_source_summary_for_release_asset(
     release: &ResolvedRelease,
     asset_index: usize,
 ) -> String {
-    CoreRuntime::default()
-        .verification_plan_for_selected_asset(release, asset_index)
-        .map(|plan| crate::verification::verification_source_summary(&plan))
-        .unwrap_or_else(|| {
-            "No checksum/provenance assets detected; result will be UNKNOWN".to_string()
-        })
+    CoreRuntime::default().verification_source_summary_for_selected_asset(release, asset_index)
 }
 
 fn log_error(msg: &str) {
@@ -353,24 +348,13 @@ pub fn run_download_contract(
     // Best-effort: when the UI provided no release context (direct URL input), try to map a GitHub
     // release asset download URL back to its release, so checksum/provenance verification can run.
     if verification_release.is_none() && verification_asset_index.is_none() {
-        let spec = crate::source_spec::SourceSpec::GitHubReleaseAssetUrl {
-            url: effective_url.to_string(),
-        };
-        if let Ok(release) = runtime.resolve_source_spec(&client, None, &spec) {
-            let idx = release
-                .assets
-                .iter()
-                .position(|asset| asset.browser_download_url == effective_url)
-                .or_else(|| {
-                    release
-                        .assets
-                        .iter()
-                        .position(|asset| asset.name == asset_name)
-                });
-            if let Some(idx) = idx {
-                verification_release = Some(release);
-                verification_asset_index = Some(idx);
-            }
+        if let Some((release, idx)) = runtime.resolve_release_context_for_download_best_effort(
+            &client,
+            effective_url,
+            &asset_name,
+        ) {
+            verification_release = Some(release);
+            verification_asset_index = Some(idx);
         }
     }
 
