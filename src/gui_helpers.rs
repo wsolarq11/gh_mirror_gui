@@ -41,22 +41,6 @@ pub(crate) fn format_speed(speed_kbps: f64) -> String {
     }
 }
 
-fn format_asset_size(bytes: u64) -> String {
-    if bytes >= 1024 * 1024 * 1024 {
-        format!("{:.2} GiB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
-    } else if bytes >= 1024 * 1024 {
-        format!("{:.1} MiB", bytes as f64 / (1024.0 * 1024.0))
-    } else if bytes >= 1024 {
-        format!("{:.1} KiB", bytes as f64 / 1024.0)
-    } else {
-        format!("{bytes} B")
-    }
-}
-
-pub(crate) fn asset_picker_label(asset: &backend_contract::ReleaseAsset) -> String {
-    format!("{} ({})", asset.name, format_asset_size(asset.size))
-}
-
 pub(crate) fn latency_color(ms: f64) -> egui::Color32 {
     if ms < 200.0 {
         egui::Color32::from_rgb(0, 200, 0) // green

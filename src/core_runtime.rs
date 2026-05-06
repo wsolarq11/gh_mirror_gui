@@ -243,6 +243,29 @@ impl CoreRuntime {
         crate::history::default_history_path()
     }
 
+    pub(crate) fn release_query_selector_label(&self, query: &ReleaseQuery) -> String {
+        query.selector_label()
+    }
+
+    pub(crate) fn release_asset_picker_label(
+        &self,
+        asset: &crate::releases::ReleaseAsset,
+    ) -> String {
+        format!("{} ({})", asset.name, Self::format_asset_size(asset.size))
+    }
+
+    fn format_asset_size(bytes: u64) -> String {
+        if bytes >= 1024 * 1024 * 1024 {
+            format!("{:.2} GiB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
+        } else if bytes >= 1024 * 1024 {
+            format!("{:.1} MiB", bytes as f64 / (1024.0 * 1024.0))
+        } else if bytes >= 1024 {
+            format!("{:.1} KiB", bytes as f64 / 1024.0)
+        } else {
+            format!("{bytes} B")
+        }
+    }
+
     pub(crate) fn build_client(
         &self,
         settings: &CoreClientSettings,

@@ -2,8 +2,8 @@ use crate::gui_common::{
     apply_imported_publisher_key_pin, import_publisher_key_pin_from_path, status_color,
 };
 use crate::gui_helpers::{
-    asset_picker_label, build_effective_url, extract_filename, format_speed,
-    history_path_from_setting, latency_color, run_speed_test,
+    build_effective_url, extract_filename, format_speed, history_path_from_setting, latency_color,
+    run_speed_test,
 };
 use crate::gui_mirrors::{normalize_mirror_index, MIRRORS, SPEED_TEST_TIMEOUT_SECS};
 use crate::gui_trust_center::{
@@ -385,10 +385,7 @@ impl GhMirrorGui {
         let proxy = self.proxy.clone();
         let allow_invalid_certs = self.allow_invalid_certs;
         let (tx, rx) = mpsc::channel::<ReleaseLookupMessage>();
-        let kind_label = match &query.kind {
-            backend_contract::ReleaseQueryKind::Latest => "latest".to_string(),
-            backend_contract::ReleaseQueryKind::Tag(tag) => format!("tag {tag}"),
-        };
+        let kind_label = backend_contract::release_query_selector_label(&query);
         let status = format!(
             "Resolving {}/{} {kind_label} assets...",
             query.owner, query.repo
@@ -973,7 +970,8 @@ impl eframe::App for GhMirrorGui {
                             self.selected_release_asset = Some(0);
                         }
                         let selected_idx = self.selected_release_asset.unwrap_or(0);
-                        let selected_text = asset_picker_label(&release.assets[selected_idx]);
+                        let selected_text =
+                            backend_contract::release_asset_picker_label(&release.assets[selected_idx]);
 
                         ui.horizontal(|ui| {
                             ui.label("Asset:");
@@ -984,7 +982,7 @@ impl eframe::App for GhMirrorGui {
                                         if ui
                                             .selectable_label(
                                                 self.selected_release_asset == Some(idx),
-                                                asset_picker_label(asset),
+                                                backend_contract::release_asset_picker_label(asset),
                                             )
                                             .clicked()
                                         {
@@ -1005,7 +1003,11 @@ impl eframe::App for GhMirrorGui {
                                 .content_type
                                 .as_deref()
                                 .unwrap_or("unknown content type");
-                            ui.label(format!("{} · {}", asset_picker_label(asset), content_type));
+                            ui.label(format!(
+                                "{} · {}",
+                                backend_contract::release_asset_picker_label(asset),
+                                content_type
+                            ));
                             ui.label(backend_contract::verification_source_summary_for_release_asset(
                                 &release,
                                 selected_idx,

@@ -122,6 +122,14 @@ pub fn default_history_path() -> PathBuf {
     CoreRuntime::default().default_history_path()
 }
 
+pub fn release_query_selector_label(query: &ReleaseQuery) -> String {
+    CoreRuntime::default().release_query_selector_label(query)
+}
+
+pub fn release_asset_picker_label(asset: &ReleaseAsset) -> String {
+    CoreRuntime::default().release_asset_picker_label(asset)
+}
+
 pub fn publisher_key_source_label_for_policy(
     trust_policy: &TrustPolicyConfig,
     publisher_key_source: &str,
@@ -217,6 +225,32 @@ mod tests {
         assert!(hosts
             .iter()
             .any(|host| host.eq_ignore_ascii_case("api.github.com")));
+    }
+
+    #[test]
+    fn release_display_helpers_keep_ui_out_of_release_variant_formatting() {
+        let latest = ReleaseQuery {
+            owner: "owner".to_string(),
+            repo: "repo".to_string(),
+            kind: ReleaseQueryKind::Latest,
+        };
+        let tagged = ReleaseQuery {
+            owner: "owner".to_string(),
+            repo: "repo".to_string(),
+            kind: ReleaseQueryKind::Tag("v1.2.3".to_string()),
+        };
+        let asset = ReleaseAsset {
+            name: "app.zip".to_string(),
+            size: 2 * 1024 * 1024,
+            browser_download_url: "https://github.com/owner/repo/releases/download/v1/app.zip"
+                .to_string(),
+            content_type: Some("application/zip".to_string()),
+            api_url: None,
+        };
+
+        assert_eq!(release_query_selector_label(&latest), "latest");
+        assert_eq!(release_query_selector_label(&tagged), "tag v1.2.3");
+        assert_eq!(release_asset_picker_label(&asset), "app.zip (2.0 MiB)");
     }
 }
 

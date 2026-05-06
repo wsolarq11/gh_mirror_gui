@@ -2742,15 +2742,20 @@ function Assert-GoalAnchorContract {
 function Assert-CoreBackendConvergence {
     $backendPath = Join-Path $RepoRoot 'src\backend_contract.rs'
     $runtimePath = Join-Path $RepoRoot 'src\core_runtime.rs'
+    $guiAppPath = Join-Path $RepoRoot 'src\gui_app.rs'
     if (!(Test-Path -LiteralPath $backendPath)) {
         throw 'backend contract module missing: src\backend_contract.rs'
     }
     if (!(Test-Path -LiteralPath $runtimePath)) {
         throw 'core runtime module missing: src\core_runtime.rs'
     }
+    if (!(Test-Path -LiteralPath $guiAppPath)) {
+        throw 'GUI app module missing: src\gui_app.rs'
+    }
 
     $backendText = Get-Content -LiteralPath $backendPath -Raw
     $runtimeText = Get-Content -LiteralPath $runtimePath -Raw
+    $guiAppText = Get-Content -LiteralPath $guiAppPath -Raw
     $backendForbidden = @(
         'crate::source_trust::import_publisher_key_pin_from_release_asset',
         'crate::update_candidate::check_latest_update_candidate',
@@ -2824,6 +2829,8 @@ function Assert-CoreBackendConvergence {
         'pub(crate) fn resolve_download_intent',
         'pub(crate) fn official_github_artifact_hosts',
         'pub(crate) fn default_history_path',
+        'pub(crate) fn release_query_selector_label',
+        'pub(crate) fn release_asset_picker_label',
         'pub(crate) fn verification_source_summary_for_selected_asset',
         'pub(crate) fn publisher_key_source_label_for_policy',
         'pub(crate) fn open_location_button_label_for_facts',
@@ -2859,9 +2866,23 @@ function Assert-CoreBackendConvergence {
         throw "CoreRuntime missing backend convergence entrypoints: $($missing -join ', ')"
     }
 
+    $guiForbidden = @(
+        'backend_contract::ReleaseQueryKind::'
+    )
+    $guiForbiddenRegex = @(
+        '(?m)\basset_picker_label\('
+    )
+    $guiPresent = @($guiForbidden | Where-Object {
+        $guiAppText.IndexOf($_, [System.StringComparison]::Ordinal) -ge 0
+    })
+    $guiPresent += @($guiForbiddenRegex | Where-Object { $guiAppText -match $_ })
+    if ($guiPresent.Count -gt 0) {
+        throw "GUI owns release DTO formatting that must route through backend_contract/CoreRuntime: $($guiPresent -join ', ')"
+    }
+
     return [ordered]@{
         ok = $true
-        contract = 'backend_contract remains a stable DTO/use-case door; self-update, publisher-key import, apply-plan, intent DTO boundary, official-artifact-host helper, history-path helper, verification-source summary, trust display helpers, source-trust crypto helpers, bench and selftest CLI behavior, release-context DTO boundary, release-context enrichment, Trust Center snapshot, client construction, client-bound backend use cases, and download/verify/history/disposition orchestration route through CoreRuntime'
+        contract = 'backend_contract remains a stable DTO/use-case door; self-update, publisher-key import, apply-plan, intent DTO boundary, official-artifact-host helper, history-path helper, release DTO display helpers, verification-source summary, trust display helpers, source-trust crypto helpers, bench and selftest CLI behavior, release-context DTO boundary, release-context enrichment, Trust Center snapshot, client construction, client-bound backend use cases, and download/verify/history/disposition orchestration route through CoreRuntime'
         backend_contract = [ordered]@{
             path = $backendPath
             sha256 = (Get-FileHash -LiteralPath $backendPath -Algorithm SHA256).Hash
@@ -2872,6 +2893,12 @@ function Assert-CoreBackendConvergence {
             path = $runtimePath
             sha256 = (Get-FileHash -LiteralPath $runtimePath -Algorithm SHA256).Hash
             required_patterns = $runtimeRequired
+        }
+        gui_app = [ordered]@{
+            path = $guiAppPath
+            sha256 = (Get-FileHash -LiteralPath $guiAppPath -Algorithm SHA256).Hash
+            forbidden_patterns_absent = $guiForbidden
+            forbidden_regex_absent = $guiForbiddenRegex
         }
     }
 }
