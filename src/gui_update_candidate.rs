@@ -1,6 +1,6 @@
 use eframe::egui;
 use gh_mirror_gui::backend_contract::{
-    UpdateApplyPlan, UpdateApplyPlanEvidenceRecord, UpdateApplyStep, UpdateCandidateCheckReport,
+    self, UpdateApplyPlan, UpdateApplyPlanEvidenceRecord, UpdateCandidateCheckReport,
     UpdateCandidateStageReport,
 };
 use std::path::Path;
@@ -156,29 +156,6 @@ pub(crate) fn render_update_candidate_stage(
     });
 }
 
-fn describe_update_apply_step(step: &UpdateApplyStep) -> String {
-    match step {
-        UpdateApplyStep::VerifyStagedCandidateSha256 {
-            path,
-            expected_sha256,
-        } => format!("Verify staged candidate SHA256 at {path} == {expected_sha256}"),
-        UpdateApplyStep::BackupCurrentExecutable { from, to } => {
-            format!("Backup current executable {from} -> {to}")
-        }
-        UpdateApplyStep::ReplaceExecutableFromStage { from, to } => {
-            format!("Replace executable from staged asset {from} -> {to}")
-        }
-        UpdateApplyStep::VerifyInstalledExecutableSha256 {
-            path,
-            expected_sha256,
-        } => format!("Verify installed executable SHA256 at {path} == {expected_sha256}"),
-        UpdateApplyStep::RollbackByRestoringBackup {
-            from_backup,
-            to_target,
-        } => format!("Rollback by restoring backup {from_backup} -> {to_target}"),
-    }
-}
-
 pub(crate) fn render_update_apply_plan_preview(
     ui: &mut egui::Ui,
     plan: &UpdateApplyPlan,
@@ -257,7 +234,11 @@ pub(crate) fn render_update_apply_plan_preview(
         }
 
         for (idx, step) in plan.steps.iter().enumerate() {
-            ui.small(format!("{}: {}", idx + 1, describe_update_apply_step(step)));
+            ui.small(format!(
+                "{}: {}",
+                idx + 1,
+                backend_contract::describe_update_apply_step(step)
+            ));
         }
     });
 }

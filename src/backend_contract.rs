@@ -296,6 +296,18 @@ pub fn run_update_apply_plan_contract_selftest(args: &[String]) -> Result<(), St
     CoreRuntime::default().run_update_apply_plan_contract_selftest(args)
 }
 
+pub fn update_candidate_check_status_summary(report: &UpdateCandidateCheckReport) -> String {
+    CoreRuntime::default().update_candidate_check_status_summary(report)
+}
+
+pub fn update_candidate_stage_status_summary(report: &UpdateCandidateStageReport) -> String {
+    CoreRuntime::default().update_candidate_stage_status_summary(report)
+}
+
+pub fn describe_update_apply_step(step: &UpdateApplyStep) -> String {
+    CoreRuntime::default().describe_update_apply_step(step)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -425,6 +437,71 @@ mod tests {
         clear_trusted_publisher_key(&mut policy, &mut source);
         assert!(trusted_publisher_key_text(&policy).is_empty());
         assert!(source.is_empty());
+    }
+
+    #[test]
+    fn update_status_and_apply_step_display_helpers_keep_ui_thin() {
+        let check = UpdateCandidateCheckReport {
+            schema_version: 1,
+            repo: "owner/repo".to_string(),
+            release_tag: "v1.2.3".to_string(),
+            release_url: "https://github.com/owner/repo/releases/tag/v1.2.3".to_string(),
+            asset_name: "gh_mirror_gui.exe".to_string(),
+            release_publisher_key_fingerprint_sha256: None,
+            evaluation: crate::update_candidate::UpdateCandidateEvaluation {
+                schema_version: 1,
+                status: crate::update_candidate::UpdateCandidateStatus::Candidate,
+                current_version: "0.1.0".to_string(),
+                candidate_version: "1.2.3".to_string(),
+                release_tag: "v1.2.3".to_string(),
+                asset_name: "gh_mirror_gui.exe".to_string(),
+                reason: "candidate is newer".to_string(),
+                verification_status: "VERIFIED".to_string(),
+                file_sha256: None,
+                expected_sha256: None,
+                verification_source: None,
+                source_authenticity_status: None,
+                source_trust_decision: None,
+                publisher_key_fingerprint_sha256: None,
+                evidence_path: None,
+                no_mutation: true,
+            },
+            evidence_write_error: None,
+        };
+        let stage = UpdateCandidateStageReport {
+            schema_version: 1,
+            status: crate::update_candidate::UpdateCandidateStageStatus::Staged,
+            repo: "owner/repo".to_string(),
+            release_tag: "v1.2.3".to_string(),
+            release_url: "https://github.com/owner/repo/releases/tag/v1.2.3".to_string(),
+            stage_dir: Some("stage".to_string()),
+            staged_asset_path: Some("stage/gh_mirror_gui.exe".to_string()),
+            staged_sha256: Some("abc".to_string()),
+            expected_sha256: Some("abc".to_string()),
+            publisher_key_fingerprint_sha256: None,
+            reason: "candidate staged".to_string(),
+            no_install: true,
+            check_report: check.clone(),
+            evidence_path: None,
+            evidence_write_error: None,
+        };
+        let step = UpdateApplyStep::BackupCurrentExecutable {
+            from: "current.exe".to_string(),
+            to: "current.exe.bak".to_string(),
+        };
+
+        assert_eq!(
+            update_candidate_check_status_summary(&check),
+            "Self-update check: candidate (candidate is newer)"
+        );
+        assert_eq!(
+            update_candidate_stage_status_summary(&stage),
+            "Self-update stage: staged (candidate staged)"
+        );
+        assert_eq!(
+            describe_update_apply_step(&step),
+            "Backup current executable current.exe -> current.exe.bak"
+        );
     }
 }
 

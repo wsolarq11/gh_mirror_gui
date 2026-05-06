@@ -601,6 +601,54 @@ impl CoreRuntime {
         crate::update_apply_plan::run_update_apply_plan_contract_selftest(args)
     }
 
+    pub(crate) fn update_candidate_check_status_summary(
+        &self,
+        report: &UpdateCandidateCheckReport,
+    ) -> String {
+        format!(
+            "Self-update check: {} ({})",
+            report.status_display(),
+            report.evaluation.reason
+        )
+    }
+
+    pub(crate) fn update_candidate_stage_status_summary(
+        &self,
+        report: &UpdateCandidateStageReport,
+    ) -> String {
+        format!(
+            "Self-update stage: {} ({})",
+            format!("{:?}", report.status).to_lowercase(),
+            report.reason
+        )
+    }
+
+    pub(crate) fn describe_update_apply_step(
+        &self,
+        step: &crate::update_apply_plan::UpdateApplyStep,
+    ) -> String {
+        match step {
+            crate::update_apply_plan::UpdateApplyStep::VerifyStagedCandidateSha256 {
+                path,
+                expected_sha256,
+            } => format!("Verify staged candidate SHA256 at {path} == {expected_sha256}"),
+            crate::update_apply_plan::UpdateApplyStep::BackupCurrentExecutable { from, to } => {
+                format!("Backup current executable {from} -> {to}")
+            }
+            crate::update_apply_plan::UpdateApplyStep::ReplaceExecutableFromStage { from, to } => {
+                format!("Replace executable from staged asset {from} -> {to}")
+            }
+            crate::update_apply_plan::UpdateApplyStep::VerifyInstalledExecutableSha256 {
+                path,
+                expected_sha256,
+            } => format!("Verify installed executable SHA256 at {path} == {expected_sha256}"),
+            crate::update_apply_plan::UpdateApplyStep::RollbackByRestoringBackup {
+                from_backup,
+                to_target,
+            } => format!("Rollback by restoring backup {from_backup} -> {to_target}"),
+        }
+    }
+
     pub(crate) fn verification_plan_from_download_context(
         &self,
         release: Option<&ResolvedRelease>,

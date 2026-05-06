@@ -736,11 +736,8 @@ impl eframe::App for GhMirrorGui {
             if let Ok(report) = rx.try_recv() {
                 self.update_candidate_thread = None;
                 self.update_candidate_rx = None;
-                self.update_candidate_status = format!(
-                    "Self-update check: {} ({})",
-                    report.status_display(),
-                    report.evaluation.reason
-                );
+                self.update_candidate_status =
+                    backend_contract::update_candidate_check_status_summary(&report);
                 self.status = self.update_candidate_status.clone();
                 self.update_candidate_report = Some(report);
             }
@@ -753,7 +750,7 @@ impl eframe::App for GhMirrorGui {
                 self.update_stage_thread = None;
                 self.update_stage_rx = None;
                 self.update_stage_status =
-                    format!("Self-update stage: {:?} ({})", report.status, report.reason);
+                    backend_contract::update_candidate_stage_status_summary(&report);
                 self.status = self.update_stage_status.clone();
 
                 // Record a Stage 3 apply plan evidence file (no mutation / no install).
