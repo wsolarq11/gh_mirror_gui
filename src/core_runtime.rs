@@ -235,6 +235,10 @@ impl CoreRuntime {
         parse_github_intent(input).into()
     }
 
+    pub(crate) fn official_github_artifact_hosts(&self) -> &'static [&'static str] {
+        crate::url_policy::official_github_artifact_hosts()
+    }
+
     pub(crate) fn default_history_path(&self) -> PathBuf {
         crate::history::default_history_path()
     }

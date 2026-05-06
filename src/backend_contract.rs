@@ -115,7 +115,7 @@ pub fn resolve_download_intent(input: &str) -> IntentDTO {
 }
 
 pub fn official_github_artifact_hosts() -> &'static [&'static str] {
-    crate::url_policy::official_github_artifact_hosts()
+    CoreRuntime::default().official_github_artifact_hosts()
 }
 
 pub fn default_history_path() -> PathBuf {
