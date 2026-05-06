@@ -35,7 +35,9 @@ pub use crate::trust_policy::open_location_button_label_for_facts;
 pub use crate::trust_policy::{AppliedFileDisposition, FileDispositionAction};
 pub use crate::trust_policy::{MismatchFilePolicy, TrustPolicyConfig};
 pub use crate::update_apply_plan::run_update_apply_plan_contract_selftest;
-pub use crate::update_apply_plan::{UpdateApplyPlan, UpdateApplyPlanStatus, UpdateApplyStep};
+pub use crate::update_apply_plan::{
+    UpdateApplyPlan, UpdateApplyPlanEvidenceRecord, UpdateApplyPlanStatus, UpdateApplyStep,
+};
 pub use crate::update_candidate::run_update_candidate_contract_selftest;
 pub use crate::update_candidate::run_update_candidate_latest_selftest;
 pub use crate::update_candidate::run_update_candidate_stage_selftest;
@@ -313,6 +315,16 @@ pub fn build_update_apply_plan_for_stage2(
         Err(_) => format!("unknown-{}", std::process::id()),
     };
     crate::update_apply_plan::build_update_apply_plan(stage_report, target_exe_path, &suffix)
+}
+
+pub fn record_update_apply_plan_evidence_for_stage2(
+    stage_report: &UpdateCandidateStageReport,
+    target_exe_path: &Path,
+) -> UpdateApplyPlanEvidenceRecord {
+    crate::update_apply_plan::write_update_apply_plan_evidence_for_stage2(
+        stage_report,
+        target_exe_path,
+    )
 }
 
 pub fn run_download_contract(

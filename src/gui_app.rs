@@ -110,6 +110,9 @@ pub(crate) struct GhMirrorGui {
     update_stage_report: Option<UpdateCandidateStageReport>,
     update_stage_thread: Option<thread::JoinHandle<()>>,
     update_stage_rx: Option<mpsc::Receiver<UpdateCandidateStageMessage>>,
+    update_apply_plan_evidence_status: String,
+    update_apply_plan_evidence_path: Option<PathBuf>,
+    update_apply_plan_evidence_write_error: Option<String>,
     // Persisted state
     download_complete_notified: bool,
     last_download_path: Option<PathBuf>,
@@ -239,6 +242,9 @@ impl GhMirrorGui {
             update_stage_report: None,
             update_stage_thread: None,
             update_stage_rx: None,
+            update_apply_plan_evidence_status: String::new(),
+            update_apply_plan_evidence_path: None,
+            update_apply_plan_evidence_write_error: None,
             download_complete_notified: false,
             last_download_path: None,
             last_trust_center_snapshot: None,
@@ -760,6 +766,39 @@ impl eframe::App for GhMirrorGui {
                 self.update_stage_status =
                     format!("Self-update stage: {:?} ({})", report.status, report.reason);
                 self.status = self.update_stage_status.clone();
+
+                // Record a Stage 3 apply plan evidence file (no mutation / no install).
+                // The UI only triggers the backend contract; the backend writes the evidence.
+                self.update_apply_plan_evidence_status.clear();
+                self.update_apply_plan_evidence_path = None;
+                self.update_apply_plan_evidence_write_error = None;
+                match std::env::current_exe() {
+                    Ok(target_exe_path) => {
+                        let record = backend_contract::record_update_apply_plan_evidence_for_stage2(
+                            &report,
+                            &target_exe_path,
+                        );
+                        self.update_apply_plan_evidence_status = if record.ok {
+                            format!(
+                                "Apply plan evidence recorded: {}",
+                                record.evidence_path.as_deref().unwrap_or("unknown")
+                            )
+                        } else {
+                            format!(
+                                "Apply plan evidence not recorded: {}",
+                                record.write_error.as_deref().unwrap_or("unknown error")
+                            )
+                        };
+                        if let Some(path) = record.evidence_path.as_deref() {
+                            self.update_apply_plan_evidence_path = Some(PathBuf::from(path));
+                        }
+                        self.update_apply_plan_evidence_write_error = record.write_error;
+                    }
+                    Err(e) => {
+                        self.update_apply_plan_evidence_status =
+                            format!("Apply plan evidence skipped (current_exe error): {e}");
+                    }
+                }
                 self.update_stage_report = Some(report);
             }
         }

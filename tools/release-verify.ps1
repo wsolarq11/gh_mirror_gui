@@ -1690,6 +1690,12 @@ function Invoke-UpdateApplyPlanContractSelfTest {
     if ([string]$selftest.status -ne 'PLANNED') {
         throw "update apply plan contract selftest status $($selftest.status) was not PLANNED"
     }
+    if (!$selftest.evidence.ready) {
+        throw 'update apply plan contract selftest did not write an evidence file'
+    }
+    if (!$selftest.evidence.record.ok) {
+        throw 'update apply plan contract selftest evidence record did not report ok=true'
+    }
 
     return $selftest
 }

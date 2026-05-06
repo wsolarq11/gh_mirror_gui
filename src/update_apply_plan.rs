@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const UPDATE_APPLY_PLAN_SCHEMA_VERSION: u32 = 1;
+const UPDATE_APPLY_PLAN_EVIDENCE_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -52,6 +53,17 @@ pub struct UpdateApplyPlan {
     pub reversible: bool,
     pub no_mutation: bool,
     pub steps: Vec<UpdateApplyStep>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct UpdateApplyPlanEvidenceRecord {
+    pub schema_version: u32,
+    pub ok: bool,
+    pub no_mutation: bool,
+    pub stage_dir: Option<String>,
+    pub evidence_path: Option<String>,
+    pub write_error: Option<String>,
+    pub plan: UpdateApplyPlan,
 }
 
 fn backup_path_for_target(target_exe_path: &Path, suffix: &str) -> Result<PathBuf, String> {
@@ -178,6 +190,68 @@ pub(crate) fn build_update_apply_plan(
     base
 }
 
+pub(crate) fn write_update_apply_plan_evidence_for_stage2(
+    stage_report: &UpdateCandidateStageReport,
+    target_exe_path: &Path,
+) -> UpdateApplyPlanEvidenceRecord {
+    let plan = build_update_apply_plan(stage_report, target_exe_path, "evidence");
+    let mut record = UpdateApplyPlanEvidenceRecord {
+        schema_version: UPDATE_APPLY_PLAN_EVIDENCE_SCHEMA_VERSION,
+        ok: false,
+        no_mutation: plan.no_mutation,
+        stage_dir: stage_report.stage_dir.clone(),
+        evidence_path: None,
+        write_error: None,
+        plan: plan.clone(),
+    };
+
+    if stage_report.status != UpdateCandidateStageStatus::Staged {
+        record.write_error = Some(format!(
+            "apply plan evidence requires STAGED report, got {:?}",
+            stage_report.status
+        ));
+        return record;
+    }
+
+    let stage_dir = match stage_report.stage_dir.as_deref() {
+        Some(dir) if !dir.trim().is_empty() => Path::new(dir),
+        _ => {
+            record.write_error = Some("apply plan evidence requires stage_dir".to_string());
+            return record;
+        }
+    };
+
+    let evidence_path = stage_dir.join("update-apply-plan.json");
+    let generated_at_unix_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let payload = serde_json::json!({
+        "schema_version": UPDATE_APPLY_PLAN_EVIDENCE_SCHEMA_VERSION,
+        "generated_at_unix_ms": generated_at_unix_ms,
+        "no_mutation": plan.no_mutation,
+        "plan": plan,
+    });
+    match serde_json::to_string_pretty(&payload) {
+        Ok(pretty) => match fs::write(&evidence_path, format!("{pretty}\n")) {
+            Ok(()) => {
+                record.ok = true;
+                record.evidence_path = Some(evidence_path.display().to_string());
+            }
+            Err(e) => {
+                record.evidence_path = Some(evidence_path.display().to_string());
+                record.write_error = Some(format!("write update apply plan evidence failed: {e}"));
+            }
+        },
+        Err(e) => {
+            record.evidence_path = Some(evidence_path.display().to_string());
+            record.write_error = Some(format!("serialize update apply plan evidence failed: {e}"));
+        }
+    }
+
+    record
+}
+
 pub fn run_update_apply_plan_contract_selftest(args: &[String]) -> Result<(), String> {
     let mut json_out = None;
     let mut i = 0;
@@ -261,6 +335,15 @@ pub fn run_update_apply_plan_contract_selftest(args: &[String]) -> Result<(), St
         && plan.no_mutation
         && plan.reversible
         && plan.steps.len() >= 5;
+    let evidence_record =
+        write_update_apply_plan_evidence_for_stage2(&stage_report, &target_exe_path);
+    let evidence_ready = evidence_record.ok
+        && evidence_record
+            .evidence_path
+            .as_deref()
+            .map(|path| Path::new(path).is_file())
+            .unwrap_or(false);
+    let ok = ok && evidence_ready;
     let report = serde_json::json!({
         "schema_version": UPDATE_APPLY_PLAN_SCHEMA_VERSION,
         "ok": ok,
@@ -269,6 +352,10 @@ pub fn run_update_apply_plan_contract_selftest(args: &[String]) -> Result<(), St
         "status": plan.status,
         "reason": plan.reason,
         "plan": plan,
+        "evidence": {
+            "ready": evidence_ready,
+            "record": evidence_record,
+        },
         "fixture": {
             "root": root,
             "stage_dir": stage_dir,
