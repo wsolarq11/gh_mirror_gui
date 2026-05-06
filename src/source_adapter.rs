@@ -1,4 +1,5 @@
-use crate::releases::{ReleaseQuery, ResolvedRelease};
+use crate::releases::ResolvedRelease;
+use crate::source_spec::SourceSpec;
 use reqwest::blocking::Client;
 
 /// Artifact source adapter (Phase 5: Artifact Trust Broker).
@@ -11,7 +12,7 @@ pub(crate) trait SourceAdapter {
         &self,
         client: &Client,
         api_base: Option<&str>,
-        query: &ReleaseQuery,
+        spec: &SourceSpec,
     ) -> Result<ResolvedRelease, String>;
 }
 
@@ -22,8 +23,9 @@ impl SourceAdapter for GitHubReleaseAdapter {
         &self,
         client: &Client,
         api_base: Option<&str>,
-        query: &ReleaseQuery,
+        spec: &SourceSpec,
     ) -> Result<ResolvedRelease, String> {
+        let SourceSpec::GitHubRelease { query } = spec;
         match api_base {
             Some(base) => crate::releases::resolve_release_assets_with_base(client, base, query),
             None => crate::releases::resolve_release_assets(client, query),

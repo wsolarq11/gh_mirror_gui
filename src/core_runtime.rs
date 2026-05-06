@@ -4,6 +4,7 @@ use crate::download::SelectedDownloadStrategy;
 use crate::evidence_ledger::{EvidenceLedger, FileSystemEvidenceLedger};
 use crate::releases::{ReleaseQuery, ResolvedRelease};
 use crate::source_adapter::{GitHubReleaseAdapter, SourceAdapter};
+use crate::source_spec::SourceSpec;
 use crate::source_trust::SourceTrustPolicyConfig;
 use crate::trust_policy::{AppliedFileDisposition, PlannedFileDisposition, TrustPolicyConfig};
 use crate::verification::{DownloadVerificationPlan, VerificationReport};
@@ -77,8 +78,20 @@ impl CoreRuntime {
         api_base: Option<&str>,
         query: &ReleaseQuery,
     ) -> Result<ResolvedRelease, String> {
+        let spec = SourceSpec::GitHubRelease {
+            query: query.clone(),
+        };
+        self.resolve_source_spec(client, api_base, &spec)
+    }
+
+    pub(crate) fn resolve_source_spec(
+        &self,
+        client: &Client,
+        api_base: Option<&str>,
+        spec: &SourceSpec,
+    ) -> Result<ResolvedRelease, String> {
         self.source_adapter
-            .resolve_release_assets(client, api_base, query)
+            .resolve_release_assets(client, api_base, spec)
     }
 
     pub(crate) fn verification_plan_for_selected_asset(
@@ -301,7 +314,7 @@ mod tests {
             &self,
             _client: &Client,
             _api_base: Option<&str>,
-            _query: &ReleaseQuery,
+            _spec: &SourceSpec,
         ) -> Result<ResolvedRelease, String> {
             *self.calls.lock().expect("lock") += 1;
             Ok(self.release.clone())

@@ -1,5 +1,6 @@
 use crate::releases::{ReleaseAsset, ReleaseQuery, ReleaseQueryKind, ResolvedRelease};
 use crate::source_adapter::{GitHubReleaseAdapter, SourceAdapter};
+use crate::source_spec::SourceSpec;
 use crate::source_trust::{
     import_publisher_key_pin_from_release_asset, not_applicable_source_trust, publisher_key_asset,
     SourceAuthenticityStatus, SourceTrustDecision, SourceTrustEvidence, SourceTrustPolicyConfig,
@@ -159,8 +160,11 @@ pub(crate) fn check_latest_update_candidate(
         kind: ReleaseQueryKind::Latest,
     };
 
+    let lookup_spec = SourceSpec::GitHubRelease {
+        query: lookup_query,
+    };
     let release =
-        GitHubReleaseAdapter.resolve_release_assets(client, config.api_base, &lookup_query);
+        GitHubReleaseAdapter.resolve_release_assets(client, config.api_base, &lookup_spec);
 
     let release = match release {
         Ok(release) => release,
@@ -1102,8 +1106,9 @@ fn stage_candidate_from_check_report(
         repo: SELF_UPDATE_REPO.to_string(),
         kind: ReleaseQueryKind::Tag(check_report.release_tag.clone()),
     };
+    let spec = SourceSpec::GitHubRelease { query };
     let release = GitHubReleaseAdapter
-        .resolve_release_assets(client, api_base, &query)
+        .resolve_release_assets(client, api_base, &spec)
         .map_err(|e| format!("Stage candidate release lookup failed: {e}"))?;
 
     let Some(asset_index) = self_update_asset_index(&release) else {
