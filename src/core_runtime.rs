@@ -67,6 +67,53 @@ impl CoreClientSettings {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CoreDownloadSpec {
+    pub(crate) url: String,
+    pub(crate) filename: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum CoreDownloadIntent {
+    DirectDownload {
+        spec: CoreDownloadSpec,
+        human_readable_label: String,
+    },
+    NeedsAssetPick {
+        query: ReleaseQuery,
+        picker_hint: Option<String>,
+    },
+    Unsupported {
+        reason: String,
+        suggested_examples: Vec<String>,
+    },
+}
+
+impl From<ParsedGithubIntent> for CoreDownloadIntent {
+    fn from(intent: ParsedGithubIntent) -> Self {
+        match intent {
+            ParsedGithubIntent::DirectDownload {
+                url,
+                filename,
+                label,
+            } => CoreDownloadIntent::DirectDownload {
+                spec: CoreDownloadSpec { url, filename },
+                human_readable_label: label,
+            },
+            ParsedGithubIntent::ReleaseQuery { query, picker_hint } => {
+                CoreDownloadIntent::NeedsAssetPick { query, picker_hint }
+            }
+            ParsedGithubIntent::Unsupported {
+                reason,
+                suggested_examples,
+            } => CoreDownloadIntent::Unsupported {
+                reason,
+                suggested_examples,
+            },
+        }
+    }
+}
+
 pub(crate) struct RunDownloadContractInput<'a> {
     pub(crate) client: &'a Client,
     pub(crate) effective_url: &'a str,
@@ -141,8 +188,8 @@ impl CoreRuntime {
         crate::source_trust::import_publisher_key_pin_from_release_asset(client, asset)
     }
 
-    pub(crate) fn resolve_download_intent(&self, input: &str) -> ParsedGithubIntent {
-        parse_github_intent(input)
+    pub(crate) fn resolve_download_intent(&self, input: &str) -> CoreDownloadIntent {
+        parse_github_intent(input).into()
     }
 
     pub(crate) fn build_client(
@@ -779,7 +826,7 @@ mod tests {
         let intent = runtime.resolve_download_intent(
             "https://github.com/example/repo/releases/download/v1.0.0/asset.bin",
         );
-        assert!(matches!(intent, ParsedGithubIntent::DirectDownload { .. }));
+        assert!(matches!(intent, CoreDownloadIntent::DirectDownload { .. }));
 
         let release = ResolvedRelease {
             owner: "example".to_string(),

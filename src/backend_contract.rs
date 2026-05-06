@@ -1,5 +1,6 @@
-use crate::core_runtime::{CoreClientSettings, CoreRuntime, RunDownloadContractInput};
-use crate::github_intent::ParsedGithubIntent;
+use crate::core_runtime::{
+    CoreClientSettings, CoreDownloadIntent, CoreRuntime, RunDownloadContractInput,
+};
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::{mpsc, Arc};
@@ -103,18 +104,20 @@ impl From<crate::trust_center::TrustCenterSnapshot> for TrustCenterSnapshot {
 
 pub fn resolve_download_intent(input: &str) -> IntentDTO {
     match CoreRuntime::default().resolve_download_intent(input) {
-        ParsedGithubIntent::DirectDownload {
-            url,
-            filename,
-            label,
+        CoreDownloadIntent::DirectDownload {
+            spec,
+            human_readable_label,
         } => IntentDTO::DirectDownload {
-            spec: DownloadSpec { url, filename },
-            human_readable_label: label,
+            spec: DownloadSpec {
+                url: spec.url,
+                filename: spec.filename,
+            },
+            human_readable_label,
         },
-        ParsedGithubIntent::ReleaseQuery { query, picker_hint } => {
+        CoreDownloadIntent::NeedsAssetPick { query, picker_hint } => {
             IntentDTO::NeedsAssetPick { query, picker_hint }
         }
-        ParsedGithubIntent::Unsupported {
+        CoreDownloadIntent::Unsupported {
             reason,
             suggested_examples,
         } => IntentDTO::Unsupported {

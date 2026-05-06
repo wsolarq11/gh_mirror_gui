@@ -2762,6 +2762,8 @@ function Assert-CoreBackendConvergence {
         'crate::update_apply_plan::build_update_apply_plan',
         'crate::update_apply_plan::write_update_apply_plan_evidence_for_stage2',
         'parse_github_intent(',
+        'crate::github_intent::ParsedGithubIntent',
+        'ParsedGithubIntent::',
         'crate::source_spec::SourceSpec',
         'crate::verification::verification_source_summary',
         'crate::trust_center::trust_center_snapshot',
@@ -2808,6 +2810,8 @@ function Assert-CoreBackendConvergence {
         'pub(crate) fn trust_center_snapshot',
         'pub(crate) fn run_download_contract',
         'pub(crate) struct CoreClientSettings',
+        'pub(crate) struct CoreDownloadSpec',
+        'pub(crate) enum CoreDownloadIntent',
         'pub(crate) fn build_client'
     )
     $missing = @($runtimeRequired | Where-Object {
@@ -2819,7 +2823,7 @@ function Assert-CoreBackendConvergence {
 
     return [ordered]@{
         ok = $true
-        contract = 'backend_contract remains a stable DTO/use-case door; self-update, publisher-key import, apply-plan, intent, verification-source summary, release-context enrichment, Trust Center snapshot, client construction, and download/verify/history/disposition orchestration route through CoreRuntime'
+        contract = 'backend_contract remains a stable DTO/use-case door; self-update, publisher-key import, apply-plan, intent DTO boundary, verification-source summary, release-context enrichment, Trust Center snapshot, client construction, and download/verify/history/disposition orchestration route through CoreRuntime'
         backend_contract = [ordered]@{
             path = $backendPath
             sha256 = (Get-FileHash -LiteralPath $backendPath -Algorithm SHA256).Hash
