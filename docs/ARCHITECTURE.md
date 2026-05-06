@@ -31,7 +31,8 @@ UI Shell
 - `src/update_candidate.rs`: no-mutation self-update candidate contract; it accepts only newer trusted signed releases and refuses same-version, unsigned, bad-signature, or missing-key candidates.
 - `src/evidence_ledger.rs`: evidence ledger seam (Phase 5); today it writes JSON/JSONL evidence to the filesystem.
 - `src/history.rs`: benchmark history and verification evidence JSON.
-- `src/main.rs`: current egui UI plus temporary app orchestration. Keep this layer thinner over time.
+- `src/gui_app.rs`: egui application state and UI orchestration. This layer should stay thin over `backend_contract` and only render backend/core DTO verdicts (Trust Center snapshot, update candidate status, evidence paths, etc.).
+- `src/main.rs`: thin Windows entrypoint that wires CLI dispatch + GUI startup and delegates UI behavior to the UI modules.
 - `tools\release-verify.ps1`: single delivery front door and receipt producer.
 - `tools\release-signing-bootstrap.ps1`: no-publish helper for signing-secret status/bootstrap and next-tag preflight; it delegates delivery proof back to `tools\release-verify.ps1`.
 
