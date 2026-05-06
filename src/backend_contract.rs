@@ -1,5 +1,6 @@
 use crate::core_runtime::{
-    CoreClientSettings, CoreDownloadIntent, CoreRuntime, RunDownloadContractInput,
+    CoreClientSettings, CoreDownloadIntent, CoreRuntime, CoreTrustCenterSnapshot,
+    RunDownloadContractInput,
 };
 use std::path::Path;
 use std::path::PathBuf;
@@ -79,8 +80,8 @@ pub struct TrustCenterSnapshot {
     pub final_path: String,
 }
 
-impl From<crate::trust_center::TrustCenterSnapshot> for TrustCenterSnapshot {
-    fn from(snapshot: crate::trust_center::TrustCenterSnapshot) -> Self {
+impl From<CoreTrustCenterSnapshot> for TrustCenterSnapshot {
+    fn from(snapshot: CoreTrustCenterSnapshot) -> Self {
         Self {
             downloaded_asset: snapshot.downloaded_asset,
             hash_status: snapshot.hash_status,

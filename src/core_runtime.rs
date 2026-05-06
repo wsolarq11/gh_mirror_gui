@@ -130,9 +130,52 @@ pub(crate) struct RunDownloadContractInput<'a> {
 
 pub(crate) struct RunDownloadContractOutput {
     pub(crate) original_path: PathBuf,
-    pub(crate) trust_center: crate::trust_center::TrustCenterSnapshot,
+    pub(crate) trust_center: CoreTrustCenterSnapshot,
     pub(crate) evidence_path: Option<PathBuf>,
     pub(crate) file_disposition: AppliedFileDisposition,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CoreTrustCenterSnapshot {
+    pub(crate) downloaded_asset: String,
+    pub(crate) hash_status: String,
+    pub(crate) file_sha256: String,
+    pub(crate) expected_sha256: String,
+    pub(crate) source_authenticity: String,
+    pub(crate) source_trust_detail: String,
+    pub(crate) source_asset: String,
+    pub(crate) signature_asset: String,
+    pub(crate) publisher_key_fingerprint: String,
+    pub(crate) publisher_key_source: String,
+    pub(crate) policy_verdict: String,
+    pub(crate) policy_at_decision: String,
+    pub(crate) evidence_path: String,
+    pub(crate) evidence_access: String,
+    pub(crate) file_disposition: String,
+    pub(crate) final_path: String,
+}
+
+impl From<crate::trust_center::TrustCenterSnapshot> for CoreTrustCenterSnapshot {
+    fn from(snapshot: crate::trust_center::TrustCenterSnapshot) -> Self {
+        Self {
+            downloaded_asset: snapshot.downloaded_asset,
+            hash_status: snapshot.hash_status,
+            file_sha256: snapshot.file_sha256,
+            expected_sha256: snapshot.expected_sha256,
+            source_authenticity: snapshot.source_authenticity,
+            source_trust_detail: snapshot.source_trust_detail,
+            source_asset: snapshot.source_asset,
+            signature_asset: snapshot.signature_asset,
+            publisher_key_fingerprint: snapshot.publisher_key_fingerprint,
+            publisher_key_source: snapshot.publisher_key_source,
+            policy_verdict: snapshot.policy_verdict,
+            policy_at_decision: snapshot.policy_at_decision,
+            evidence_path: snapshot.evidence_path,
+            evidence_access: snapshot.evidence_access,
+            file_disposition: snapshot.file_disposition,
+            final_path: snapshot.final_path,
+        }
+    }
 }
 
 impl Default for CoreRuntime {
@@ -656,7 +699,7 @@ impl CoreRuntime {
 
         Ok(RunDownloadContractOutput {
             original_path: save_path,
-            trust_center,
+            trust_center: trust_center.into(),
             evidence_path,
             file_disposition,
         })
