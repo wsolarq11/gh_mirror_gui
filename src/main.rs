@@ -34,6 +34,11 @@ use gui_helpers::history_path_from_setting;
 use gui_helpers::latency_color;
 use gui_helpers::run_speed_test;
 
+mod gui_mirrors;
+use gui_mirrors::normalize_mirror_index;
+use gui_mirrors::MIRRORS;
+use gui_mirrors::SPEED_TEST_TIMEOUT_SECS;
+
 mod gui_trust_center;
 use gui_trust_center::format_download_completion_status;
 use gui_trust_center::format_download_notification_status;
@@ -56,19 +61,6 @@ const SIGNATURE_FORMAT: &str = "ed25519-detached-hex";
 // ---------------------------------------------------------------------------
 // App state and UI constants
 // ---------------------------------------------------------------------------
-
-const SPEED_TEST_TIMEOUT_SECS: u64 = 5;
-
-/// Known mirror sites.  First entry must be "Direct (no mirror)"
-const MIRRORS: &[(&str, &str)] = &[("Direct (no mirror)", "")];
-
-fn normalize_mirror_index(index: usize) -> usize {
-    if index < MIRRORS.len() {
-        index
-    } else {
-        0
-    }
-}
 type ReleaseLookupMessage = (String, Result<ResolvedRelease, String>);
 type PublisherKeyImportMessage = (String, Result<ImportedPublisherKeyPin, String>);
 type UpdateCandidateCheckMessage = UpdateCandidateCheckReport;
