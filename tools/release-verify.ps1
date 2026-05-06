@@ -577,6 +577,103 @@ function Assert-TrustCenterBackendContract {
     }
 }
 
+function Assert-UiShellThinness {
+    $moduleContracts = @(
+        [ordered]@{
+            path = 'src\gui_app.rs'
+            required = @(
+                'gh_mirror_gui::backend_contract',
+                'crate::gui_trust_center',
+                'crate::gui_update_candidate'
+            )
+            forbidden = @(
+                'crate::download',
+                'crate::verification',
+                'crate::source_trust',
+                'crate::trust_policy',
+                'crate::releases',
+                'crate::core_runtime',
+                'crate::update_candidate',
+                'crate::history',
+                'crate::evidence_ledger',
+                'crate::source_adapter',
+                'crate::verifier_adapter',
+                'crate::staged_release',
+                'crate::url_policy'
+            )
+        }
+        [ordered]@{
+            path = 'src\gui_trust_center.rs'
+            required = @('gh_mirror_gui::backend_contract')
+            forbidden = @(
+                'crate::download',
+                'crate::verification',
+                'crate::source_trust',
+                'crate::trust_policy',
+                'crate::releases',
+                'crate::core_runtime',
+                'crate::update_candidate',
+                'crate::history',
+                'crate::evidence_ledger',
+                'crate::source_adapter',
+                'crate::verifier_adapter',
+                'crate::staged_release',
+                'crate::url_policy'
+            )
+        }
+        [ordered]@{
+            path = 'src\gui_update_candidate.rs'
+            required = @('gh_mirror_gui::backend_contract')
+            forbidden = @(
+                'crate::download',
+                'crate::verification',
+                'crate::source_trust',
+                'crate::trust_policy',
+                'crate::releases',
+                'crate::core_runtime',
+                'crate::update_candidate',
+                'crate::history',
+                'crate::evidence_ledger',
+                'crate::source_adapter',
+                'crate::verifier_adapter',
+                'crate::staged_release',
+                'crate::url_policy'
+            )
+        }
+    )
+
+    $results = [ordered]@{}
+    foreach ($moduleContract in $moduleContracts) {
+        $relativePath = $moduleContract.path
+        $path = Join-Path $RepoRoot $relativePath
+        if (!(Test-Path -LiteralPath $path)) {
+            throw "UI shell module missing: $relativePath"
+        }
+
+        $text = Get-Content -LiteralPath $path -Raw
+        $required = Assert-TextContainsAll `
+            -Text $text `
+            -Label $relativePath `
+            -RequiredPatterns $moduleContract.required
+        $forbidden = Assert-TextDoesNotContain `
+            -Text $text `
+            -Label $relativePath `
+            -ForbiddenPatterns $moduleContract.forbidden
+        $results[$relativePath] = [ordered]@{
+            path = $path
+            sha256 = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
+            required_patterns = $required
+            forbidden_patterns_absent = $forbidden
+        }
+    }
+
+    return [ordered]@{
+        ok = $true
+        contract = 'UI shell modules stay thin: gui_app coordinates through backend_contract, and gui_trust_center/gui_update_candidate only render backend DTOs'
+        modules = $results
+    }
+}
+
 function Invoke-ReleaseSigningReadiness {
     param(
         [string]$Exe,
@@ -1967,6 +2064,7 @@ $Receipt.checks.route_guardrails = [ordered]@{
 $Receipt.checks.release_workflow_artifact_contract = Assert-ReleaseWorkflowArtifactContract
 $Receipt.checks.release_signing_bootstrap_contract = Assert-ReleaseSigningBootstrapContract
 $Receipt.checks.trust_center_backend_contract = Assert-TrustCenterBackendContract
+$Receipt.checks.ui_shell_thinness = Assert-UiShellThinness
 Invoke-LoggedNative -Name 'cargo-fmt-check' -Exe 'cargo' -Arguments @('fmt', '--check')
 Invoke-LoggedNative -Name 'cargo-test-all-targets' -Exe 'cargo' -Arguments @('test', '--all-targets', '--locked')
 $Receipt.checks.download_engine_contract = [ordered]@{
