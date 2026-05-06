@@ -373,6 +373,38 @@ impl CoreRuntime {
         crate::trust_policy::file_disposition_summary(disposition)
     }
 
+    pub(crate) fn public_key_from_private_seed(
+        &self,
+        private_key_text: &str,
+    ) -> Result<String, String> {
+        crate::source_trust::public_key_from_private_seed(private_key_text)
+    }
+
+    pub(crate) fn sign_ed25519_detached(
+        &self,
+        message: &[u8],
+        private_key_text: &str,
+    ) -> Result<String, String> {
+        crate::source_trust::sign_ed25519_detached(message, private_key_text)
+    }
+
+    pub(crate) fn verify_ed25519_detached(
+        &self,
+        message: &[u8],
+        signature_text: &str,
+        public_key_text: &str,
+    ) -> Result<(), String> {
+        crate::source_trust::verify_ed25519_detached(message, signature_text, public_key_text)
+    }
+
+    pub(crate) fn normalize_public_key_pin(&self, public_key_text: &str) -> Result<String, String> {
+        crate::source_trust::normalize_public_key_pin(public_key_text)
+    }
+
+    pub(crate) fn trusted_key_fingerprint(&self, public_key_text: &str) -> Option<String> {
+        crate::source_trust::trusted_key_fingerprint(public_key_text)
+    }
+
     pub(crate) fn verification_plan_from_download_context(
         &self,
         release: Option<&ResolvedRelease>,

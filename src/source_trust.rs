@@ -318,7 +318,7 @@ pub(crate) fn evaluate_source_trust(
     }
 }
 
-pub fn verify_ed25519_detached(
+pub(crate) fn verify_ed25519_detached(
     message: &[u8],
     signature_text: &str,
     public_key_text: &str,
@@ -333,26 +333,29 @@ pub fn verify_ed25519_detached(
         .map_err(|e| format!("invalid Ed25519 signature: {e}"))
 }
 
-pub fn sign_ed25519_detached(message: &[u8], private_key_text: &str) -> Result<String, String> {
+pub(crate) fn sign_ed25519_detached(
+    message: &[u8],
+    private_key_text: &str,
+) -> Result<String, String> {
     let private_key = decode_hex_array::<32>(private_key_text, "Ed25519 private key seed")?;
     let signing_key = SigningKey::from_bytes(&private_key);
     let signature = signing_key.sign(message);
     Ok(hex_encode_upper(&signature.to_bytes()))
 }
 
-pub fn public_key_from_private_seed(private_key_text: &str) -> Result<String, String> {
+pub(crate) fn public_key_from_private_seed(private_key_text: &str) -> Result<String, String> {
     let private_key = decode_hex_array::<32>(private_key_text, "Ed25519 private key seed")?;
     let signing_key = SigningKey::from_bytes(&private_key);
     Ok(hex_encode_upper(&signing_key.verifying_key().to_bytes()))
 }
 
-pub fn trusted_key_fingerprint(public_key_text: &str) -> Option<String> {
+pub(crate) fn trusted_key_fingerprint(public_key_text: &str) -> Option<String> {
     let public_key = decode_hex_array::<32>(public_key_text, "Ed25519 public key").ok()?;
     let digest = Sha256::digest(public_key);
     Some(hex_encode_upper(&digest))
 }
 
-pub fn normalize_public_key_pin(public_key_text: &str) -> Result<String, String> {
+pub(crate) fn normalize_public_key_pin(public_key_text: &str) -> Result<String, String> {
     let public_key = decode_hex_array::<32>(public_key_text, "Ed25519 public key")?;
     Ok(hex_encode_upper(&public_key))
 }

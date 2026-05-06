@@ -14,12 +14,8 @@ pub use crate::bench::run_bench_download;
 pub use crate::download::DownloadControl;
 pub use crate::history::default_history_path;
 pub use crate::releases::{ReleaseAsset, ReleaseQuery, ReleaseQueryKind, ResolvedRelease};
-pub use crate::source_trust::public_key_from_private_seed;
-pub use crate::source_trust::sign_ed25519_detached;
-pub use crate::source_trust::verify_ed25519_detached;
 pub use crate::source_trust::ImportedPublisherKeyPin;
 pub use crate::source_trust::SourceTrustPolicyConfig;
-pub use crate::source_trust::{normalize_public_key_pin, trusted_key_fingerprint};
 pub use crate::staged_release::run_staged_release_download_selftest;
 pub use crate::trust_policy::{AppliedFileDisposition, FileDispositionAction};
 pub use crate::trust_policy::{MismatchFilePolicy, TrustPolicyConfig};
@@ -152,6 +148,30 @@ pub fn open_location_button_label_for_facts(
 
 pub fn file_disposition_summary(disposition: &AppliedFileDisposition) -> String {
     CoreRuntime::default().file_disposition_summary(disposition)
+}
+
+pub fn public_key_from_private_seed(private_key_text: &str) -> Result<String, String> {
+    CoreRuntime::default().public_key_from_private_seed(private_key_text)
+}
+
+pub fn sign_ed25519_detached(message: &[u8], private_key_text: &str) -> Result<String, String> {
+    CoreRuntime::default().sign_ed25519_detached(message, private_key_text)
+}
+
+pub fn verify_ed25519_detached(
+    message: &[u8],
+    signature_text: &str,
+    public_key_text: &str,
+) -> Result<(), String> {
+    CoreRuntime::default().verify_ed25519_detached(message, signature_text, public_key_text)
+}
+
+pub fn normalize_public_key_pin(public_key_text: &str) -> Result<String, String> {
+    CoreRuntime::default().normalize_public_key_pin(public_key_text)
+}
+
+pub fn trusted_key_fingerprint(public_key_text: &str) -> Option<String> {
+    CoreRuntime::default().trusted_key_fingerprint(public_key_text)
 }
 
 #[cfg(test)]

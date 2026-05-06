@@ -2771,6 +2771,10 @@ function Assert-CoreBackendConvergence {
         'pub use crate::trust_center::publisher_key_source_label_for_policy',
         'pub use crate::trust_policy::file_disposition_summary',
         'pub use crate::trust_policy::open_location_button_label_for_facts',
+        'pub use crate::source_trust::public_key_from_private_seed',
+        'pub use crate::source_trust::sign_ed25519_detached',
+        'pub use crate::source_trust::verify_ed25519_detached',
+        'pub use crate::source_trust::{normalize_public_key_pin, trusted_key_fingerprint}',
         'DownloadWithStrategyContractInput',
         'AppendDownloadHistoryInput',
         'VerificationHistoryContext',
@@ -2814,6 +2818,11 @@ function Assert-CoreBackendConvergence {
         'pub(crate) fn publisher_key_source_label_for_policy',
         'pub(crate) fn open_location_button_label_for_facts',
         'pub(crate) fn file_disposition_summary',
+        'pub(crate) fn public_key_from_private_seed',
+        'pub(crate) fn sign_ed25519_detached',
+        'pub(crate) fn verify_ed25519_detached',
+        'pub(crate) fn normalize_public_key_pin',
+        'pub(crate) fn trusted_key_fingerprint',
         'pub(crate) fn resolve_release_context_for_download_best_effort',
         'pub(crate) fn trust_center_snapshot',
         'pub(crate) fn run_download_contract',
@@ -2836,7 +2845,7 @@ function Assert-CoreBackendConvergence {
 
     return [ordered]@{
         ok = $true
-        contract = 'backend_contract remains a stable DTO/use-case door; self-update, publisher-key import, apply-plan, intent DTO boundary, verification-source summary, trust display helpers, release-context DTO boundary, release-context enrichment, Trust Center snapshot, client construction, client-bound backend use cases, and download/verify/history/disposition orchestration route through CoreRuntime'
+        contract = 'backend_contract remains a stable DTO/use-case door; self-update, publisher-key import, apply-plan, intent DTO boundary, verification-source summary, trust display helpers, source-trust crypto helpers, release-context DTO boundary, release-context enrichment, Trust Center snapshot, client construction, client-bound backend use cases, and download/verify/history/disposition orchestration route through CoreRuntime'
         backend_contract = [ordered]@{
             path = $backendPath
             sha256 = (Get-FileHash -LiteralPath $backendPath -Algorithm SHA256).Hash
