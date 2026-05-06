@@ -69,6 +69,8 @@ Current evidence:
 
 ## Phase 1.5: Public signed release consumption gate and UpdateCandidate contract
 
+Status: completed by public `v0.1.6` (kept no-install/no-mutation; staged-only).
+
 Goal: prove the application delivery gate consumes the public signed release
 contract before any self-update installation behavior exists.
 
@@ -111,6 +113,8 @@ covered by tests/receipt gates, and no tag/release/secret/install/executable
 replacement mutation occurred.
 
 ## Phase 2: Trust Center UI
+
+Status: implemented on `main` and covered by `tools/release-verify.ps1` receipts (UI renders backend/core DTOs; it does not decide trust).
 
 Goal: make trust state obvious without moving trust decisions into UI.
 
