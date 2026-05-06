@@ -285,6 +285,26 @@ impl CoreRuntime {
         }
     }
 
+    pub(crate) fn apply_imported_publisher_key_pin(
+        &self,
+        trust_policy: &mut TrustPolicyConfig,
+        publisher_key_source: &mut String,
+        imported: crate::source_trust::ImportedPublisherKeyPin,
+        source_label: String,
+    ) -> String {
+        trust_policy.source_trust.trusted_publisher_key = imported.public_key;
+        *publisher_key_source = source_label.clone();
+        let short_fingerprint = imported
+            .fingerprint_sha256
+            .chars()
+            .take(12)
+            .collect::<String>();
+        format!(
+            "Imported Ed25519 publisher key from {} · fingerprint {}…",
+            source_label, short_fingerprint
+        )
+    }
+
     pub(crate) fn build_client(
         &self,
         settings: &CoreClientSettings,

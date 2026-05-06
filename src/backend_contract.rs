@@ -146,6 +146,20 @@ pub fn trust_policy_from_settings(
     )
 }
 
+pub fn apply_imported_publisher_key_pin(
+    trust_policy: &mut TrustPolicyConfig,
+    publisher_key_source: &mut String,
+    imported: ImportedPublisherKeyPin,
+    source_label: impl Into<String>,
+) -> String {
+    CoreRuntime::default().apply_imported_publisher_key_pin(
+        trust_policy,
+        publisher_key_source,
+        imported,
+        source_label.into(),
+    )
+}
+
 pub fn publisher_key_source_label_for_policy(
     trust_policy: &TrustPolicyConfig,
     publisher_key_source: &str,
@@ -284,6 +298,35 @@ mod tests {
         assert_eq!(policy.mismatch_file_policy, MismatchFilePolicy::Delete);
         assert!(policy.source_trust.require_trusted_source);
         assert_eq!(policy.source_trust.trusted_publisher_key, "publisher-key");
+    }
+
+    #[test]
+    fn imported_publisher_key_application_keeps_gui_out_of_pin_result_fields() {
+        let private_key = "1111111111111111111111111111111111111111111111111111111111111111";
+        let public_key = public_key_from_private_seed(private_key).unwrap();
+        let fingerprint = trusted_key_fingerprint(&public_key).unwrap();
+        let imported = ImportedPublisherKeyPin {
+            public_key: public_key.clone(),
+            fingerprint_sha256: fingerprint.clone(),
+            asset_name: "publisher-key.ed25519.pub".to_string(),
+        };
+        let mut policy = TrustPolicyConfig::default();
+        let mut publisher_key_source = String::new();
+
+        let status = apply_imported_publisher_key_pin(
+            &mut policy,
+            &mut publisher_key_source,
+            imported,
+            "GitHub Release owner/repo@v1 asset publisher-key.ed25519.pub",
+        );
+
+        assert_eq!(policy.source_trust.trusted_publisher_key, public_key);
+        assert_eq!(
+            publisher_key_source,
+            "GitHub Release owner/repo@v1 asset publisher-key.ed25519.pub"
+        );
+        assert!(status.contains("publisher-key.ed25519.pub"));
+        assert!(status.contains(&fingerprint[..12]));
     }
 }
 

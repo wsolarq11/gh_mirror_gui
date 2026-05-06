@@ -9,8 +9,6 @@ mod cli;
 
 mod gui_common;
 #[cfg(test)]
-use gui_common::apply_imported_publisher_key_pin;
-#[cfg(test)]
 use gui_common::import_publisher_key_pin_from_path;
 
 mod gui_helpers;
@@ -271,7 +269,7 @@ mod tests {
         let mut policy = TrustPolicyConfig::default();
         let mut publisher_key_source = String::new();
 
-        let status = apply_imported_publisher_key_pin(
+        let status = backend_contract::apply_imported_publisher_key_pin(
             &mut policy,
             &mut publisher_key_source,
             imported,

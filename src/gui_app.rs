@@ -1,6 +1,4 @@
-use crate::gui_common::{
-    apply_imported_publisher_key_pin, import_publisher_key_pin_from_path, status_color,
-};
+use crate::gui_common::{import_publisher_key_pin_from_path, status_color};
 use crate::gui_helpers::{
     build_effective_url, extract_filename, format_speed, history_path_from_setting, latency_color,
     run_speed_test,
@@ -717,7 +715,7 @@ impl eframe::App for GhMirrorGui {
                 if is_current {
                     match result {
                         Ok(imported) => {
-                            self.status = apply_imported_publisher_key_pin(
+                            self.status = backend_contract::apply_imported_publisher_key_pin(
                                 &mut self.trust_policy,
                                 &mut self.publisher_key_source,
                                 imported,

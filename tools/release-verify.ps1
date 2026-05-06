@@ -2743,6 +2743,7 @@ function Assert-CoreBackendConvergence {
     $backendPath = Join-Path $RepoRoot 'src\backend_contract.rs'
     $runtimePath = Join-Path $RepoRoot 'src\core_runtime.rs'
     $guiAppPath = Join-Path $RepoRoot 'src\gui_app.rs'
+    $guiCommonPath = Join-Path $RepoRoot 'src\gui_common.rs'
     if (!(Test-Path -LiteralPath $backendPath)) {
         throw 'backend contract module missing: src\backend_contract.rs'
     }
@@ -2752,10 +2753,14 @@ function Assert-CoreBackendConvergence {
     if (!(Test-Path -LiteralPath $guiAppPath)) {
         throw 'GUI app module missing: src\gui_app.rs'
     }
+    if (!(Test-Path -LiteralPath $guiCommonPath)) {
+        throw 'GUI common module missing: src\gui_common.rs'
+    }
 
     $backendText = Get-Content -LiteralPath $backendPath -Raw
     $runtimeText = Get-Content -LiteralPath $runtimePath -Raw
     $guiAppText = Get-Content -LiteralPath $guiAppPath -Raw
+    $guiCommonText = Get-Content -LiteralPath $guiCommonPath -Raw
     $backendForbidden = @(
         'crate::source_trust::import_publisher_key_pin_from_release_asset',
         'crate::update_candidate::check_latest_update_candidate',
@@ -2832,6 +2837,7 @@ function Assert-CoreBackendConvergence {
         'pub(crate) fn release_query_selector_label',
         'pub(crate) fn release_asset_picker_label',
         'pub(crate) fn trust_policy_from_settings',
+        'pub(crate) fn apply_imported_publisher_key_pin',
         'pub(crate) fn verification_source_summary_for_selected_asset',
         'pub(crate) fn publisher_key_source_label_for_policy',
         'pub(crate) fn open_location_button_label_for_facts',
@@ -2881,10 +2887,20 @@ function Assert-CoreBackendConvergence {
     if ($guiPresent.Count -gt 0) {
         throw "GUI owns release DTO formatting that must route through backend_contract/CoreRuntime: $($guiPresent -join ', ')"
     }
+    $guiCommonForbidden = @(
+        'ImportedPublisherKeyPin',
+        '.fingerprint_sha256'
+    )
+    $guiCommonPresent = @($guiCommonForbidden | Where-Object {
+        $guiCommonText.IndexOf($_, [System.StringComparison]::Ordinal) -ge 0
+    })
+    if ($guiCommonPresent.Count -gt 0) {
+        throw "GUI common owns publisher key import result handling that must route through backend_contract/CoreRuntime: $($guiCommonPresent -join ', ')"
+    }
 
     return [ordered]@{
         ok = $true
-        contract = 'backend_contract remains a stable DTO/use-case door; self-update, publisher-key import, apply-plan, intent DTO boundary, official-artifact-host helper, history-path helper, release DTO display helpers, trust policy settings helper, verification-source summary, trust display helpers, source-trust crypto helpers, bench and selftest CLI behavior, release-context DTO boundary, release-context enrichment, Trust Center snapshot, client construction, client-bound backend use cases, and download/verify/history/disposition orchestration route through CoreRuntime'
+        contract = 'backend_contract remains a stable DTO/use-case door; self-update, publisher-key import, imported publisher key application, apply-plan, intent DTO boundary, official-artifact-host helper, history-path helper, release DTO display helpers, trust policy settings helper, verification-source summary, trust display helpers, source-trust crypto helpers, bench and selftest CLI behavior, release-context DTO boundary, release-context enrichment, Trust Center snapshot, client construction, client-bound backend use cases, and download/verify/history/disposition orchestration route through CoreRuntime'
         backend_contract = [ordered]@{
             path = $backendPath
             sha256 = (Get-FileHash -LiteralPath $backendPath -Algorithm SHA256).Hash
@@ -2901,6 +2917,11 @@ function Assert-CoreBackendConvergence {
             sha256 = (Get-FileHash -LiteralPath $guiAppPath -Algorithm SHA256).Hash
             forbidden_patterns_absent = $guiForbidden
             forbidden_regex_absent = $guiForbiddenRegex
+        }
+        gui_common = [ordered]@{
+            path = $guiCommonPath
+            sha256 = (Get-FileHash -LiteralPath $guiCommonPath -Algorithm SHA256).Hash
+            forbidden_patterns_absent = $guiCommonForbidden
         }
     }
 }
