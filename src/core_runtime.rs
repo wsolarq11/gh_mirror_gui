@@ -802,6 +802,12 @@ impl CoreRuntime {
         crate::source_trust::normalize_public_key_pin(public_key_text)
     }
 
+    pub(crate) fn import_publisher_key_pin_from_path(&self, path: &Path) -> Result<String, String> {
+        let text = std::fs::read_to_string(path)
+            .map_err(|e| format!("Read publisher public key {}: {e}", path.display()))?;
+        self.normalize_public_key_pin(&text)
+    }
+
     pub(crate) fn trusted_key_fingerprint(&self, public_key_text: &str) -> Option<String> {
         crate::source_trust::trusted_key_fingerprint(public_key_text)
     }

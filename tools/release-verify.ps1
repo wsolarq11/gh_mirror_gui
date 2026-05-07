@@ -2866,6 +2866,7 @@ function Assert-CoreBackendConvergence {
         'pub(crate) fn sign_ed25519_detached',
         'pub(crate) fn verify_ed25519_detached',
         'pub(crate) fn normalize_public_key_pin',
+        'pub(crate) fn import_publisher_key_pin_from_path',
         'pub(crate) fn trusted_key_fingerprint',
         'pub(crate) fn run_bench_download',
         'pub(crate) fn run_staged_release_download_selftest',
@@ -2956,7 +2957,9 @@ function Assert-CoreBackendConvergence {
     }
     $guiCommonForbidden = @(
         'ImportedPublisherKeyPin',
-        '.fingerprint_sha256'
+        '.fingerprint_sha256',
+        'std::fs::read_to_string',
+        'backend_contract::normalize_public_key_pin('
     )
     $guiCommonPresent = @($guiCommonForbidden | Where-Object {
         $guiCommonText.IndexOf($_, [System.StringComparison]::Ordinal) -ge 0

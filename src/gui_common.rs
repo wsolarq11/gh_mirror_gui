@@ -3,9 +3,7 @@ use gh_mirror_gui::backend_contract;
 use std::path::Path;
 
 pub(crate) fn import_publisher_key_pin_from_path(path: &Path) -> Result<String, String> {
-    let text = std::fs::read_to_string(path)
-        .map_err(|e| format!("Read publisher public key {}: {e}", path.display()))?;
-    backend_contract::normalize_public_key_pin(&text)
+    backend_contract::import_publisher_key_pin_from_path(path)
 }
 
 pub(crate) fn status_color(status: &str) -> egui::Color32 {

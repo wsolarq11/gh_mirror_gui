@@ -408,6 +408,10 @@ pub fn normalize_public_key_pin(public_key_text: &str) -> Result<String, String>
     CoreRuntime::default().normalize_public_key_pin(public_key_text)
 }
 
+pub fn import_publisher_key_pin_from_path(path: &Path) -> Result<String, String> {
+    CoreRuntime::default().import_publisher_key_pin_from_path(path)
+}
+
 pub fn trusted_key_fingerprint(public_key_text: &str) -> Option<String> {
     CoreRuntime::default().trusted_key_fingerprint(public_key_text)
 }
@@ -652,6 +656,20 @@ mod tests {
         assert_eq!(trusted_publisher_key_text(&policy), public_key);
         assert!(trusted_publisher_key_fingerprint(&policy).is_some());
         assert!(source_trust_policy_config(&policy).require_trusted_source);
+
+        let key_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join("test-artifacts")
+            .join(format!("publisher-key-import-{}.pub", std::process::id()));
+        if let Some(parent) = key_path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(&key_path, format!("  {public_key}\n")).unwrap();
+        assert_eq!(
+            import_publisher_key_pin_from_path(&key_path).unwrap(),
+            public_key
+        );
+        let _ = std::fs::remove_file(&key_path);
 
         let status = set_trusted_publisher_key_pin(
             &mut policy,
