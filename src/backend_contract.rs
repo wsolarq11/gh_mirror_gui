@@ -1,6 +1,7 @@
 use crate::core_runtime::{
     CoreClientSettings, CoreDisplayRow, CoreDownloadIntent, CorePathAction, CorePathActionKind,
-    CoreRuntime, CoreTrustCenterSnapshot, RunDownloadContractInput,
+    CoreRuntime, CoreStatusNotice, CoreStatusNoticeLevel, CoreTrustCenterSnapshot,
+    RunDownloadContractInput,
 };
 use std::path::Path;
 use std::path::PathBuf;
@@ -39,14 +40,40 @@ pub enum BackendPathActionKind {
 pub struct BackendPathAction {
     pub label: &'static str,
     pub path: String,
-    pub missing_message: &'static str,
+    pub missing_message: String,
     pub kind: BackendPathActionKind,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BackendStatusNoticeLevel {
+    Good,
+    Warning,
+    Error,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BackendStatusNotice {
+    pub level: BackendStatusNoticeLevel,
+    pub message: &'static str,
+    pub retry_label: Option<&'static str>,
 }
 
 fn backend_display_row_from_core(row: CoreDisplayRow) -> BackendDisplayRow {
     BackendDisplayRow {
         label: row.label,
         value: row.value,
+    }
+}
+
+fn backend_status_notice_from_core(notice: CoreStatusNotice) -> BackendStatusNotice {
+    BackendStatusNotice {
+        level: match notice.level {
+            CoreStatusNoticeLevel::Good => BackendStatusNoticeLevel::Good,
+            CoreStatusNoticeLevel::Warning => BackendStatusNoticeLevel::Warning,
+            CoreStatusNoticeLevel::Error => BackendStatusNoticeLevel::Error,
+        },
+        message: notice.message,
+        retry_label: notice.retry_label,
     }
 }
 
@@ -285,6 +312,37 @@ pub fn open_location_button_label_for_facts(
 
 pub fn file_disposition_summary(disposition: &AppliedFileDisposition) -> String {
     CoreRuntime::default().file_disposition_summary(disposition)
+}
+
+pub fn last_download_status_notice(snapshot: &TrustCenterSnapshot) -> Option<BackendStatusNotice> {
+    CoreRuntime::default()
+        .last_download_status_notice(&snapshot.hash_status, &snapshot.policy_verdict)
+        .map(backend_status_notice_from_core)
+}
+
+pub fn last_download_evidence_action(evidence_path: Option<&Path>) -> Option<BackendPathAction> {
+    CoreRuntime::default()
+        .last_download_evidence_action(evidence_path)
+        .map(backend_path_action_from_core)
+}
+
+pub fn last_download_open_location_action(
+    snapshot: &TrustCenterSnapshot,
+    disposition: &AppliedFileDisposition,
+    trust_policy: &TrustPolicyConfig,
+    download_path: &Path,
+    save_dir: &Path,
+) -> Option<BackendPathAction> {
+    CoreRuntime::default()
+        .last_download_open_location_action(
+            &snapshot.hash_status,
+            &snapshot.policy_verdict,
+            disposition,
+            trust_policy,
+            download_path,
+            save_dir,
+        )
+        .map(backend_path_action_from_core)
 }
 
 pub fn public_key_from_private_seed(private_key_text: &str) -> Result<String, String> {
@@ -670,7 +728,8 @@ mod tests {
             Some(BackendPathAction {
                 label: "📄 Open Update Evidence",
                 path: "check-evidence.json".to_string(),
-                missing_message: "Update evidence path is recorded but not present on disk.",
+                missing_message: "Update evidence path is recorded but not present on disk."
+                    .to_string(),
                 kind: BackendPathActionKind::File
             })
         );
@@ -693,7 +752,8 @@ mod tests {
             Some(BackendPathAction {
                 label: "📁 Open stage folder",
                 path: "stage".to_string(),
-                missing_message: "Stage folder path is recorded but not present on disk.",
+                missing_message: "Stage folder path is recorded but not present on disk."
+                    .to_string(),
                 kind: BackendPathActionKind::Directory
             })
         );
@@ -702,7 +762,8 @@ mod tests {
             Some(BackendPathAction {
                 label: "📄 Open stage evidence",
                 path: "stage-evidence.json".to_string(),
-                missing_message: "Stage evidence path is recorded but not present on disk.",
+                missing_message: "Stage evidence path is recorded but not present on disk."
+                    .to_string(),
                 kind: BackendPathActionKind::File
             })
         );
@@ -737,13 +798,87 @@ mod tests {
             Some(BackendPathAction {
                 label: "📄 Open apply plan evidence",
                 path: "apply-plan.json".to_string(),
-                missing_message: "Apply plan evidence path is recorded but not present on disk.",
+                missing_message: "Apply plan evidence path is recorded but not present on disk."
+                    .to_string(),
                 kind: BackendPathActionKind::File
             })
         );
         assert_eq!(
             update_apply_plan_missing_evidence_message(None),
             Some("Apply plan evidence is not recorded for this preview.")
+        );
+    }
+
+    #[test]
+    fn last_download_display_helpers_keep_gui_out_of_trust_decision_formatting() {
+        let mut snapshot = TrustCenterSnapshot {
+            downloaded_asset: "app.exe".to_string(),
+            hash_status: "VERIFIED".to_string(),
+            file_sha256: "abc".to_string(),
+            expected_sha256: "abc".to_string(),
+            source_authenticity: "trusted".to_string(),
+            source_trust_detail: "trusted source".to_string(),
+            source_asset: "SHA256SUMS.txt".to_string(),
+            signature_asset: "SHA256SUMS.txt.sig".to_string(),
+            publisher_key_fingerprint: "fingerprint".to_string(),
+            publisher_key_source: "pinned".to_string(),
+            policy_verdict: "TRUSTED".to_string(),
+            policy_at_decision: "policy".to_string(),
+            evidence_path: "evidence.json".to_string(),
+            evidence_access: "openable".to_string(),
+            file_disposition: "file kept".to_string(),
+            final_path: "C:\\downloads\\app.exe".to_string(),
+        };
+        let disposition = AppliedFileDisposition {
+            action: FileDispositionAction::Keep,
+            original_path: PathBuf::from("C:\\downloads\\app.exe"),
+            final_path: Some(PathBuf::from("C:\\downloads\\app.exe")),
+        };
+
+        assert_eq!(
+            last_download_status_notice(&snapshot),
+            Some(BackendStatusNotice {
+                level: BackendStatusNoticeLevel::Good,
+                message: "Trusted: checksum/provenance hash and source policy passed.",
+                retry_label: None
+            })
+        );
+        assert_eq!(
+            last_download_evidence_action(Some(Path::new("evidence.json"))),
+            Some(BackendPathAction {
+                label: "📄 Open Evidence",
+                path: "evidence.json".to_string(),
+                missing_message: "Evidence path recorded but file is missing: evidence.json"
+                    .to_string(),
+                kind: BackendPathActionKind::File
+            })
+        );
+        assert_eq!(
+            last_download_open_location_action(
+                &snapshot,
+                &disposition,
+                &TrustPolicyConfig::default(),
+                Path::new("C:\\downloads\\app.exe"),
+                Path::new("C:\\downloads"),
+            ),
+            Some(BackendPathAction {
+                label: "📂 Open Folder",
+                path: "C:\\downloads".to_string(),
+                missing_message:
+                    "Download folder is recorded but not present on disk: C:\\downloads".to_string(),
+                kind: BackendPathActionKind::Directory
+            })
+        );
+
+        snapshot.policy_verdict = "BLOCK".to_string();
+        assert_eq!(
+            last_download_status_notice(&snapshot),
+            Some(BackendStatusNotice {
+                level: BackendStatusNoticeLevel::Error,
+                message:
+                    "Blocked: checksum matched, but verification source signature is not trusted.",
+                retry_label: Some("🔁 Retry Download")
+            })
         );
     }
 }

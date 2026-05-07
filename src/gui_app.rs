@@ -25,7 +25,7 @@ use gh_mirror_gui::backend_contract::{BackendClientSettings, DownloadCompletion}
 use notify_rust::Notification;
 use rfd::FileDialog;
 use std::env;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::Duration;
@@ -35,6 +35,30 @@ type PublisherKeyImportMessage = (String, Result<ImportedPublisherKeyPin, String
 type UpdateCandidateCheckMessage = UpdateCandidateCheckReport;
 type UpdateCandidateStageMessage = UpdateCandidateStageReport;
 type DownloadResultMessage = Result<DownloadCompletion, String>;
+
+fn backend_notice_color(level: backend_contract::BackendStatusNoticeLevel) -> egui::Color32 {
+    match level {
+        backend_contract::BackendStatusNoticeLevel::Good => egui::Color32::from_rgb(0, 180, 0),
+        backend_contract::BackendStatusNoticeLevel::Warning => egui::Color32::from_rgb(220, 160, 0),
+        backend_contract::BackendStatusNoticeLevel::Error => egui::Color32::from_rgb(220, 70, 70),
+    }
+}
+
+fn render_backend_path_action(ui: &mut egui::Ui, action: backend_contract::BackendPathAction) {
+    let path = Path::new(&action.path);
+    let path_ready = match action.kind {
+        backend_contract::BackendPathActionKind::File => path.is_file(),
+        backend_contract::BackendPathActionKind::Directory => path.is_dir(),
+    };
+    if path_ready {
+        if ui.button(action.label).clicked() {
+            let _ = open::that(path);
+        }
+    } else {
+        ui.add_enabled(false, egui::Button::new(action.label));
+        ui.small(action.missing_message);
+    }
+}
 
 #[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) struct SavedState {
@@ -1375,72 +1399,33 @@ impl eframe::App for GhMirrorGui {
 
             if let Some(snapshot) = self.last_trust_center_snapshot.clone() {
                 ui.horizontal(|ui| {
-                    match (snapshot.hash_status.as_str(), snapshot.policy_verdict.as_str()) {
-                        ("VERIFIED", "BLOCK") => {
-                            ui.colored_label(
-                                egui::Color32::from_rgb(220, 70, 70),
-                                "Blocked: checksum matched, but verification source signature is not trusted.",
-                            );
+                    if let Some(notice) = backend_contract::last_download_status_notice(&snapshot) {
+                        ui.colored_label(backend_notice_color(notice.level), notice.message);
+                        if let Some(retry_label) = notice.retry_label {
                             if self.download_thread.is_none()
-                                && ui.button("🔁 Retry Download").clicked()
+                                && ui.button(retry_label).clicked()
                             {
                                 self.start_download();
                             }
                         }
-                        ("MISMATCH", _) => {
-                            ui.colored_label(
-                                egui::Color32::from_rgb(220, 70, 70),
-                                "Blocked: downloaded file does not match trusted checksum.",
-                            );
-                            if self.download_thread.is_none()
-                                && ui.button("🔁 Retry Download").clicked()
-                            {
-                                self.start_download();
-                            }
-                        }
-                        ("UNKNOWN", _) => {
-                            ui.colored_label(
-                                egui::Color32::from_rgb(220, 160, 0),
-                                "Risk: no matching checksum/provenance could verify this file.",
-                            );
-                        }
-                        ("VERIFIED", _) => {
-                            ui.colored_label(
-                                egui::Color32::from_rgb(0, 180, 0),
-                                "Trusted: checksum/provenance hash and source policy passed.",
-                            );
-                        }
-                        _ => {}
                     }
 
-                    if let Some(evidence_path) = &self.last_verification_evidence_path {
-                        if evidence_path.is_file() {
-                            if ui.button("📄 Open Evidence").clicked() {
-                                let _ = open::that(evidence_path);
-                            }
-                        } else {
-                            ui.add_enabled(false, egui::Button::new("📄 Evidence Missing"));
-                            ui.small(format!(
-                                "Evidence path recorded but file is missing: {}",
-                                evidence_path.display()
-                            ));
-                        }
+                    if let Some(action) = backend_contract::last_download_evidence_action(
+                        self.last_verification_evidence_path.as_deref(),
+                    ) {
+                        render_backend_path_action(ui, action);
                     }
                     if let (Some(download_path), Some(disposition)) =
                         (&self.last_download_path, &self.last_file_disposition)
                     {
-                        if let Some(label) = backend_contract::open_location_button_label_for_facts(
-                            snapshot.hash_status.as_str(),
-                            snapshot.policy_verdict.as_str(),
+                        if let Some(action) = backend_contract::last_download_open_location_action(
+                            &snapshot,
                             disposition,
                             &self.trust_policy,
+                            download_path,
+                            &self.save_dir,
                         ) {
-                            if ui.button(label).clicked() {
-                                let folder = download_path.parent().unwrap_or(&self.save_dir);
-                                if folder.exists() {
-                                    let _ = open::that(folder);
-                                }
-                            }
+                            render_backend_path_action(ui, action);
                         }
                     }
                 });

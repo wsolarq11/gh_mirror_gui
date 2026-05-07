@@ -180,7 +180,7 @@ pub(crate) enum CorePathActionKind {
 pub(crate) struct CorePathAction {
     pub(crate) label: &'static str,
     pub(crate) path: String,
-    pub(crate) missing_message: &'static str,
+    pub(crate) missing_message: String,
     pub(crate) kind: CorePathActionKind,
 }
 
@@ -188,12 +188,12 @@ impl CorePathAction {
     pub(crate) fn file(
         label: &'static str,
         path: impl Into<String>,
-        missing_message: &'static str,
+        missing_message: impl Into<String>,
     ) -> Self {
         Self {
             label,
             path: path.into(),
-            missing_message,
+            missing_message: missing_message.into(),
             kind: CorePathActionKind::File,
         }
     }
@@ -201,13 +201,41 @@ impl CorePathAction {
     pub(crate) fn directory(
         label: &'static str,
         path: impl Into<String>,
-        missing_message: &'static str,
+        missing_message: impl Into<String>,
     ) -> Self {
         Self {
             label,
             path: path.into(),
-            missing_message,
+            missing_message: missing_message.into(),
             kind: CorePathActionKind::Directory,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CoreStatusNoticeLevel {
+    Good,
+    Warning,
+    Error,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CoreStatusNotice {
+    pub(crate) level: CoreStatusNoticeLevel,
+    pub(crate) message: &'static str,
+    pub(crate) retry_label: Option<&'static str>,
+}
+
+impl CoreStatusNotice {
+    pub(crate) fn new(
+        level: CoreStatusNoticeLevel,
+        message: &'static str,
+        retry_label: Option<&'static str>,
+    ) -> Self {
+        Self {
+            level,
+            message,
+            retry_label,
         }
     }
 }
@@ -585,6 +613,76 @@ impl CoreRuntime {
 
     pub(crate) fn file_disposition_summary(&self, disposition: &AppliedFileDisposition) -> String {
         crate::trust_policy::file_disposition_summary(disposition)
+    }
+
+    pub(crate) fn last_download_status_notice(
+        &self,
+        hash_status: &str,
+        policy_verdict: &str,
+    ) -> Option<CoreStatusNotice> {
+        match (hash_status, policy_verdict) {
+            ("VERIFIED", "BLOCK") => Some(CoreStatusNotice::new(
+                CoreStatusNoticeLevel::Error,
+                "Blocked: checksum matched, but verification source signature is not trusted.",
+                Some("🔁 Retry Download"),
+            )),
+            ("MISMATCH", _) => Some(CoreStatusNotice::new(
+                CoreStatusNoticeLevel::Error,
+                "Blocked: downloaded file does not match trusted checksum.",
+                Some("🔁 Retry Download"),
+            )),
+            ("UNKNOWN", _) => Some(CoreStatusNotice::new(
+                CoreStatusNoticeLevel::Warning,
+                "Risk: no matching checksum/provenance could verify this file.",
+                None,
+            )),
+            ("VERIFIED", _) => Some(CoreStatusNotice::new(
+                CoreStatusNoticeLevel::Good,
+                "Trusted: checksum/provenance hash and source policy passed.",
+                None,
+            )),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn last_download_evidence_action(
+        &self,
+        evidence_path: Option<&Path>,
+    ) -> Option<CorePathAction> {
+        evidence_path.map(|path| {
+            let path_text = path.display().to_string();
+            CorePathAction::file(
+                "📄 Open Evidence",
+                path_text.clone(),
+                format!("Evidence path recorded but file is missing: {path_text}"),
+            )
+        })
+    }
+
+    pub(crate) fn last_download_open_location_action(
+        &self,
+        hash_status: &str,
+        policy_verdict: &str,
+        disposition: &AppliedFileDisposition,
+        trust_policy: &TrustPolicyConfig,
+        download_path: &Path,
+        save_dir: &Path,
+    ) -> Option<CorePathAction> {
+        self.open_location_button_label_for_facts(
+            hash_status,
+            policy_verdict,
+            disposition,
+            trust_policy,
+        )
+        .map(|label| {
+            let folder = download_path.parent().unwrap_or(save_dir);
+            let folder_text = folder.display().to_string();
+            CorePathAction::directory(
+                label,
+                folder_text.clone(),
+                format!("Download folder is recorded but not present on disk: {folder_text}"),
+            )
+        })
     }
 
     pub(crate) fn public_key_from_private_seed(
