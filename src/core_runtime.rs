@@ -615,6 +615,95 @@ impl CoreRuntime {
         crate::trust_policy::file_disposition_summary(disposition)
     }
 
+    pub(crate) fn source_trust_status_summary(&self, snapshot: &CoreTrustCenterSnapshot) -> String {
+        let signature = if snapshot.signature_asset != "none" {
+            format!(" via {}", snapshot.signature_asset)
+        } else {
+            String::new()
+        };
+        let pin = if snapshot.publisher_key_fingerprint != "not pinned" {
+            let short = snapshot
+                .publisher_key_fingerprint
+                .chars()
+                .take(12)
+                .collect::<String>();
+            format!(" key={short}")
+        } else {
+            String::new()
+        };
+        format!(
+            "{} decision={}{}{}",
+            snapshot.source_authenticity, snapshot.policy_verdict, signature, pin
+        )
+    }
+
+    pub(crate) fn download_completion_status(
+        &self,
+        snapshot: &CoreTrustCenterSnapshot,
+        disposition: &AppliedFileDisposition,
+    ) -> String {
+        let short_hash = snapshot.file_sha256.chars().take(12).collect::<String>();
+        let disposition_summary = self.file_disposition_summary(disposition);
+        let source_trust = self.source_trust_status_summary(snapshot);
+        match (
+            snapshot.hash_status.as_str(),
+            snapshot.policy_verdict.as_str(),
+        ) {
+            ("VERIFIED", "BLOCK") => format!(
+                "❌ Verification BLOCKED · SHA256 matched {} but source authenticity is {} · {} · {}",
+                snapshot.source_asset.as_str(),
+                source_trust,
+                disposition_summary,
+                "retry or open evidence before trusting this file"
+            ),
+            ("VERIFIED", _) => format!(
+                "✅ Download complete · VERIFIED SHA256={} via {} · source {} · {}",
+                short_hash,
+                snapshot.source_asset.as_str(),
+                source_trust,
+                disposition_summary
+            ),
+            ("MISMATCH", _) => format!(
+                "❌ Verification BLOCKED · MISMATCH SHA256={} expected {} via {} · {} · retry or open evidence before trusting this file",
+                short_hash,
+                snapshot
+                    .expected_sha256
+                    .as_str()
+                    .chars()
+                    .take(12)
+                    .collect::<String>(),
+                snapshot.source_asset.as_str(),
+                disposition_summary
+            ),
+            ("UNKNOWN", _) => format!(
+                "⚠ Verification UNKNOWN risk · SHA256={} · {} · {}",
+                short_hash,
+                "no matching checksum/provenance could verify this file",
+                disposition_summary
+            ),
+            (other, decision) => format!(
+                "⚠ Verification {} ({}) · SHA256={} · {}",
+                other, decision, short_hash, disposition_summary
+            ),
+        }
+    }
+
+    pub(crate) fn download_notification_status(
+        &self,
+        snapshot: &CoreTrustCenterSnapshot,
+    ) -> String {
+        match (
+            snapshot.hash_status.as_str(),
+            snapshot.policy_verdict.as_str(),
+        ) {
+            ("VERIFIED", "BLOCK") => "Download blocked (UNTRUSTED SOURCE)".to_string(),
+            ("VERIFIED", _) => "Download complete (VERIFIED)".to_string(),
+            ("MISMATCH", _) => "Download blocked (MISMATCH)".to_string(),
+            ("UNKNOWN", _) => "Download saved with UNKNOWN verification risk".to_string(),
+            _ => "Download completed with UNKNOWN verification risk".to_string(),
+        }
+    }
+
     pub(crate) fn last_download_status_notice(
         &self,
         hash_status: &str,

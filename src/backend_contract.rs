@@ -155,6 +155,29 @@ impl From<CoreTrustCenterSnapshot> for TrustCenterSnapshot {
     }
 }
 
+fn core_trust_center_snapshot_from_backend(
+    snapshot: &TrustCenterSnapshot,
+) -> CoreTrustCenterSnapshot {
+    CoreTrustCenterSnapshot {
+        downloaded_asset: snapshot.downloaded_asset.clone(),
+        hash_status: snapshot.hash_status.clone(),
+        file_sha256: snapshot.file_sha256.clone(),
+        expected_sha256: snapshot.expected_sha256.clone(),
+        source_authenticity: snapshot.source_authenticity.clone(),
+        source_trust_detail: snapshot.source_trust_detail.clone(),
+        source_asset: snapshot.source_asset.clone(),
+        signature_asset: snapshot.signature_asset.clone(),
+        publisher_key_fingerprint: snapshot.publisher_key_fingerprint.clone(),
+        publisher_key_source: snapshot.publisher_key_source.clone(),
+        policy_verdict: snapshot.policy_verdict.clone(),
+        policy_at_decision: snapshot.policy_at_decision.clone(),
+        evidence_path: snapshot.evidence_path.clone(),
+        evidence_access: snapshot.evidence_access.clone(),
+        file_disposition: snapshot.file_disposition.clone(),
+        final_path: snapshot.final_path.clone(),
+    }
+}
+
 pub fn resolve_download_intent(input: &str) -> IntentDTO {
     match CoreRuntime::default().resolve_download_intent(input) {
         CoreDownloadIntent::DirectDownload {
@@ -312,6 +335,26 @@ pub fn open_location_button_label_for_facts(
 
 pub fn file_disposition_summary(disposition: &AppliedFileDisposition) -> String {
     CoreRuntime::default().file_disposition_summary(disposition)
+}
+
+pub fn source_trust_status_summary(snapshot: &TrustCenterSnapshot) -> String {
+    CoreRuntime::default()
+        .source_trust_status_summary(&core_trust_center_snapshot_from_backend(snapshot))
+}
+
+pub fn download_completion_status(
+    snapshot: &TrustCenterSnapshot,
+    disposition: &AppliedFileDisposition,
+) -> String {
+    CoreRuntime::default().download_completion_status(
+        &core_trust_center_snapshot_from_backend(snapshot),
+        disposition,
+    )
+}
+
+pub fn download_notification_status(snapshot: &TrustCenterSnapshot) -> String {
+    CoreRuntime::default()
+        .download_notification_status(&core_trust_center_snapshot_from_backend(snapshot))
 }
 
 pub fn last_download_status_notice(snapshot: &TrustCenterSnapshot) -> Option<BackendStatusNotice> {
@@ -844,6 +887,15 @@ mod tests {
             })
         );
         assert_eq!(
+            source_trust_status_summary(&snapshot),
+            "trusted decision=TRUSTED via SHA256SUMS.txt.sig key=fingerprint"
+        );
+        assert!(download_completion_status(&snapshot, &disposition).contains("Download complete"));
+        assert_eq!(
+            download_notification_status(&snapshot),
+            "Download complete (VERIFIED)"
+        );
+        assert_eq!(
             last_download_evidence_action(Some(Path::new("evidence.json"))),
             Some(BackendPathAction {
                 label: "📄 Open Evidence",
@@ -879,6 +931,13 @@ mod tests {
                     "Blocked: checksum matched, but verification source signature is not trusted.",
                 retry_label: Some("🔁 Retry Download")
             })
+        );
+        assert!(
+            download_completion_status(&snapshot, &disposition).contains("Verification BLOCKED")
+        );
+        assert_eq!(
+            download_notification_status(&snapshot),
+            "Download blocked (UNTRUSTED SOURCE)"
         );
     }
 }

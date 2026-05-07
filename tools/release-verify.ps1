@@ -2743,6 +2743,7 @@ function Assert-CoreBackendConvergence {
     $backendPath = Join-Path $RepoRoot 'src\backend_contract.rs'
     $runtimePath = Join-Path $RepoRoot 'src\core_runtime.rs'
     $guiAppPath = Join-Path $RepoRoot 'src\gui_app.rs'
+    $guiTrustCenterPath = Join-Path $RepoRoot 'src\gui_trust_center.rs'
     $guiCommonPath = Join-Path $RepoRoot 'src\gui_common.rs'
     if (!(Test-Path -LiteralPath $backendPath)) {
         throw 'backend contract module missing: src\backend_contract.rs'
@@ -2753,6 +2754,9 @@ function Assert-CoreBackendConvergence {
     if (!(Test-Path -LiteralPath $guiAppPath)) {
         throw 'GUI app module missing: src\gui_app.rs'
     }
+    if (!(Test-Path -LiteralPath $guiTrustCenterPath)) {
+        throw 'GUI trust-center module missing: src\gui_trust_center.rs'
+    }
     if (!(Test-Path -LiteralPath $guiCommonPath)) {
         throw 'GUI common module missing: src\gui_common.rs'
     }
@@ -2760,6 +2764,7 @@ function Assert-CoreBackendConvergence {
     $backendText = Get-Content -LiteralPath $backendPath -Raw
     $runtimeText = Get-Content -LiteralPath $runtimePath -Raw
     $guiAppText = Get-Content -LiteralPath $guiAppPath -Raw
+    $guiTrustCenterText = Get-Content -LiteralPath $guiTrustCenterPath -Raw
     $guiCommonText = Get-Content -LiteralPath $guiCommonPath -Raw
     $backendForbidden = @(
         'crate::source_trust::import_publisher_key_pin_from_release_asset',
@@ -2851,6 +2856,9 @@ function Assert-CoreBackendConvergence {
         'pub(crate) fn publisher_key_source_label_for_policy',
         'pub(crate) fn open_location_button_label_for_facts',
         'pub(crate) fn file_disposition_summary',
+        'pub(crate) fn source_trust_status_summary',
+        'pub(crate) fn download_completion_status',
+        'pub(crate) fn download_notification_status',
         'pub(crate) fn public_key_from_private_seed',
         'pub(crate) fn sign_ed25519_detached',
         'pub(crate) fn verify_ed25519_detached',
@@ -2926,6 +2934,22 @@ function Assert-CoreBackendConvergence {
     $guiPresent += @($guiForbiddenRegex | Where-Object { $guiAppText -match $_ })
     if ($guiPresent.Count -gt 0) {
         throw "GUI owns release DTO formatting that must route through backend_contract/CoreRuntime: $($guiPresent -join ', ')"
+    }
+    $guiTrustCenterForbidden = @(
+        'backend_contract::file_disposition_summary(',
+        'match (snapshot.hash_status.as_str(), snapshot.policy_verdict.as_str())',
+        'snapshot.hash_status.as_str()',
+        'snapshot.policy_verdict.as_str()',
+        'Verification BLOCKED',
+        'Download blocked (MISMATCH)',
+        'Download saved with UNKNOWN verification risk',
+        'source authenticity is'
+    )
+    $guiTrustCenterPresent = @($guiTrustCenterForbidden | Where-Object {
+        $guiTrustCenterText.IndexOf($_, [System.StringComparison]::Ordinal) -ge 0
+    })
+    if ($guiTrustCenterPresent.Count -gt 0) {
+        throw "GUI trust-center owns download trust verdict formatting that must route through backend_contract/CoreRuntime: $($guiTrustCenterPresent -join ', ')"
     }
     $guiCommonForbidden = @(
         'ImportedPublisherKeyPin',
