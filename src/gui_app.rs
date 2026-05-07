@@ -24,7 +24,6 @@ use gh_mirror_gui::backend_contract;
 use gh_mirror_gui::backend_contract::{BackendClientSettings, DownloadCompletion};
 use notify_rust::Notification;
 use rfd::FileDialog;
-use std::env;
 use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc};
 use std::thread;
@@ -778,15 +777,11 @@ impl eframe::App for GhMirrorGui {
                 self.status = self.update_stage_status.clone();
 
                 // Record a Stage 3 apply plan evidence file (no mutation / no install).
-                // The UI only triggers the backend contract; the backend writes the evidence.
+                // The UI only triggers the backend contract; backend/core resolves the target exe and writes evidence.
                 self.update_apply_plan_evidence_record = None;
-                if let Ok(target_exe_path) = std::env::current_exe() {
-                    let record = backend_contract::record_update_apply_plan_evidence_for_stage2(
-                        &report,
-                        &target_exe_path,
-                    );
-                    self.update_apply_plan_evidence_record = Some(record);
-                }
+                self.update_apply_plan_evidence_record =
+                    backend_contract::record_update_apply_plan_evidence_for_current_exe(&report)
+                        .ok();
                 self.update_stage_report = Some(report);
             }
         }
@@ -1355,18 +1350,12 @@ impl eframe::App for GhMirrorGui {
                     if let Some(record) = &self.update_apply_plan_evidence_record {
                         render_update_apply_plan_preview(ui, &record.plan, Some(record));
                     } else {
-                        match std::env::current_exe() {
-                            Ok(target_exe_path) => {
-                                let plan = backend_contract::build_update_apply_plan_for_stage2(
-                                    report,
-                                    &target_exe_path,
-                                );
+                        match backend_contract::current_exe_update_apply_plan_for_stage2(report) {
+                            Ok(plan) => {
                                 render_update_apply_plan_preview(ui, &plan, None);
                             }
                             Err(e) => {
-                                ui.small(format!(
-                                    "Update apply plan preview unavailable (current_exe error): {e}"
-                                ));
+                                ui.small(format!("Update apply plan preview unavailable ({e})"));
                             }
                         }
                     }

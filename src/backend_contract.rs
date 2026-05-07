@@ -850,6 +850,40 @@ mod tests {
             update_apply_plan_missing_evidence_message(None),
             Some("Apply plan evidence is not recorded for this preview.")
         );
+
+        let current_exe_plan = current_exe_update_apply_plan_for_stage2(&stage)
+            .expect("current executable should be available in tests");
+        assert_eq!(current_exe_plan.status, UpdateApplyPlanStatus::Planned);
+        assert!(current_exe_plan.no_mutation);
+        assert!(current_exe_plan
+            .target_exe_path
+            .as_deref()
+            .unwrap_or_default()
+            .contains("gh_mirror_gui"));
+        let current_stage_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join("test-artifacts")
+            .join(format!(
+                "update-apply-plan-current-exe-{}",
+                std::process::id()
+            ));
+        let _ = std::fs::remove_dir_all(&current_stage_dir);
+        let mut current_stage = stage.clone();
+        current_stage.stage_dir = Some(current_stage_dir.display().to_string());
+        current_stage.staged_asset_path = Some(
+            current_stage_dir
+                .join("gh_mirror_gui.exe")
+                .display()
+                .to_string(),
+        );
+        let current_exe_record = record_update_apply_plan_evidence_for_current_exe(&current_stage)
+            .expect("current executable evidence should be recordable in tests");
+        assert_eq!(
+            current_exe_record.plan.status,
+            UpdateApplyPlanStatus::Planned
+        );
+        assert!(current_exe_record.no_mutation);
+        let _ = std::fs::remove_dir_all(&current_stage_dir);
     }
 
     #[test]
@@ -1040,12 +1074,24 @@ pub fn build_update_apply_plan_for_stage2(
     CoreRuntime::default().build_update_apply_plan_for_stage2(stage_report, target_exe_path)
 }
 
+pub fn current_exe_update_apply_plan_for_stage2(
+    stage_report: &UpdateCandidateStageReport,
+) -> Result<UpdateApplyPlan, String> {
+    CoreRuntime::default().current_exe_update_apply_plan_for_stage2(stage_report)
+}
+
 pub fn record_update_apply_plan_evidence_for_stage2(
     stage_report: &UpdateCandidateStageReport,
     target_exe_path: &Path,
 ) -> UpdateApplyPlanEvidenceRecord {
     CoreRuntime::default()
         .record_update_apply_plan_evidence_for_stage2(stage_report, target_exe_path)
+}
+
+pub fn record_update_apply_plan_evidence_for_current_exe(
+    stage_report: &UpdateCandidateStageReport,
+) -> Result<UpdateApplyPlanEvidenceRecord, String> {
+    CoreRuntime::default().record_update_apply_plan_evidence_for_current_exe(stage_report)
 }
 
 pub fn run_download_contract(

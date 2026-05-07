@@ -1536,6 +1536,15 @@ impl CoreRuntime {
         crate::update_apply_plan::build_update_apply_plan(stage_report, target_exe_path, &suffix)
     }
 
+    pub(crate) fn current_exe_update_apply_plan_for_stage2(
+        &self,
+        stage_report: &UpdateCandidateStageReport,
+    ) -> Result<UpdateApplyPlan, String> {
+        let target_exe_path = std::env::current_exe()
+            .map_err(|e| format!("current executable path unavailable: {e}"))?;
+        Ok(self.build_update_apply_plan_for_stage2(stage_report, &target_exe_path))
+    }
+
     pub(crate) fn record_update_apply_plan_evidence_for_stage2(
         &self,
         stage_report: &UpdateCandidateStageReport,
@@ -1545,6 +1554,15 @@ impl CoreRuntime {
             stage_report,
             target_exe_path,
         )
+    }
+
+    pub(crate) fn record_update_apply_plan_evidence_for_current_exe(
+        &self,
+        stage_report: &UpdateCandidateStageReport,
+    ) -> Result<UpdateApplyPlanEvidenceRecord, String> {
+        let target_exe_path = std::env::current_exe()
+            .map_err(|e| format!("current executable path unavailable: {e}"))?;
+        Ok(self.record_update_apply_plan_evidence_for_stage2(stage_report, &target_exe_path))
     }
 }
 

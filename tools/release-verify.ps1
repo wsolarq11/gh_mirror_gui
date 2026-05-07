@@ -585,7 +585,8 @@ function Assert-UiShellThinness {
                 'gh_mirror_gui::backend_contract',
                 'crate::gui_trust_center',
                 'crate::gui_update_candidate',
-                'build_update_apply_plan_for_stage2'
+                'current_exe_update_apply_plan_for_stage2',
+                'record_update_apply_plan_evidence_for_current_exe'
             )
             forbidden = @(
                 'crate::download',
@@ -2835,7 +2836,9 @@ function Assert-CoreBackendConvergence {
         'pub(crate) fn stage_latest_update_candidate',
         'pub(crate) fn refused_update_candidate_stage_report',
         'pub(crate) fn build_update_apply_plan_for_stage2',
+        'pub(crate) fn current_exe_update_apply_plan_for_stage2',
         'pub(crate) fn record_update_apply_plan_evidence_for_stage2',
+        'pub(crate) fn record_update_apply_plan_evidence_for_current_exe',
         'pub(crate) fn resolve_download_intent',
         'pub(crate) fn official_github_artifact_hosts',
         'pub(crate) fn default_history_path',
@@ -2985,6 +2988,9 @@ function Assert-CoreBackendConvergence {
         'evidence.and_then(|record| record.evidence_path.as_deref())',
         'plan.steps.iter()',
         'backend_contract::describe_update_apply_step(',
+        'std::env::current_exe()',
+        'backend_contract::build_update_apply_plan_for_stage2(',
+        'backend_contract::record_update_apply_plan_evidence_for_stage2(',
         'report.evidence_write_error',
         'report.evaluation.evidence_path',
         'report.stage_dir.as_deref()',
