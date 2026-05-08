@@ -43,6 +43,8 @@ Source + Intent + Policy -> Evidence + Verdict + ActionPlan
 
 Every phase is a refinement of that same pipeline, not a separate product
 track.
+Phases are milestone labels; mechanism belongs to the one-line artifact
+decision contract and the `ArtifactDecision` backend surface.
 
 User-side experience should stay one Windows UI. Internally, trust-critical
 logic should stay in testable core/backend surfaces and be proven by

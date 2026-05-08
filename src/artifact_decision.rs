@@ -45,6 +45,13 @@ pub enum ArtifactActionKind {
     AuditOnly,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ArtifactActionPathKind {
+    File,
+    Directory,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ArtifactCandidate {
     pub source: String,
@@ -63,12 +70,21 @@ pub struct ArtifactEvidenceSummary {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ArtifactActionPath {
+    pub label: String,
+    pub path: String,
+    pub missing_message: String,
+    pub kind: ArtifactActionPathKind,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ArtifactActionPlan {
     pub kind: ArtifactActionKind,
     pub status: String,
     pub summary: String,
     pub reversible: bool,
     pub no_mutation: bool,
+    pub path_action: Option<ArtifactActionPath>,
     pub steps: Vec<String>,
 }
 
@@ -139,6 +155,7 @@ impl ArtifactDecision {
                 summary: report.evaluation.reason.clone(),
                 reversible: true,
                 no_mutation: report.evaluation.no_mutation,
+                path_action: None,
                 steps: Vec::new(),
             },
         )
@@ -183,7 +200,18 @@ impl ArtifactDecision {
                 summary: report.reason.clone(),
                 reversible: true,
                 no_mutation: report.no_install,
-                steps: Vec::new(),
+                path_action: report.stage_dir.as_ref().map(|path| ArtifactActionPath {
+                    label: "📁 Open stage folder".to_string(),
+                    path: path.clone(),
+                    missing_message: "Stage folder path is recorded but not present on disk."
+                        .to_string(),
+                    kind: ArtifactActionPathKind::Directory,
+                }),
+                steps: report
+                    .staged_asset_path
+                    .iter()
+                    .map(|path| format!("stage verified candidate: {path}"))
+                    .collect(),
             },
         )
     }
@@ -228,6 +256,7 @@ impl ArtifactDecision {
                 summary: plan.reason.clone(),
                 reversible: plan.reversible,
                 no_mutation: plan.no_mutation,
+                path_action: None,
                 steps: plan.steps.iter().map(describe_update_apply_step).collect(),
             },
         )
@@ -328,6 +357,7 @@ mod tests {
         assert_eq!(decision.intent, ArtifactIntent::CheckUpdate);
         assert_eq!(decision.verdict, ArtifactVerdict::Candidate);
         assert_eq!(decision.action_plan.kind, ArtifactActionKind::Stage);
+        assert_eq!(decision.action_plan.path_action, None);
         assert_eq!(
             decision.evidence.source_authenticity.as_deref(),
             Some("TRUSTED_SIGNATURE")
@@ -361,8 +391,22 @@ mod tests {
         assert_eq!(decision.intent, ArtifactIntent::StageUpdate);
         assert_eq!(decision.verdict, ArtifactVerdict::Staged);
         assert_eq!(decision.action_plan.kind, ArtifactActionKind::PlanApply);
+        assert_eq!(
+            decision.action_plan.path_action,
+            Some(ArtifactActionPath {
+                label: "📁 Open stage folder".to_string(),
+                path: "target/stage".to_string(),
+                missing_message: "Stage folder path is recorded but not present on disk."
+                    .to_string(),
+                kind: ArtifactActionPathKind::Directory,
+            })
+        );
         assert!(decision.action_plan.reversible);
         assert!(decision.action_plan.no_mutation);
+        assert_eq!(
+            decision.action_plan.steps,
+            vec!["stage verified candidate: target/stage/gh_mirror_gui.exe".to_string()]
+        );
     }
 
     #[test]

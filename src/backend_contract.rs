@@ -12,8 +12,8 @@ use std::sync::{mpsc, Arc};
 // ---------------------------------------------------------------------------
 
 pub use crate::artifact_decision::{
-    ArtifactActionKind, ArtifactActionPlan, ArtifactCandidate, ArtifactDecision,
-    ArtifactEvidenceSummary, ArtifactIntent, ArtifactVerdict,
+    ArtifactActionKind, ArtifactActionPath, ArtifactActionPathKind, ArtifactActionPlan,
+    ArtifactCandidate, ArtifactDecision, ArtifactEvidenceSummary, ArtifactIntent, ArtifactVerdict,
 };
 pub use crate::download::DownloadControl;
 pub use crate::releases::{ReleaseAsset, ReleaseQuery, ReleaseQueryKind, ResolvedRelease};
@@ -444,6 +444,56 @@ pub fn run_update_apply_plan_contract_selftest(args: &[String]) -> Result<(), St
     CoreRuntime::default().run_update_apply_plan_contract_selftest(args)
 }
 
+pub fn artifact_decision_from_update_candidate_check(
+    report: &UpdateCandidateCheckReport,
+) -> ArtifactDecision {
+    CoreRuntime::default().artifact_decision_from_update_candidate_check(report)
+}
+
+pub fn artifact_decision_from_update_candidate_stage(
+    report: &UpdateCandidateStageReport,
+) -> ArtifactDecision {
+    CoreRuntime::default().artifact_decision_from_update_candidate_stage(report)
+}
+
+pub fn artifact_decision_from_update_apply_plan(
+    plan: &UpdateApplyPlan,
+    evidence_path: Option<&str>,
+) -> ArtifactDecision {
+    CoreRuntime::default().artifact_decision_from_update_apply_plan(plan, evidence_path)
+}
+
+pub fn artifact_decision_from_update_apply_plan_evidence(
+    plan: &UpdateApplyPlan,
+    evidence: Option<&UpdateApplyPlanEvidenceRecord>,
+) -> ArtifactDecision {
+    CoreRuntime::default().artifact_decision_from_update_apply_plan_evidence(plan, evidence)
+}
+
+pub fn artifact_decision_rows(decision: &ArtifactDecision) -> Vec<BackendDisplayRow> {
+    CoreRuntime::default()
+        .artifact_decision_rows(decision)
+        .into_iter()
+        .map(backend_display_row_from_core)
+        .collect()
+}
+
+pub fn artifact_decision_step_rows(decision: &ArtifactDecision) -> Vec<String> {
+    CoreRuntime::default().artifact_decision_step_rows(decision)
+}
+
+pub fn artifact_decision_action_path(decision: &ArtifactDecision) -> Option<BackendPathAction> {
+    CoreRuntime::default()
+        .artifact_decision_action_path(decision)
+        .map(backend_path_action_from_core)
+}
+
+pub fn artifact_decision_evidence_action(decision: &ArtifactDecision) -> Option<BackendPathAction> {
+    CoreRuntime::default()
+        .artifact_decision_evidence_action(decision)
+        .map(backend_path_action_from_core)
+}
+
 pub fn update_candidate_check_status_summary(report: &UpdateCandidateCheckReport) -> String {
     CoreRuntime::default().update_candidate_check_status_summary(report)
 }
@@ -686,6 +736,80 @@ mod tests {
         clear_trusted_publisher_key(&mut policy, &mut source);
         assert!(trusted_publisher_key_text(&policy).is_empty());
         assert!(source.is_empty());
+    }
+
+    #[test]
+    fn artifact_decision_backend_surface_replaces_phase_specific_update_rows() {
+        let decision = ArtifactDecision::new(
+            ArtifactIntent::StageUpdate,
+            ArtifactCandidate {
+                source: "owner/repo".to_string(),
+                artifact_name: "gh_mirror_gui.exe".to_string(),
+                version_or_tag: Some("v1.2.3".to_string()),
+                uri: Some("https://github.com/owner/repo/releases/tag/v1.2.3".to_string()),
+            },
+            ArtifactEvidenceSummary {
+                evidence_path: Some("stage-evidence.json".to_string()),
+                hash_status: Some("VERIFIED".to_string()),
+                source_authenticity: Some("TRUSTED_SIGNATURE".to_string()),
+                publisher_key_fingerprint_sha256: Some("fingerprint".to_string()),
+                policy_verdict: Some("TRUSTED".to_string()),
+            },
+            ArtifactVerdict::Staged,
+            ArtifactActionPlan {
+                kind: ArtifactActionKind::PlanApply,
+                status: "staged".to_string(),
+                summary: "candidate staged".to_string(),
+                reversible: true,
+                no_mutation: true,
+                path_action: Some(ArtifactActionPath {
+                    label: "Open stage folder".to_string(),
+                    path: "stage".to_string(),
+                    missing_message: "Stage folder path is recorded but not present on disk."
+                        .to_string(),
+                    kind: ArtifactActionPathKind::Directory,
+                }),
+                steps: vec!["stage verified candidate: stage/gh_mirror_gui.exe".to_string()],
+            },
+        );
+
+        let rows = artifact_decision_rows(&decision);
+        assert!(rows.contains(&BackendDisplayRow {
+            label: "Contract",
+            value: "Source + Intent + Policy -> Evidence + Verdict + ActionPlan".to_string()
+        }));
+        assert!(rows.contains(&BackendDisplayRow {
+            label: "Verdict",
+            value: "Staged".to_string()
+        }));
+        assert!(rows.contains(&BackendDisplayRow {
+            label: "Action",
+            value: "PlanApply".to_string()
+        }));
+        assert_eq!(
+            artifact_decision_step_rows(&decision),
+            vec!["1: stage verified candidate: stage/gh_mirror_gui.exe".to_string()]
+        );
+        assert_eq!(
+            artifact_decision_action_path(&decision),
+            Some(BackendPathAction {
+                label: "📁 Open action folder",
+                path: "stage".to_string(),
+                missing_message: "Stage folder path is recorded but not present on disk."
+                    .to_string(),
+                kind: BackendPathActionKind::Directory
+            })
+        );
+        assert_eq!(
+            artifact_decision_evidence_action(&decision),
+            Some(BackendPathAction {
+                label: "📄 Open decision evidence",
+                path: "stage-evidence.json".to_string(),
+                missing_message: "Decision evidence path is recorded but not present on disk."
+                    .to_string(),
+                kind: BackendPathActionKind::File
+            })
+        );
     }
 
     #[test]

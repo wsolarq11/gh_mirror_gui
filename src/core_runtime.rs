@@ -1,3 +1,4 @@
+use crate::artifact_decision::{ArtifactActionPathKind, ArtifactDecision};
 use crate::download::DownloadControl;
 use crate::download::DownloadProbe;
 use crate::download::SelectedDownloadStrategy;
@@ -849,6 +850,155 @@ impl CoreRuntime {
         args: &[String],
     ) -> Result<(), String> {
         crate::update_apply_plan::run_update_apply_plan_contract_selftest(args)
+    }
+
+    pub(crate) fn artifact_decision_from_update_candidate_check(
+        &self,
+        report: &UpdateCandidateCheckReport,
+    ) -> ArtifactDecision {
+        ArtifactDecision::from_update_candidate_check(report)
+    }
+
+    pub(crate) fn artifact_decision_from_update_candidate_stage(
+        &self,
+        report: &UpdateCandidateStageReport,
+    ) -> ArtifactDecision {
+        ArtifactDecision::from_update_candidate_stage(report)
+    }
+
+    pub(crate) fn artifact_decision_from_update_apply_plan(
+        &self,
+        plan: &UpdateApplyPlan,
+        evidence_path: Option<&str>,
+    ) -> ArtifactDecision {
+        ArtifactDecision::from_update_apply_plan(plan, evidence_path)
+    }
+
+    pub(crate) fn artifact_decision_from_update_apply_plan_evidence(
+        &self,
+        plan: &UpdateApplyPlan,
+        evidence: Option<&UpdateApplyPlanEvidenceRecord>,
+    ) -> ArtifactDecision {
+        self.artifact_decision_from_update_apply_plan(
+            plan,
+            evidence.and_then(|record| record.evidence_path.as_deref()),
+        )
+    }
+
+    pub(crate) fn artifact_decision_rows(
+        &self,
+        decision: &ArtifactDecision,
+    ) -> Vec<CoreDisplayRow> {
+        vec![
+            CoreDisplayRow::new("Contract", decision.contract.clone()),
+            CoreDisplayRow::new("Intent", format!("{:?}", decision.intent)),
+            CoreDisplayRow::new("Source", decision.candidate.source.clone()),
+            CoreDisplayRow::new("Artifact", decision.candidate.artifact_name.clone()),
+            CoreDisplayRow::new(
+                "Version/tag",
+                decision
+                    .candidate
+                    .version_or_tag
+                    .as_deref()
+                    .unwrap_or("unknown"),
+            ),
+            CoreDisplayRow::new(
+                "URI",
+                decision.candidate.uri.as_deref().unwrap_or("not recorded"),
+            ),
+            CoreDisplayRow::new(
+                "Evidence path",
+                decision
+                    .evidence
+                    .evidence_path
+                    .as_deref()
+                    .unwrap_or("not recorded"),
+            ),
+            CoreDisplayRow::new(
+                "Hash status",
+                decision
+                    .evidence
+                    .hash_status
+                    .as_deref()
+                    .unwrap_or("unknown"),
+            ),
+            CoreDisplayRow::new(
+                "Source authenticity",
+                decision
+                    .evidence
+                    .source_authenticity
+                    .as_deref()
+                    .unwrap_or("unknown"),
+            ),
+            CoreDisplayRow::new(
+                "Publisher fingerprint",
+                decision
+                    .evidence
+                    .publisher_key_fingerprint_sha256
+                    .as_deref()
+                    .unwrap_or("not available"),
+            ),
+            CoreDisplayRow::new(
+                "Policy verdict",
+                decision
+                    .evidence
+                    .policy_verdict
+                    .as_deref()
+                    .unwrap_or("unknown"),
+            ),
+            CoreDisplayRow::new("Verdict", format!("{:?}", decision.verdict)),
+            CoreDisplayRow::new("Action", format!("{:?}", decision.action_plan.kind)),
+            CoreDisplayRow::new("Action status", decision.action_plan.status.clone()),
+            CoreDisplayRow::new("Action summary", decision.action_plan.summary.clone()),
+            CoreDisplayRow::new("Reversible", decision.action_plan.reversible.to_string()),
+            CoreDisplayRow::new("No mutation", decision.action_plan.no_mutation.to_string()),
+            CoreDisplayRow::new("Steps", decision.action_plan.steps.len().to_string()),
+        ]
+    }
+
+    pub(crate) fn artifact_decision_step_rows(&self, decision: &ArtifactDecision) -> Vec<String> {
+        decision
+            .action_plan
+            .steps
+            .iter()
+            .enumerate()
+            .map(|(idx, step)| format!("{}: {}", idx + 1, step))
+            .collect()
+    }
+
+    pub(crate) fn artifact_decision_action_path(
+        &self,
+        decision: &ArtifactDecision,
+    ) -> Option<CorePathAction> {
+        decision
+            .action_plan
+            .path_action
+            .as_ref()
+            .map(|action| match action.kind {
+                ArtifactActionPathKind::File => CorePathAction::file(
+                    "📄 Open action file",
+                    action.path.clone(),
+                    action.missing_message.clone(),
+                ),
+                ArtifactActionPathKind::Directory => CorePathAction::directory(
+                    "📁 Open action folder",
+                    action.path.clone(),
+                    action.missing_message.clone(),
+                ),
+            })
+    }
+
+    pub(crate) fn artifact_decision_evidence_action(
+        &self,
+        decision: &ArtifactDecision,
+    ) -> Option<CorePathAction> {
+        decision.evidence.evidence_path.as_ref().map(|path| {
+            CorePathAction::file(
+                "📄 Open decision evidence",
+                path.clone(),
+                "Decision evidence path is recorded but not present on disk.",
+            )
+        })
     }
 
     pub(crate) fn update_candidate_check_status_summary(

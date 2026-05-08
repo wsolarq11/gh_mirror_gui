@@ -13,6 +13,8 @@ Source + Intent + Policy -> Evidence + Verdict + ActionPlan
 All current and future phases should collapse to this artifact-decision
 pipeline: resolve a source, interpret the intent, apply policy, record
 evidence, emit a verdict, and expose only a safe action plan.
+Phases are milestone labels; mechanism belongs to the one-line artifact
+decision contract and the `ArtifactDecision` backend surface.
 
 ```text
 UI Shell

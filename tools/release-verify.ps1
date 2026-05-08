@@ -703,6 +703,8 @@ function Assert-UiShellThinness {
             path = 'src\gui_update_candidate.rs'
             required = @(
                 'gh_mirror_gui::backend_contract',
+                'ArtifactDecision',
+                'render_artifact_decision',
                 'render_update_apply_plan_preview',
                 'UpdateApplyPlan'
             )
@@ -2741,6 +2743,9 @@ function Assert-GoalAnchorContract {
     if ([string]$anchor.intent.one_line_contract -ne 'Source + Intent + Policy -> Evidence + Verdict + ActionPlan') {
         throw "goal anchor intent.one_line_contract mismatch"
     }
+    if ([string]$anchor.intent.phase_rule -ne 'Phases are milestone labels; mechanism belongs to the one-line artifact decision contract.') {
+        throw "goal anchor intent.phase_rule mismatch"
+    }
 
     $designDocs = @($anchor.DESIGN_DOCS | ForEach-Object { [string]$_.path })
     $requiredDesignDocs = @(
@@ -2953,6 +2958,14 @@ function Assert-CoreBackendConvergence {
         'pub(crate) fn run_update_candidate_latest_selftest',
         'pub(crate) fn run_update_candidate_stage_selftest',
         'pub(crate) fn run_update_apply_plan_contract_selftest',
+        'pub(crate) fn artifact_decision_from_update_candidate_check',
+        'pub(crate) fn artifact_decision_from_update_candidate_stage',
+        'pub(crate) fn artifact_decision_from_update_apply_plan',
+        'pub(crate) fn artifact_decision_from_update_apply_plan_evidence',
+        'pub(crate) fn artifact_decision_rows',
+        'pub(crate) fn artifact_decision_step_rows',
+        'pub(crate) fn artifact_decision_action_path',
+        'pub(crate) fn artifact_decision_evidence_action',
         'pub(crate) struct CoreDisplayRow',
         'pub(crate) enum CorePathActionKind',
         'pub(crate) struct CorePathAction',
@@ -3089,6 +3102,14 @@ function Assert-CoreBackendConvergence {
         'std::env::current_exe()',
         'backend_contract::build_update_apply_plan_for_stage2(',
         'backend_contract::record_update_apply_plan_evidence_for_stage2(',
+        'backend_contract::update_candidate_check_rows(',
+        'backend_contract::update_candidate_check_evidence_action(',
+        'backend_contract::update_candidate_stage_rows(',
+        'backend_contract::update_candidate_stage_folder_action(',
+        'backend_contract::update_candidate_stage_evidence_action(',
+        'backend_contract::update_apply_plan_summary_rows(',
+        'backend_contract::update_apply_plan_step_rows(',
+        'backend_contract::update_apply_plan_evidence_action(',
         'report.evidence_write_error',
         'report.evaluation.evidence_path',
         'report.stage_dir.as_deref()',
@@ -3187,6 +3208,7 @@ $Receipt.checks.route_guardrails = [ordered]@{
             'Windows-first Artifact Trust Broker',
             'Windows Local Software Trust Root',
             'Source + Intent + Policy -> Evidence + Verdict + ActionPlan',
+            'Phase 只作为里程碑标签',
             'Do **not** let the UI make final trust verdicts',
             'tools\release-verify.ps1 + receipt.json',
             'docs\GOAL-ANCHOR.json',
@@ -3199,6 +3221,7 @@ $Receipt.checks.route_guardrails = [ordered]@{
             'Windows-first Artifact Trust Broker',
             'Windows Local Software Trust Root',
             'Source + Intent + Policy -> Evidence + Verdict + ActionPlan',
+            'Phases are milestone labels; mechanism belongs to the one-line artifact',
             'tools\release-verify.ps1 + receipt.json',
             'docs\GOAL-ANCHOR.json',
             'The durable design/end-state anchors are this README plus',
@@ -3213,7 +3236,8 @@ $Receipt.checks.route_guardrails = [ordered]@{
             'Core crate and backend contract',
             'Artifact Trust Broker',
             'Windows Local Software Trust Root',
-            'Source + Intent + Policy -> Evidence + Verdict + ActionPlan'
+            'Source + Intent + Policy -> Evidence + Verdict + ActionPlan',
+            'Phases are milestone labels; mechanism belongs to the one-line artifact'
         )
     architecture = Assert-FileContains `
         -RelativePath 'docs\ARCHITECTURE.md' `
@@ -3225,7 +3249,8 @@ $Receipt.checks.route_guardrails = [ordered]@{
             'Policy engine',
             'Evidence ledger',
             'Release verification front door',
-            'Source + Intent + Policy -> Evidence + Verdict + ActionPlan'
+            'Source + Intent + Policy -> Evidence + Verdict + ActionPlan',
+            'Phases are milestone labels; mechanism belongs to the one-line artifact'
         )
     architecture_convergence = [ordered]@{
         ok = $true
@@ -3321,7 +3346,8 @@ $Receipt.checks.artifact_decision_contract = [ordered]@{
             'artifact_decision_contract_formula_is_single_pipeline',
             'artifact_decision_wraps_update_candidate_as_evidence_verdict_action_plan',
             'artifact_decision_wraps_update_stage_as_next_apply_plan_intent',
-            'artifact_decision_wraps_update_apply_plan_as_action_plan_surface'
+            'artifact_decision_wraps_update_apply_plan_as_action_plan_surface',
+            'artifact_decision_backend_surface_replaces_phase_specific_update_rows'
         )
 }
 $downloadEnginePath = Join-Path $RepoRoot 'src\download.rs'

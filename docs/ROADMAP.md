@@ -24,6 +24,8 @@ Source + Intent + Policy -> Evidence + Verdict + ActionPlan
 
 Every phase below is just a tighter, safer, or broader realization of that one
 pipeline.
+Phases are milestone labels; mechanism belongs to the one-line artifact
+decision contract and the `ArtifactDecision` backend surface.
 
 ## Non-goals
 
@@ -141,60 +143,59 @@ Deliverables:
 
 ## Phase 3: Auto-update MVP
 
-Goal: use the same trusted acquisition path to update this application.
+Milestone: self-update becomes just another `ArtifactDecision` intent over the
+same trusted acquisition path.
 
-Deliverables:
+Contract projection:
 
-- UI checks `wsolarq11/gh_mirror_gui` releases.
-- Update candidate must satisfy hash + provenance + source authenticity + pinned publisher policy.
-- Installer/update step is staged and reversible.
-- A pure `UpdateApplyPlan` DTO describes the backup/replace/rollback sequence for a staged candidate without mutating the filesystem yet.
-- The UI may preview that `UpdateApplyPlan` DTO read-only through `backend_contract`, but still must not own install/replace logic.
-- Evidence records the update decision.
+- `Source` = `wsolarq11/gh_mirror_gui` release.
+- `Intent` = check, stage, or plan apply.
+- `Policy` = hash + provenance + source authenticity + pinned publisher key.
+- `Evidence` = recorded candidate/stage/apply-plan records.
+- `Verdict` = candidate, staged, no-update, planned, or refused.
+- `ActionPlan` = staged and reversible; UI preview only, no UI-owned install logic.
 
 Stop condition: update is refused when signature/publisher/policy fails.
 
 ## Phase 4: Core crate and backend contract
 
-Goal: make UI a shell over a stable core/backend contract.
+Milestone: UI, CLI, update, evidence, and future adapters share one backend
+decision door.
 
-Deliverables:
+Contract projection:
 
-- Extract trust-critical logic into a core crate or clean module boundary.
-- Define request/response DTOs for:
-  - resolve release
-  - choose asset
-  - download
-  - verify source/artifact
-  - apply policy
-  - record evidence
-- UI stops making final trust decisions.
+- `CoreRuntime` owns orchestration.
+- `backend_contract` exposes DTO/use-case functions, including `ArtifactDecision`.
+- UI stops making final trust decisions; it renders backend decisions and path actions only.
 - CLI/headless tests exercise the same contract.
+- Release verification fails closed if the contract drifts.
 
 ## Phase 5: Artifact Trust Broker
 
-Goal: make GitHub Release the first source adapter, not the hardcoded product boundary.
+Milestone: GitHub Release is the first adapter behind the same artifact-decision
+contract, not the hardcoded product boundary.
 
-Deliverables:
+Contract projection:
 
-- Source adapter interface.
-- Verifier adapter interface.
-- Policy contract for user and enterprise modes.
-- Evidence ledger stable schema.
+- Source adapters only fill `Source` and candidate metadata.
+- Verifier adapters only contribute evidence and authenticity facts.
+- Policy stays source-agnostic.
+- Evidence ledger schema stays stable.
 - Future adapters can include GitLab Release, raw URL, internal registry, or S3-like storage without rewriting trust logic.
 
 ## Phase 6: Windows Local Software Trust Root
 
-Goal: graduate from trusted download to software lifecycle trust.
+Milestone: software lifecycle trust extends the same decision contract to
+install, rollback, revocation, and audit.
 
-Possible scope:
+Possible contract extensions:
 
-- install/update/rollback orchestration
-- revocation/blocklist
-- publisher identity lifecycle
-- enterprise policy import/lock
-- audit export
-- optional runtime allow/deny integration
+- additional `Intent` values for install/update/rollback/audit.
+- revocation/blocklist as policy input.
+- publisher identity lifecycle as source-trust policy input.
+- enterprise policy import/lock as policy source.
+- audit export as evidence ledger output.
+- optional runtime allow/deny integration as a policy/action-plan consumer.
 
 This is the north star, not the next implementation target. Do not expand scope here until the GitHub Release trust path and Artifact Trust Broker contracts are stable.
 
