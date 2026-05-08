@@ -33,6 +33,11 @@ Phase 只作为里程碑标签；机制统一归入上述 artifact-decision cont
 - Do **not** keep long-term dual tracks. Experiments must converge back into the single main chain or be removed.
 - `docs\GOAL-ANCHOR.json` is the single machine-readable goal anchor. Design/end-state route docs are anchored only in `AGENTS.md`, `README.md`, `docs\ROADMAP.md`, and `docs\ARCHITECTURE.md`; run/audit evidence belongs in `target\delivery\<run_id>\` receipts or `.run\<namespace>\{logs,data,cache,tmp}`.
 
+## MCP 优化约定
+
+- 对本仓库做持续优化、结构梳理、变更影响分析、跨层重构、回归排查时，默认先用 MCP 的 `get_architecture` / `search_graph` / `trace_path` / `detect_changes`。
+- 如果 MCP 索引过期或缺失，先 refresh/index，再继续；不要只靠记忆或纯文本 grep 作为长期优化主路径。
+
 ## Required design shape
 
 Every non-trivial feature should map to at least one of these stable surfaces:
