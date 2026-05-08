@@ -133,6 +133,25 @@ function Get-ReleaseVerifyDegradationSummary {
     }
 }
 
+function Assert-CleanGitWorkspace {
+    param([string[]]$GitStatusLines)
+
+    $dirtyLines = @(
+        $GitStatusLines |
+            Select-Object -Skip 1 |
+            Where-Object { ![string]::IsNullOrWhiteSpace([string]$_) }
+    )
+    if ($dirtyLines.Count -gt 0) {
+        throw "release-verify requires a clean git workspace before PASS: $($dirtyLines -join '; ')"
+    }
+
+    return [ordered]@{
+        ok = $true
+        contract = 'release-verify PASS must bind a clean git workspace; branch ahead/behind is provenance, modified or untracked files are not allowed'
+        status_short = @($GitStatusLines)
+    }
+}
+
 function Invoke-LoggedNative {
     param(
         [string]$Name,
@@ -3363,6 +3382,7 @@ $Receipt.provenance = [ordered]@{
 }
 
 Invoke-LoggedNative -Name 'git-status' -Exe 'git' -Arguments @('status', '--short', '--branch')
+$Receipt.checks.git_workspace_clean = Assert-CleanGitWorkspace -GitStatusLines $gitStatus
 $Receipt.checks.route_guardrails = [ordered]@{
     ok = $true
     goal_anchor = Assert-GoalAnchorContract
