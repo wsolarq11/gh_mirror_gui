@@ -158,6 +158,8 @@ Evidence must remain reviewable and machine-readable:
 `tools\release-verify.ps1` is the delivery judge. It must keep recording:
 
 - git provenance
+- clean-workspace gate (`checks.git_workspace_clean`) so a `PASS` receipt cannot
+  be claimed while repo files are modified, staged, or untracked
 - toolchain provenance
 - key source files and guardrail document hashes
 - fmt/test/clippy/build command results
@@ -206,6 +208,9 @@ Evidence must remain reviewable and machine-readable:
   a local folder and records stage evidence. It still does not install,
   replace the executable, write system persistence, mutate tags, publish
   releases, or touch secrets.
+- CI front-door contract (`checks.ci_frontdoor_contract`) that keeps GitHub
+  Actions on the same fmt/test/clippy/build sequence and ends with
+  `tools\release-verify.ps1`, rather than a parallel delivery judge
 - network smoke
 - benchmark
 - degradation summary (`checks.release_verify_degraded`) when an external

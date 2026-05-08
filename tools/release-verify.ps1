@@ -3475,7 +3475,9 @@ $Receipt.checks.route_guardrails = [ordered]@{
             'tools\release-verify.ps1 + receipt.json',
             'docs\GOAL-ANCHOR.json',
             'The durable design/end-state anchors are this README plus',
-            'Run/audit evidence should stay in `target\delivery\<run_id>\` receipts'
+            'Run/audit evidence should stay in `target\delivery\<run_id>\` receipts',
+            'checks.git_workspace_clean',
+            'checks.ci_frontdoor_contract'
         )
     roadmap = Assert-FileContains `
         -RelativePath 'docs\ROADMAP.md' `
@@ -3499,6 +3501,8 @@ $Receipt.checks.route_guardrails = [ordered]@{
             'Policy engine',
             'Evidence ledger',
             'Release verification front door',
+            'checks.git_workspace_clean',
+            'checks.ci_frontdoor_contract',
             'Source + Intent + Policy -> Evidence + Verdict + ActionPlan',
             'Phases are milestone labels; mechanism belongs to the one-line artifact'
         )
@@ -3532,6 +3536,7 @@ $Receipt.checks.route_guardrails = [ordered]@{
             'invent final trust verdicts',
             'Do not daemonize before the core contract is clean',
             '`tools\release-verify.ps1` is the delivery judge',
+            'parallel delivery judge',
             'Source + Intent + Policy -> Evidence + Verdict + ActionPlan'
         )
     }

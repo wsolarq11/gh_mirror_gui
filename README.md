@@ -191,6 +191,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\release-verify.ps1
 ```
 
 Evidence is written under `target\delivery\<run_id>\`.
+A `PASS` receipt is intentionally tied to a clean git workspace: modified,
+staged, or untracked repo files fail `checks.git_workspace_clean` instead of
+allowing a dirty deliverable.
 The receipt records build provenance including the git commit, Rust toolchain,
 `Cargo.lock` hash, release binary hash, verification command logs, and
 `checks.trust_policy_contract` for the `VERIFIED` / `MISMATCH` / `UNKNOWN`
@@ -216,6 +219,10 @@ The real-world *binary download + hash verification* for public releases is
 covered by `checks.post_publish_self_update_stage2`: it stages the latest
 verified `gh_mirror_gui.exe` into a local folder (no install / no exe
 replacement) and proves the staged SHA256 matches the expected signed checksum.
+The receipt also records `checks.ci_frontdoor_contract`, which keeps CI on the
+same fmt/test/clippy/build chain and finishes CI through the repo
+`tools\release-verify.ps1` front door instead of creating a second delivery
+judge.
 If the front door has to fall back from a flaky external transport to a
 deterministic local range-server probe, the receipt and stdout surface that in
 `checks.release_verify_degraded` instead of hiding the degraded evidence path
