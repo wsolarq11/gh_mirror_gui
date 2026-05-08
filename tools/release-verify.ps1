@@ -2927,7 +2927,11 @@ function Assert-CoreBackendConvergence {
         'snapshot.hash_status.as_str()',
         'snapshot.policy_verdict.as_str()',
         'backend_contract::open_location_button_label_for_facts(',
-        'Evidence path recorded but file is missing:'
+        'Evidence path recorded but file is missing:',
+        'Path::new(&action.path)',
+        'BackendPathActionKind::File',
+        'BackendPathActionKind::Directory',
+        'fn render_backend_path_action'
     )
     $guiForbiddenRegex = @(
         '(?m)\basset_picker_label\('
@@ -2961,11 +2965,23 @@ function Assert-CoreBackendConvergence {
         'std::fs::read_to_string',
         'backend_contract::normalize_public_key_pin('
     )
+    $guiCommonRequired = @(
+        'pub(crate) fn render_backend_path_action',
+        'Path::new(&action.path)',
+        'BackendPathActionKind::File',
+        'BackendPathActionKind::Directory'
+    )
     $guiCommonPresent = @($guiCommonForbidden | Where-Object {
         $guiCommonText.IndexOf($_, [System.StringComparison]::Ordinal) -ge 0
     })
     if ($guiCommonPresent.Count -gt 0) {
         throw "GUI common owns publisher key import result handling that must route through backend_contract/CoreRuntime: $($guiCommonPresent -join ', ')"
+    }
+    $guiCommonMissing = @($guiCommonRequired | Where-Object {
+        $guiCommonText.IndexOf($_, [System.StringComparison]::Ordinal) -lt 0
+    })
+    if ($guiCommonMissing.Count -gt 0) {
+        throw "GUI common missing shared backend path-action renderer: $($guiCommonMissing -join ', ')"
     }
     $guiUpdatePath = Join-Path $RepoRoot 'src\gui_update_candidate.rs'
     if (!(Test-Path -LiteralPath $guiUpdatePath)) {
@@ -2999,7 +3015,11 @@ function Assert-CoreBackendConvergence {
         'report.stage_dir.as_deref()',
         'report.evidence_path.as_deref()',
         'record.write_error',
-        'record.evidence_path'
+        'record.evidence_path',
+        'fn render_path_action',
+        'Path::new(&action.path)',
+        'BackendPathActionKind::File',
+        'BackendPathActionKind::Directory'
     )
     $guiUpdatePresent = @($guiUpdateForbidden | Where-Object {
         $guiUpdateText.IndexOf($_, [System.StringComparison]::Ordinal) -ge 0
@@ -3010,7 +3030,7 @@ function Assert-CoreBackendConvergence {
 
     return [ordered]@{
         ok = $true
-        contract = 'backend_contract remains a stable DTO/use-case door; self-update, publisher-key import, imported publisher key application, apply-plan, update status/apply-step display helpers, update candidate/apply-plan/last-download row/evidence action display helpers, intent DTO boundary, official-artifact-host helper, history-path helper, release DTO display helpers, trust policy settings helper, trusted publisher key mutation helpers, verification-source summary, trust display helpers, source-trust crypto helpers, bench and selftest CLI behavior, release-context DTO boundary, release-context enrichment, Trust Center snapshot, client construction, client-bound backend use cases, and download/verify/history/disposition orchestration route through CoreRuntime'
+        contract = 'backend_contract remains a stable DTO/use-case door; self-update, publisher-key import, imported publisher key application, apply-plan, update status/apply-step display helpers, update candidate/apply-plan/last-download row/evidence action display helpers, shared GUI backend path-action rendering, intent DTO boundary, official-artifact-host helper, history-path helper, release DTO display helpers, trust policy settings helper, trusted publisher key mutation helpers, verification-source summary, trust display helpers, source-trust crypto helpers, bench and selftest CLI behavior, release-context DTO boundary, release-context enrichment, Trust Center snapshot, client construction, client-bound backend use cases, and download/verify/history/disposition orchestration route through CoreRuntime'
         backend_contract = [ordered]@{
             path = $backendPath
             sha256 = (Get-FileHash -LiteralPath $backendPath -Algorithm SHA256).Hash
@@ -3031,6 +3051,7 @@ function Assert-CoreBackendConvergence {
         gui_common = [ordered]@{
             path = $guiCommonPath
             sha256 = (Get-FileHash -LiteralPath $guiCommonPath -Algorithm SHA256).Hash
+            required_patterns = $guiCommonRequired
             forbidden_patterns_absent = $guiCommonForbidden
         }
         gui_update_candidate = [ordered]@{

@@ -1,4 +1,6 @@
-use crate::gui_common::{import_publisher_key_pin_from_path, status_color};
+use crate::gui_common::{
+    import_publisher_key_pin_from_path, render_backend_path_action, status_color,
+};
 use crate::gui_helpers::{
     build_effective_url, extract_filename, format_speed, history_path_from_setting, latency_color,
     run_speed_test,
@@ -24,7 +26,7 @@ use gh_mirror_gui::backend_contract;
 use gh_mirror_gui::backend_contract::{BackendClientSettings, DownloadCompletion};
 use notify_rust::Notification;
 use rfd::FileDialog;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::Duration;
@@ -40,22 +42,6 @@ fn backend_notice_color(level: backend_contract::BackendStatusNoticeLevel) -> eg
         backend_contract::BackendStatusNoticeLevel::Good => egui::Color32::from_rgb(0, 180, 0),
         backend_contract::BackendStatusNoticeLevel::Warning => egui::Color32::from_rgb(220, 160, 0),
         backend_contract::BackendStatusNoticeLevel::Error => egui::Color32::from_rgb(220, 70, 70),
-    }
-}
-
-fn render_backend_path_action(ui: &mut egui::Ui, action: backend_contract::BackendPathAction) {
-    let path = Path::new(&action.path);
-    let path_ready = match action.kind {
-        backend_contract::BackendPathActionKind::File => path.is_file(),
-        backend_contract::BackendPathActionKind::Directory => path.is_dir(),
-    };
-    if path_ready {
-        if ui.button(action.label).clicked() {
-            let _ = open::that(path);
-        }
-    } else {
-        ui.add_enabled(false, egui::Button::new(action.label));
-        ui.small(action.missing_message);
     }
 }
 

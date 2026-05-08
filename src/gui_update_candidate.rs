@@ -1,24 +1,9 @@
+use crate::gui_common::render_backend_path_action;
 use eframe::egui;
 use gh_mirror_gui::backend_contract::{
     self, UpdateApplyPlan, UpdateApplyPlanEvidenceRecord, UpdateCandidateCheckReport,
     UpdateCandidateStageReport,
 };
-use std::path::Path;
-
-fn render_path_action(ui: &mut egui::Ui, action: backend_contract::BackendPathAction) {
-    let path = Path::new(&action.path);
-    let path_ready = match action.kind {
-        backend_contract::BackendPathActionKind::File => path.is_file(),
-        backend_contract::BackendPathActionKind::Directory => path.is_dir(),
-    };
-    if path_ready {
-        if ui.button(action.label).clicked() {
-            let _ = open::that(path);
-        }
-    } else {
-        ui.small(action.missing_message);
-    }
-}
 
 pub(crate) fn render_update_candidate_check(
     ui: &mut egui::Ui,
@@ -44,7 +29,7 @@ pub(crate) fn render_update_candidate_check(
             ui.colored_label(egui::Color32::from_rgb(220, 160, 0), warning);
         }
         if let Some(action) = backend_contract::update_candidate_check_evidence_action(report) {
-            render_path_action(ui, action);
+            render_backend_path_action(ui, action);
         }
     });
 }
@@ -73,10 +58,10 @@ pub(crate) fn render_update_candidate_stage(
         }
 
         if let Some(action) = backend_contract::update_candidate_stage_folder_action(report) {
-            render_path_action(ui, action);
+            render_backend_path_action(ui, action);
         }
         if let Some(action) = backend_contract::update_candidate_stage_evidence_action(report) {
-            render_path_action(ui, action);
+            render_backend_path_action(ui, action);
         }
     });
 }
@@ -107,7 +92,7 @@ pub(crate) fn render_update_apply_plan_preview(
             ui.colored_label(egui::Color32::from_rgb(220, 160, 0), warning);
         }
         if let Some(action) = backend_contract::update_apply_plan_evidence_action(evidence) {
-            render_path_action(ui, action);
+            render_backend_path_action(ui, action);
         }
         if let Some(message) = backend_contract::update_apply_plan_missing_evidence_message(evidence)
         {
