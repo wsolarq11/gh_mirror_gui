@@ -3380,7 +3380,9 @@ $Receipt.checks.route_guardrails = [ordered]@{
             'Do **not** let the UI make final trust verdicts',
             'tools\release-verify.ps1 + receipt.json',
             'docs\GOAL-ANCHOR.json',
-            'Design/end-state route docs are anchored only'
+            'Design/end-state route docs are anchored only',
+            'MCP-first optimization = get_architecture / search_graph / trace_path / detect_changes',
+            'stale or missing index must be refreshed before long-running optimization'
         )
     readme = Assert-FileContains `
         -RelativePath 'README.md' `
