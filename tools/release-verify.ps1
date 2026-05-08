@@ -3258,6 +3258,51 @@ $Receipt.checks.trust_center_backend_contract = Assert-TrustCenterBackendContrac
 $Receipt.checks.ui_shell_thinness = Assert-UiShellThinness
 Invoke-LoggedNative -Name 'cargo-fmt-check' -Exe 'cargo' -Arguments @('fmt', '--check')
 Invoke-LoggedNative -Name 'cargo-test-all-targets' -Exe 'cargo' -Arguments @('test', '--all-targets', '--locked')
+$productionRustPanicForbidden = @(
+    [ordered]@{ id = 'unwrap'; regex = '\.(unwrap_err|unwrap)\s*\('; description = 'direct unwrap/unwrap_err calls' },
+    [ordered]@{ id = 'expect'; regex = '\.(expect_err|expect)\s*\('; description = 'direct expect/expect_err calls' },
+    [ordered]@{ id = 'panic'; regex = 'panic!\s*\('; description = 'direct panic macro calls' },
+    [ordered]@{ id = 'todo'; regex = 'todo!\s*\('; description = 'todo macro calls' },
+    [ordered]@{ id = 'unimplemented'; regex = 'unimplemented!\s*\('; description = 'unimplemented macro calls' }
+)
+$productionRustPanicFindings = @()
+Get-ChildItem -LiteralPath (Join-Path $RepoRoot 'src') -Recurse -Filter '*.rs' | Where-Object { -not $_.PSIsContainer } | ForEach-Object {
+    $relativePath = $_.FullName.Substring($RepoRoot.Length).TrimStart('\', '/')
+    $text = Get-Content -LiteralPath $_.FullName -Raw
+    $testModule = [regex]::Match(
+        $text,
+        '(?m)^[ \t]*#\[cfg\(test\)\][ \t]*\r?\n[ \t]*mod\s+tests\s*\{'
+    )
+    $prodText = if ($testModule.Success) { $text.Substring(0, $testModule.Index) } else { $text }
+    $prodLines = @($prodText -split "`r?`n")
+    for ($lineIndex = 0; $lineIndex -lt $prodLines.Count; $lineIndex++) {
+        foreach ($guard in $productionRustPanicForbidden) {
+            if ([regex]::IsMatch($prodLines[$lineIndex], [string]$guard.regex)) {
+                $productionRustPanicFindings += [ordered]@{
+                    path = $relativePath
+                    line = $lineIndex + 1
+                    guard = [string]$guard.id
+                    regex = [string]$guard.regex
+                    text = $prodLines[$lineIndex].Trim()
+                }
+            }
+        }
+    }
+}
+if ($productionRustPanicFindings.Count -gt 0) {
+    throw "production Rust contains panic-prone patterns: $($productionRustPanicFindings | ConvertTo-Json -Compress -Depth 4)"
+}
+$Receipt.checks.production_rust_panic_guard = [ordered]@{
+    ok = $true
+    scope = 'src/**/*.rs before #[cfg(test)] mod tests'
+    forbidden_patterns_absent = $productionRustPanicForbidden
+    covered_by = Assert-CommandLogContains `
+        -CommandName 'cargo-test-all-targets' `
+        -RequiredPatterns @(
+            'verify_verification_source_cli_rejects_missing_public_key_source',
+            'verify_verification_source_cli_rejects_multiple_public_key_sources'
+        )
+}
 $downloadEnginePath = Join-Path $RepoRoot 'src\download.rs'
 $downloadEngineText = Get-Content -LiteralPath $downloadEnginePath -Raw
 $downloadEngineTestMarker = '#[cfg(test)]'

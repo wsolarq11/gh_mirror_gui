@@ -175,6 +175,10 @@ Evidence must remain reviewable and machine-readable:
 - update apply plan contract selftest that produces a pure reversible
   `UpdateApplyPlan` DTO for a staged candidate, describing backup/replace/
   rollback steps without mutating the filesystem yet
+- production Rust panic-pattern guard (`checks.production_rust_panic_guard`)
+  that rejects direct `unwrap` / `expect` / `panic` style failure paths before
+  `#[cfg(test)] mod tests` sections, with CLI fail-closed tests covering the
+  signature public-key source contract
 - UI apply-plan preview that renders the backend contract DTO through
   `backend_contract` without creating a second execution path
 - UI shell thinness gate (`checks.ui_shell_thinness`) that fails fast if GUI

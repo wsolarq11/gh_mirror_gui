@@ -169,6 +169,42 @@ mod tests {
     }
 
     #[test]
+    fn verify_verification_source_cli_rejects_missing_public_key_source() {
+        let err = cli::run_verify_verification_source(&[
+            "--source".to_string(),
+            "source.txt".to_string(),
+            "--signature".to_string(),
+            "source.txt.sig".to_string(),
+        ])
+        .unwrap_err();
+
+        assert_eq!(
+            err,
+            "provide exactly one of --public-key or --public-key-file"
+        );
+    }
+
+    #[test]
+    fn verify_verification_source_cli_rejects_multiple_public_key_sources() {
+        let err = cli::run_verify_verification_source(&[
+            "--source".to_string(),
+            "source.txt".to_string(),
+            "--signature".to_string(),
+            "source.txt.sig".to_string(),
+            "--public-key".to_string(),
+            "ed25519:abc".to_string(),
+            "--public-key-file".to_string(),
+            "publisher-key.ed25519.pub".to_string(),
+        ])
+        .unwrap_err();
+
+        assert_eq!(
+            err,
+            "provide exactly one of --public-key or --public-key-file"
+        );
+    }
+
+    #[test]
     fn url_helpers_cover_direct_and_mirror_cases() {
         assert_eq!(
             extract_filename("https://github.com/owner/repo/releases/download/v1/app.tar.gz"),

@@ -244,17 +244,16 @@ pub(crate) fn run_verify_verification_source(args: &[String]) -> Result<(), Stri
         std::fs::read(&source).map_err(|e| format!("Read source asset error: {e}"))?;
     let signature_text = std::fs::read_to_string(&signature)
         .map_err(|e| format!("Read signature asset error: {e}"))?;
-    let (public_key_text, public_key_source) = if let Some(path) = public_key_file {
-        (
+    let (public_key_text, public_key_source) = match (public_key, public_key_file) {
+        (Some(public_key), None) => (public_key, "--public-key".to_string()),
+        (None, Some(path)) => (
             std::fs::read_to_string(&path)
                 .map_err(|e| format!("Read public key asset error: {e}"))?,
             path.display().to_string(),
-        )
-    } else {
-        (
-            public_key.expect("checked exactly one public key source"),
-            "--public-key".to_string(),
-        )
+        ),
+        _ => {
+            return Err("provide exactly one of --public-key or --public-key-file".to_string());
+        }
     };
     let public_key = backend_contract::normalize_public_key_pin(&public_key_text)?;
     backend_contract::verify_ed25519_detached(&source_bytes, signature_text.trim(), &public_key)?;
