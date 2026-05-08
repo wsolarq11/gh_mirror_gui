@@ -3208,7 +3208,7 @@ $Receipt.checks.route_guardrails = [ordered]@{
             'Windows-first Artifact Trust Broker',
             'Windows Local Software Trust Root',
             'Source + Intent + Policy -> Evidence + Verdict + ActionPlan',
-            'Phase 只作为里程碑标签',
+            'ArtifactDecision',
             'Do **not** let the UI make final trust verdicts',
             'tools\release-verify.ps1 + receipt.json',
             'docs\GOAL-ANCHOR.json',
