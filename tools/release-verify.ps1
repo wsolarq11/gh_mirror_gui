@@ -540,6 +540,66 @@ function Assert-ReleaseWorkflowArtifactContract {
     }
 }
 
+function Assert-CIWorkflowFrontDoorContract {
+    $relativePath = '.github\workflows\ci.yml'
+    $path = Join-Path $RepoRoot $relativePath
+    if (!(Test-Path -LiteralPath $path)) {
+        throw "required CI workflow missing: $relativePath"
+    }
+
+    $lines = @(Get-Content -LiteralPath $path)
+    $fmtBlock = Get-WorkflowStepBlock -Lines $lines -StepName 'Format check' -RelativePath $relativePath
+    $testBlock = Get-WorkflowStepBlock -Lines $lines -StepName 'Test all targets' -RelativePath $relativePath
+    $clippyBlock = Get-WorkflowStepBlock -Lines $lines -StepName 'Clippy all targets' -RelativePath $relativePath
+    $buildBlock = Get-WorkflowStepBlock -Lines $lines -StepName 'Build release binary' -RelativePath $relativePath
+    $releaseVerifyBlock = Get-WorkflowStepBlock -Lines $lines -StepName 'Release verification receipt (signed staging)' -RelativePath $relativePath
+
+    if ([int]$releaseVerifyBlock.start_line -le [int]$buildBlock.start_line) {
+        throw "$relativePath release-verify step must run after release build"
+    }
+
+    $fmtCovered = Assert-TextContainsAll `
+        -Text $fmtBlock.text `
+        -Label "$relativePath Format check" `
+        -RequiredPatterns @('cargo fmt --check')
+    $testCovered = Assert-TextContainsAll `
+        -Text $testBlock.text `
+        -Label "$relativePath Test all targets" `
+        -RequiredPatterns @('cargo test --all-targets --locked')
+    $clippyCovered = Assert-TextContainsAll `
+        -Text $clippyBlock.text `
+        -Label "$relativePath Clippy all targets" `
+        -RequiredPatterns @('cargo clippy --all-targets --locked -- -D warnings')
+    $buildCovered = Assert-TextContainsAll `
+        -Text $buildBlock.text `
+        -Label "$relativePath Build release binary" `
+        -RequiredPatterns @('cargo build --release --locked')
+    $releaseVerifyCovered = Assert-TextContainsAll `
+        -Text $releaseVerifyBlock.text `
+        -Label "$relativePath Release verification receipt" `
+        -RequiredPatterns @(
+            'powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\release-verify.ps1',
+            '-SkipNetworkSmoke',
+            '-SkipBenchmark',
+            '-SkipBenchmarkMatrix',
+            '-SkipGuiSmoke'
+        )
+
+    return [ordered]@{
+        ok = $true
+        path = $path
+        sha256 = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
+        contract = 'CI must keep the same cargo fmt/test/clippy/build chain and finish through the repo release-verify front door'
+        steps = [ordered]@{
+            fmt = [ordered]@{ start_line = [int]$fmtBlock.start_line; required_patterns = $fmtCovered }
+            test = [ordered]@{ start_line = [int]$testBlock.start_line; required_patterns = $testCovered }
+            clippy = [ordered]@{ start_line = [int]$clippyBlock.start_line; required_patterns = $clippyCovered }
+            build = [ordered]@{ start_line = [int]$buildBlock.start_line; required_patterns = $buildCovered }
+            release_verify = [ordered]@{ start_line = [int]$releaseVerifyBlock.start_line; required_patterns = $releaseVerifyCovered }
+        }
+    }
+}
+
 function Assert-ReleaseSigningBootstrapContract {
     $relativePath = 'tools\release-signing-bootstrap.ps1'
     $path = Join-Path $RepoRoot $relativePath
@@ -3477,6 +3537,7 @@ $Receipt.checks.route_guardrails = [ordered]@{
     }
 }
 $Receipt.checks.release_workflow_artifact_contract = Assert-ReleaseWorkflowArtifactContract
+$Receipt.checks.ci_frontdoor_contract = Assert-CIWorkflowFrontDoorContract
 $Receipt.checks.release_signing_bootstrap_contract = Assert-ReleaseSigningBootstrapContract
 $Receipt.checks.trust_center_backend_contract = Assert-TrustCenterBackendContract
 $Receipt.checks.ui_shell_thinness = Assert-UiShellThinness
