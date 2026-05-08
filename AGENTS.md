@@ -8,6 +8,8 @@
 
 > 当前现实目标是 **Windows-first Trusted GitHub Release Downloader**；中期产品目标是 **Windows-first Artifact Trust Broker**；长期北极星是 **Windows Local Software Trust Root**。
 
+一句话统一判定式：`Source + Intent + Policy -> Evidence + Verdict + ActionPlan`。
+
 用户侧始终收敛成一个 Windows UI；工程侧保持 `core/backend/API/evidence/policy` 分层；交付裁判继续只走 `tools\release-verify.ps1 + receipt.json`。
 自动化/长程推进先读取 `docs\GOAL-ANCHOR.json` 作为机器可读锚点；该锚点只枚举路线文档、门禁、执行 gate 与产物边界，不替代设计文档或 release receipt。
 

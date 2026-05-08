@@ -1,5 +1,6 @@
 #![deny(unreachable_pub)]
 
+mod artifact_decision;
 mod bench;
 mod core_runtime;
 mod download;

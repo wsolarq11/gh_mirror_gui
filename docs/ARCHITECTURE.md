@@ -4,6 +4,16 @@
 
 The product should look like one Windows UI to the user, but internally it should behave like a trusted local acquisition backend with a thin UI shell.
 
+One-line contract:
+
+```text
+Source + Intent + Policy -> Evidence + Verdict + ActionPlan
+```
+
+All current and future phases should collapse to this artifact-decision
+pipeline: resolve a source, interpret the intent, apply policy, record
+evidence, emit a verdict, and expose only a safe action plan.
+
 ```text
 UI Shell
   -> Core / backend contract
@@ -19,6 +29,8 @@ UI Shell
 ## Current module map
 
 - `src/releases.rs`: GitHub Release discovery and asset selection helpers.
+- `src/artifact_decision.rs`: first-class decision DTOs and formula:
+  `Source + Intent + Policy -> Evidence + Verdict + ActionPlan`.
 - `src/source_adapter.rs`: artifact source adapter seam (Phase 5); today it wraps GitHub Release resolution.
 - `src/download.rs`: direct, resumable, and segmented download primitives.
 - `src/bench.rs`: headless benchmark and adaptive strategy evaluation.

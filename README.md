@@ -35,6 +35,15 @@ Windows-first Trusted GitHub Release Downloader
   -> Windows Local Software Trust Root
 ```
 
+The one-line backend contract is:
+
+```text
+Source + Intent + Policy -> Evidence + Verdict + ActionPlan
+```
+
+Every phase is a refinement of that same pipeline, not a separate product
+track.
+
 User-side experience should stay one Windows UI. Internally, trust-critical
 logic should stay in testable core/backend surfaces and be proven by
 `tools\release-verify.ps1 + receipt.json`.

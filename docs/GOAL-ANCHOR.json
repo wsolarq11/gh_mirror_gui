@@ -15,6 +15,7 @@
     "now": "Windows-first Trusted GitHub Release Downloader",
     "mid_term": "Windows-first Artifact Trust Broker",
     "north_star": "Windows Local Software Trust Root",
+    "one_line_contract": "Source + Intent + Policy -> Evidence + Verdict + ActionPlan",
     "non_goals": [
       "mirror-list aggregator",
       "UI-owned final trust verdicts",

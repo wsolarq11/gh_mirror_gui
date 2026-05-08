@@ -11,6 +11,10 @@ use std::sync::{mpsc, Arc};
 // Public backend contract surface (the single runtime "door")
 // ---------------------------------------------------------------------------
 
+pub use crate::artifact_decision::{
+    ArtifactActionKind, ArtifactActionPlan, ArtifactCandidate, ArtifactDecision,
+    ArtifactEvidenceSummary, ArtifactIntent, ArtifactVerdict,
+};
 pub use crate::download::DownloadControl;
 pub use crate::releases::{ReleaseAsset, ReleaseQuery, ReleaseQueryKind, ResolvedRelease};
 pub use crate::source_trust::ImportedPublisherKeyPin;

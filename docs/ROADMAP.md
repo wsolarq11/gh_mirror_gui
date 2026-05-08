@@ -16,6 +16,15 @@ Long-term north star:
 
 The user should still see one Windows UI. Internally, the system should evolve into a testable trust backend that UI, CLI, auto-update, and future enterprise policy all call through stable contracts.
 
+One-line contract:
+
+```text
+Source + Intent + Policy -> Evidence + Verdict + ActionPlan
+```
+
+Every phase below is just a tighter, safer, or broader realization of that one
+pipeline.
+
 ## Non-goals
 
 - Not a mirror-list aggregator.

@@ -2738,6 +2738,9 @@ function Assert-GoalAnchorContract {
     if ([string]$anchor.authority.anchor_path -ne 'docs/GOAL-ANCHOR.json') {
         throw "goal anchor authority.anchor_path mismatch"
     }
+    if ([string]$anchor.intent.one_line_contract -ne 'Source + Intent + Policy -> Evidence + Verdict + ActionPlan') {
+        throw "goal anchor intent.one_line_contract mismatch"
+    }
 
     $designDocs = @($anchor.DESIGN_DOCS | ForEach-Object { [string]$_.path })
     $requiredDesignDocs = @(
@@ -3183,6 +3186,7 @@ $Receipt.checks.route_guardrails = [ordered]@{
             'Windows-first Trusted GitHub Release Downloader',
             'Windows-first Artifact Trust Broker',
             'Windows Local Software Trust Root',
+            'Source + Intent + Policy -> Evidence + Verdict + ActionPlan',
             'Do **not** let the UI make final trust verdicts',
             'tools\release-verify.ps1 + receipt.json',
             'docs\GOAL-ANCHOR.json',
@@ -3194,6 +3198,7 @@ $Receipt.checks.route_guardrails = [ordered]@{
             'Windows-first Trusted GitHub Release Downloader',
             'Windows-first Artifact Trust Broker',
             'Windows Local Software Trust Root',
+            'Source + Intent + Policy -> Evidence + Verdict + ActionPlan',
             'tools\release-verify.ps1 + receipt.json',
             'docs\GOAL-ANCHOR.json',
             'The durable design/end-state anchors are this README plus',
@@ -3207,7 +3212,8 @@ $Receipt.checks.route_guardrails = [ordered]@{
             'Auto-update MVP',
             'Core crate and backend contract',
             'Artifact Trust Broker',
-            'Windows Local Software Trust Root'
+            'Windows Local Software Trust Root',
+            'Source + Intent + Policy -> Evidence + Verdict + ActionPlan'
         )
     architecture = Assert-FileContains `
         -RelativePath 'docs\ARCHITECTURE.md' `
@@ -3218,7 +3224,8 @@ $Receipt.checks.route_guardrails = [ordered]@{
             'Source trust engine',
             'Policy engine',
             'Evidence ledger',
-            'Release verification front door'
+            'Release verification front door',
+            'Source + Intent + Policy -> Evidence + Verdict + ActionPlan'
         )
     architecture_convergence = [ordered]@{
         ok = $true
@@ -3233,23 +3240,25 @@ $Receipt.checks.route_guardrails = [ordered]@{
             )
         roadmap = Assert-FileContains `
             -RelativePath 'docs\ROADMAP.md' `
-            -RequiredPatterns @(
-                'Not a second release pipeline beside `tools\release-verify.ps1`',
-                '`tools\release-verify.ps1` as the single delivery front door',
-                'UI stops making final trust decisions',
-                'Do not expand scope here until the GitHub Release trust path and Artifact Trust Broker contracts are stable',
-                'Avoid work that creates a second long-term path'
-            )
+        -RequiredPatterns @(
+            'Not a second release pipeline beside `tools\release-verify.ps1`',
+            '`tools\release-verify.ps1` as the single delivery front door',
+            'UI stops making final trust decisions',
+            'Do not expand scope here until the GitHub Release trust path and Artifact Trust Broker contracts are stable',
+            'Avoid work that creates a second long-term path',
+            'Source + Intent + Policy -> Evidence + Verdict + ActionPlan'
+        )
         architecture = Assert-FileContains `
             -RelativePath 'docs\ARCHITECTURE.md' `
-            -RequiredPatterns @(
-                'one Windows UI',
-                'trusted local acquisition backend with a thin UI shell',
-                'UI must not',
-                'invent final trust verdicts',
-                'Do not daemonize before the core contract is clean',
-                '`tools\release-verify.ps1` is the delivery judge'
-            )
+        -RequiredPatterns @(
+            'one Windows UI',
+            'trusted local acquisition backend with a thin UI shell',
+            'UI must not',
+            'invent final trust verdicts',
+            'Do not daemonize before the core contract is clean',
+            '`tools\release-verify.ps1` is the delivery judge',
+            'Source + Intent + Policy -> Evidence + Verdict + ActionPlan'
+        )
     }
 }
 $Receipt.checks.release_workflow_artifact_contract = Assert-ReleaseWorkflowArtifactContract
@@ -3301,6 +3310,18 @@ $Receipt.checks.production_rust_panic_guard = [ordered]@{
         -RequiredPatterns @(
             'verify_verification_source_cli_rejects_missing_public_key_source',
             'verify_verification_source_cli_rejects_multiple_public_key_sources'
+        )
+}
+$Receipt.checks.artifact_decision_contract = [ordered]@{
+    ok = $true
+    contract = 'Source + Intent + Policy -> Evidence + Verdict + ActionPlan'
+    covered_by = Assert-CommandLogContains `
+        -CommandName 'cargo-test-all-targets' `
+        -RequiredPatterns @(
+            'artifact_decision_contract_formula_is_single_pipeline',
+            'artifact_decision_wraps_update_candidate_as_evidence_verdict_action_plan',
+            'artifact_decision_wraps_update_stage_as_next_apply_plan_intent',
+            'artifact_decision_wraps_update_apply_plan_as_action_plan_surface'
         )
 }
 $downloadEnginePath = Join-Path $RepoRoot 'src\download.rs'
