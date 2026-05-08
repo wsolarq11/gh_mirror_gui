@@ -1649,6 +1649,100 @@ function Save-HttpRangeWithRetry {
     }
 }
 
+function Get-ReleaseAssetSizeHint {
+    param([object]$Asset)
+
+    $size = Get-ReceiptProperty -InputObject $Asset -Name 'size'
+    if ($null -eq $size) {
+        return $null
+    }
+    try {
+        return [int64]$size
+    }
+    catch {
+        return $null
+    }
+}
+
+function Get-ReleaseAssetCachePath {
+    param([object]$Asset)
+
+    $downloadUrl = [string](Get-ReceiptProperty -InputObject $Asset -Name 'browser_download_url')
+    $assetName = [string](Get-ReceiptProperty -InputObject $Asset -Name 'name')
+    if ([string]::IsNullOrWhiteSpace($downloadUrl) -or [string]::IsNullOrWhiteSpace($assetName)) {
+        return $null
+    }
+    if ($downloadUrl -notmatch '^https://github\.com/([^/]+)/([^/]+)/releases/download/([^/]+)/(.+)$') {
+        return $null
+    }
+
+    $repo = "$($Matches[1])-$($Matches[2])"
+    $tag = [Uri]::UnescapeDataString($Matches[3])
+    $size = Get-ReleaseAssetSizeHint -Asset $Asset
+    $sizePart = if ($null -ne $size -and $size -gt 0) { "size-$size" } else { 'size-unknown' }
+    $safeName = ("$repo-$tag-$sizePart-$assetName" -replace '[^A-Za-z0-9_.-]', '-')
+    return Join-Path (Join-Path $RepoRoot 'target\release-verify-cache\assets') $safeName
+}
+
+function Copy-ReleaseAssetFromCache {
+    param(
+        [object]$Asset,
+        [string]$OutFile
+    )
+
+    $cachePath = Get-ReleaseAssetCachePath -Asset $Asset
+    if ([string]::IsNullOrWhiteSpace($cachePath) -or !(Test-Path -LiteralPath $cachePath)) {
+        return $null
+    }
+
+    $expectedSize = Get-ReleaseAssetSizeHint -Asset $Asset
+    $cacheItem = Get-Item -LiteralPath $cachePath
+    if ($null -ne $expectedSize -and $expectedSize -gt 0 -and $cacheItem.Length -ne $expectedSize) {
+        Remove-Item -LiteralPath $cachePath -Force -ErrorAction SilentlyContinue
+        return $null
+    }
+
+    $outDir = Split-Path -Parent $OutFile
+    if (![string]::IsNullOrWhiteSpace($outDir)) {
+        New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+    }
+    Copy-Item -LiteralPath $cachePath -Destination $OutFile -Force
+    return [ordered]@{
+        ok = $true
+        cache_hit = $true
+        cache_path = $cachePath
+        size = $cacheItem.Length
+        sha256 = (Get-FileHash -LiteralPath $cachePath -Algorithm SHA256).Hash
+    }
+}
+
+function Save-ReleaseAssetToCache {
+    param(
+        [object]$Asset,
+        [string]$SourceFile
+    )
+
+    $cachePath = Get-ReleaseAssetCachePath -Asset $Asset
+    if ([string]::IsNullOrWhiteSpace($cachePath) -or !(Test-Path -LiteralPath $SourceFile)) {
+        return $null
+    }
+
+    $expectedSize = Get-ReleaseAssetSizeHint -Asset $Asset
+    $sourceItem = Get-Item -LiteralPath $SourceFile
+    if ($null -ne $expectedSize -and $expectedSize -gt 0 -and $sourceItem.Length -ne $expectedSize) {
+        return $null
+    }
+
+    $cacheDir = Split-Path -Parent $cachePath
+    New-Item -ItemType Directory -Force -Path $cacheDir | Out-Null
+    Copy-Item -LiteralPath $SourceFile -Destination $cachePath -Force
+    return [ordered]@{
+        cache_path = $cachePath
+        size = $sourceItem.Length
+        sha256 = (Get-FileHash -LiteralPath $cachePath -Algorithm SHA256).Hash
+    }
+}
+
 function Save-ReleaseAssetWithGhFallback {
     param(
         [object]$Asset,
@@ -1672,6 +1766,22 @@ function Save-ReleaseAssetWithGhFallback {
     $repo = "$($Matches[1])/$($Matches[2])"
     $tag = [Uri]::UnescapeDataString($Matches[3])
     $assetName = [string]$Asset.name
+    $cached = Copy-ReleaseAssetFromCache -Asset $Asset -OutFile $OutFile
+    if ($null -ne $cached) {
+        return [ordered]@{
+            ok = $true
+            transport = 'release-verify asset cache'
+            repo = $repo
+            tag = $tag
+            asset = $assetName
+            attempts = 0
+            previous_errors = @()
+            cache_hit = $true
+            cache_path = $cached.cache_path
+            cache_sha256 = $cached.sha256
+        }
+    }
+
     $outDir = Split-Path -Parent $OutFile
     if ([string]::IsNullOrWhiteSpace($outDir)) {
         $outDir = '.'
@@ -1721,6 +1831,7 @@ function Save-ReleaseAssetWithGhFallback {
     if ($downloadedPath -ne $OutFile) {
         Move-Item -LiteralPath $downloadedPath -Destination $OutFile -Force
     }
+    $cache = Save-ReleaseAssetToCache -Asset $Asset -SourceFile $OutFile
 
     return [ordered]@{
         ok = $true
@@ -1730,6 +1841,9 @@ function Save-ReleaseAssetWithGhFallback {
         asset = $assetName
         attempts = $attempt
         previous_errors = $errors
+        cache_hit = $false
+        cache_path = if ($null -ne $cache) { $cache.cache_path } else { $null }
+        cache_sha256 = if ($null -ne $cache) { $cache.sha256 } else { $null }
     }
 }
 
@@ -2195,15 +2309,24 @@ function Invoke-PostPublishSelfUpdateStage2Check {
     $publisherKeyEvidence = Save-ReleaseAsset -Asset $publisherKeyAsset -OutFile $publisherKeyPath
 
     $json = Join-Path $dir 'update-candidate-stage-selftest.json'
-    Invoke-LoggedNative `
-        -Name 'post-publish-self-update-stage2' `
-        -Exe $Exe `
-        -Arguments @(
-            '--update-candidate-stage-selftest',
-            '--json', $json,
-            '--current-version', $previous.tag_name,
-            '--trusted-publisher-key-file', $publisherKeyPath
-        )
+    $assetCacheDir = Join-Path $RepoRoot 'target\release-verify-cache\assets'
+    New-Item -ItemType Directory -Force -Path $assetCacheDir | Out-Null
+    $oldAssetCacheDir = [Environment]::GetEnvironmentVariable('GH_MIRROR_GUI_RELEASE_VERIFY_ASSET_CACHE_DIR', 'Process')
+    try {
+        [Environment]::SetEnvironmentVariable('GH_MIRROR_GUI_RELEASE_VERIFY_ASSET_CACHE_DIR', $assetCacheDir, 'Process')
+        Invoke-LoggedNative `
+            -Name 'post-publish-self-update-stage2' `
+            -Exe $Exe `
+            -Arguments @(
+                '--update-candidate-stage-selftest',
+                '--json', $json,
+                '--current-version', $previous.tag_name,
+                '--trusted-publisher-key-file', $publisherKeyPath
+            )
+    }
+    finally {
+        [Environment]::SetEnvironmentVariable('GH_MIRROR_GUI_RELEASE_VERIFY_ASSET_CACHE_DIR', $oldAssetCacheDir, 'Process')
+    }
 
     if (!(Test-Path -LiteralPath $json)) {
         throw "post-publish self-update Stage 2 stage selftest JSON missing: $json"
@@ -2275,11 +2398,8 @@ function Invoke-NetworkRangeSmoke {
         $ErrorActionPreference = 'Continue'
         try {
             $curlOutput = & $curl.Source -L --fail --silent --show-error `
-                --connect-timeout 20 `
-                --max-time 120 `
-                --retry 3 `
-                --retry-delay 2 `
-                --retry-connrefused `
+                --connect-timeout 8 `
+                --max-time 25 `
                 --range 0-65535 `
                 --user-agent 'gh_mirror_gui-release-verify' `
                 --output $OutFile `
@@ -3680,17 +3800,29 @@ if (!$SkipBenchmark) {
     $benchmarkUrl = $targetAsset.browser_download_url
     $benchmarkFallback = $null
     $benchmarkRangeServer = $null
+    $remoteBenchmarkError = $null
     try {
-        try {
-            $bench = Invoke-BenchVariant `
-                -Name 'download-latest-asset' `
-                -Url $benchmarkUrl `
-                -OutFile $benchOut `
-                -JsonFile $benchJson `
-                -ExtraArgs @('--mode', 'auto')
+        $releaseAssetCachePath = Get-ReleaseAssetCachePath -Asset $targetAsset
+        if (![string]::IsNullOrWhiteSpace($releaseAssetCachePath) -and (Test-Path -LiteralPath $releaseAssetCachePath)) {
+            $remoteBenchmarkError = "remote benchmark skipped because cached release asset seed exists: $releaseAssetCachePath"
         }
-        catch {
-            $remoteBenchmarkError = $_.Exception.Message
+        else {
+            try {
+                $bench = Invoke-BenchVariant `
+                    -Name 'download-latest-asset' `
+                    -Url $benchmarkUrl `
+                    -OutFile $benchOut `
+                    -JsonFile $benchJson `
+                    -ExtraArgs @('--mode', 'auto') `
+                    -MaxAttempts 1 `
+                    -BaseDelaySeconds 1
+            }
+            catch {
+                $remoteBenchmarkError = $_.Exception.Message
+            }
+        }
+
+        if ($null -ne $remoteBenchmarkError) {
             $fallbackSource = Join-Path $EvidenceDir ("bench-fallback-source-$($targetAsset.name)")
             $ghResult = Save-ReleaseAssetWithGhFallback -Asset $targetAsset -OutFile $fallbackSource
             $benchmarkRangeServer = Start-LocalRangeFileServer `
@@ -3714,6 +3846,8 @@ if (!$SkipBenchmark) {
                     asset = $ghResult.asset
                     attempts = $ghResult.attempts
                     previous_errors = $ghResult.previous_errors
+                    cache_hit = if ($null -ne $ghResult.cache_hit) { [bool]$ghResult.cache_hit } else { $false }
+                    cache_path = $ghResult.cache_path
                     path = $fallbackSource
                     size = (Get-Item -LiteralPath $fallbackSource).Length
                     sha256 = (Get-FileHash -LiteralPath $fallbackSource -Algorithm SHA256).Hash

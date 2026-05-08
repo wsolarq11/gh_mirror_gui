@@ -7,7 +7,7 @@ use crate::source_trust::{
 };
 use crate::verification::{VerificationReport, VerificationStatus};
 use crate::verifier_adapter::{GitHubReleaseVerifierAdapter, VerifierAdapter};
-use reqwest::blocking::Client;
+use reqwest::{blocking::Client, Url};
 use std::cmp::Ordering;
 use std::fs;
 use std::io::{Read, Write};
@@ -23,6 +23,7 @@ const SELF_UPDATE_REPO: &str = "gh_mirror_gui";
 const SELF_UPDATE_ASSET_NAME: &str = "gh_mirror_gui.exe";
 const MAX_SELF_UPDATE_CANDIDATE_BYTES: u64 = 256 * 1024 * 1024;
 const UPDATE_CANDIDATE_USER_AGENT: &str = "gh_mirror_gui-update-candidate";
+const RELEASE_VERIFY_ASSET_CACHE_DIR_ENV: &str = "GH_MIRROR_GUI_RELEASE_VERIFY_ASSET_CACHE_DIR";
 
 pub(crate) struct UpdateCandidateCheckConfig<'a> {
     pub(crate) current_version: &'a str,
@@ -885,6 +886,10 @@ fn download_release_asset_to_path(
     if let Some(parent) = output.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("Create update candidate temp dir: {e}"))?;
     }
+    if copy_release_verify_cached_asset(asset, output)? {
+        return Ok(());
+    }
+
     let token = std::env::var("GITHUB_TOKEN")
         .ok()
         .map(|value| value.trim().to_string())
@@ -953,7 +958,96 @@ fn download_release_asset_to_path(
         file.write_all(&buffer[..n])
             .map_err(|e| format!("Write update candidate temp file failed: {e}"))?;
     }
+    store_release_verify_cached_asset(asset, output)?;
     Ok(())
+}
+
+fn copy_release_verify_cached_asset(asset: &ReleaseAsset, output: &Path) -> Result<bool, String> {
+    let Some(cache_path) = release_verify_asset_cache_path(asset) else {
+        return Ok(false);
+    };
+    if !cache_path.is_file() {
+        return Ok(false);
+    }
+
+    let metadata = fs::metadata(&cache_path)
+        .map_err(|e| format!("Read release-verify asset cache metadata failed: {e}"))?;
+    if metadata.len() != asset.size {
+        let _ = fs::remove_file(&cache_path);
+        return Ok(false);
+    }
+    fs::copy(&cache_path, output).map_err(|e| {
+        format!(
+            "Copy release-verify asset cache {} to {} failed: {e}",
+            cache_path.display(),
+            output.display()
+        )
+    })?;
+    Ok(true)
+}
+
+fn store_release_verify_cached_asset(asset: &ReleaseAsset, source: &Path) -> Result<(), String> {
+    let Some(cache_path) = release_verify_asset_cache_path(asset) else {
+        return Ok(());
+    };
+    let metadata = fs::metadata(source)
+        .map_err(|e| format!("Read downloaded update candidate metadata failed: {e}"))?;
+    if metadata.len() != asset.size {
+        return Ok(());
+    }
+
+    if let Some(parent) = cache_path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("Create release-verify asset cache dir failed: {e}"))?;
+    }
+    fs::copy(source, &cache_path).map_err(|e| {
+        format!(
+            "Store release-verify asset cache {} failed: {e}",
+            cache_path.display()
+        )
+    })?;
+    Ok(())
+}
+
+fn release_verify_asset_cache_path(asset: &ReleaseAsset) -> Option<PathBuf> {
+    let root = std::env::var_os(RELEASE_VERIFY_ASSET_CACHE_DIR_ENV)?;
+    let name = release_verify_asset_cache_name(asset)?;
+    Some(PathBuf::from(root).join(name))
+}
+
+fn release_verify_asset_cache_name(asset: &ReleaseAsset) -> Option<String> {
+    let url = Url::parse(&asset.browser_download_url).ok()?;
+    if url.scheme() != "https" || url.host_str() != Some("github.com") {
+        return None;
+    }
+    let segments: Vec<_> = url.path_segments()?.collect();
+    if segments.len() < 6
+        || segments.get(2) != Some(&"releases")
+        || segments.get(3) != Some(&"download")
+    {
+        return None;
+    }
+
+    let owner = segments[0];
+    let repo = segments[1];
+    let tag = segments[4];
+    Some(sanitize_release_verify_cache_name(&format!(
+        "{owner}-{repo}-{tag}-size-{}-{}",
+        asset.size, asset.name
+    )))
+}
+
+fn sanitize_release_verify_cache_name(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-') {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect()
 }
 
 fn release_publisher_key_fingerprint(
@@ -1549,6 +1643,30 @@ mod tests {
     fn sha256_hex(bytes: &[u8]) -> String {
         let digest = Sha256::digest(bytes);
         digest.iter().map(|byte| format!("{byte:02X}")).collect()
+    }
+
+    #[test]
+    fn release_verify_asset_cache_name_is_scoped_to_github_release_assets() {
+        let asset = ReleaseAsset {
+            name: "gh_mirror_gui.exe".to_string(),
+            size: 8056832,
+            browser_download_url:
+                "https://github.com/wsolarq11/gh_mirror_gui/releases/download/v0.1.6/gh_mirror_gui.exe"
+                    .to_string(),
+            content_type: Some("application/x-msdownload".to_string()),
+            api_url: None,
+        };
+
+        assert_eq!(
+            release_verify_asset_cache_name(&asset).as_deref(),
+            Some("wsolarq11-gh_mirror_gui-v0.1.6-size-8056832-gh_mirror_gui.exe")
+        );
+
+        let loopback_asset = ReleaseAsset {
+            browser_download_url: "http://127.0.0.1:9000/gh_mirror_gui.exe".to_string(),
+            ..asset
+        };
+        assert!(release_verify_asset_cache_name(&loopback_asset).is_none());
     }
 
     fn signed_release_routes(
