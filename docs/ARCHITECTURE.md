@@ -190,6 +190,8 @@ Evidence must remain reviewable and machine-readable:
   releases, or touch secrets.
 - network smoke
 - benchmark
+- degradation summary (`checks.release_verify_degraded`) when an external
+  network/benchmark probe falls back to a deterministic local proof path
 - GUI launch smoke
 
 Passing CI is useful but not a replacement for the local receipt when a task requires full delivery evidence.

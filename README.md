@@ -205,6 +205,10 @@ The real-world *binary download + hash verification* for public releases is
 covered by `checks.post_publish_self_update_stage2`: it stages the latest
 verified `gh_mirror_gui.exe` into a local folder (no install / no exe
 replacement) and proves the staged SHA256 matches the expected signed checksum.
+If the front door has to fall back from a flaky external transport to a
+deterministic local range-server probe, the receipt and stdout surface that in
+`checks.release_verify_degraded` instead of hiding the degraded evidence path
+inside a nested benchmark record.
 
 `checks.update_candidate_contract` is a no-mutation self-update gate. It proves
 that candidate evaluation can accept only a newer trusted signed

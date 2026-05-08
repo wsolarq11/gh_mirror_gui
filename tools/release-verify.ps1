@@ -57,6 +57,82 @@ function Add-CommandResult {
     }
 }
 
+function Get-ReceiptProperty {
+    param(
+        [object]$InputObject,
+        [string]$Name
+    )
+
+    if ($null -eq $InputObject) {
+        return $null
+    }
+    if ($InputObject -is [System.Collections.IDictionary]) {
+        if ($InputObject.Contains($Name)) {
+            return $InputObject[$Name]
+        }
+        return $null
+    }
+
+    $property = $InputObject.PSObject.Properties[$Name]
+    if ($null -eq $property) {
+        return $null
+    }
+    return $property.Value
+}
+
+function Get-ReleaseVerifyDegradationSummary {
+    param(
+        [object]$Receipt
+    )
+
+    $events = @()
+    $checks = Get-ReceiptProperty -InputObject $Receipt -Name 'checks'
+
+    $networkSmoke = Get-ReceiptProperty -InputObject $checks -Name 'network_range_smoke'
+    $networkTransport = Get-ReceiptProperty -InputObject $networkSmoke -Name 'transport'
+    $networkFallbackAfter = Get-ReceiptProperty -InputObject $networkTransport -Name 'fallback_after'
+    if ($null -ne $networkFallbackAfter) {
+        $events += [ordered]@{
+            id = 'network_range_smoke_transport_fallback'
+            scope = 'network_range_smoke'
+            severity = 'warning'
+            detail = 'network range smoke used a fallback transport after the primary transport failed'
+            fallback_after = @($networkFallbackAfter)
+        }
+    }
+    if ([bool](Get-ReceiptProperty -InputObject $networkTransport -Name 'degraded_from_range_request')) {
+        $events += [ordered]@{
+            id = 'network_range_smoke_partial_content_degraded'
+            scope = 'network_range_smoke'
+            severity = 'warning'
+            detail = 'network smoke could not prove a true 206 range response and accepted a deterministic degraded download path'
+        }
+    }
+
+    $downloadBenchmark = Get-ReceiptProperty -InputObject $checks -Name 'download_benchmark'
+    $benchmarkFallback = Get-ReceiptProperty -InputObject $downloadBenchmark -Name 'release_verify_degraded_benchmark'
+    if ($null -ne $benchmarkFallback) {
+        $sourceDownload = Get-ReceiptProperty -InputObject $benchmarkFallback -Name 'source_download'
+        $events += [ordered]@{
+            id = 'download_benchmark_local_range_fallback'
+            scope = 'download_benchmark'
+            severity = 'warning'
+            detail = 'remote benchmark failed; release verification benchmark used a loopback range server seeded from the downloaded release asset'
+            degraded_from_url = Get-ReceiptProperty -InputObject $benchmarkFallback -Name 'degraded_from_url'
+            reason = Get-ReceiptProperty -InputObject $benchmarkFallback -Name 'reason'
+            source_transport = Get-ReceiptProperty -InputObject $sourceDownload -Name 'transport'
+            source_sha256 = Get-ReceiptProperty -InputObject $sourceDownload -Name 'sha256'
+        }
+    }
+
+    return [ordered]@{
+        ok = $true
+        degraded = ($events.Count -gt 0)
+        event_count = $events.Count
+        events = $events
+    }
+}
+
 function Invoke-LoggedNative {
     param(
         [string]$Name,
@@ -3617,6 +3693,7 @@ else {
     }
 }
 
+$Receipt.checks.release_verify_degraded = Get-ReleaseVerifyDegradationSummary -Receipt $Receipt
 $Receipt.completed_at = (Get-Date).ToUniversalTime().ToString('o')
 $Receipt.status = 'PASS'
 $receiptPath = Join-Path $EvidenceDir 'receipt.json'
@@ -3626,6 +3703,7 @@ $Receipt | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $receiptPath -Enc
     status = 'PASS'
     receipt = $receiptPath
     provenance = $Receipt.provenance
+    release_verify_degraded = $Receipt.checks.release_verify_degraded
     release_binary = $Receipt.artifacts.release_binary
     sha256sums = $Receipt.artifacts.sha256sums
 } | ConvertTo-Json -Depth 10
