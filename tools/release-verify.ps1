@@ -3258,14 +3258,41 @@ $Receipt.checks.trust_center_backend_contract = Assert-TrustCenterBackendContrac
 $Receipt.checks.ui_shell_thinness = Assert-UiShellThinness
 Invoke-LoggedNative -Name 'cargo-fmt-check' -Exe 'cargo' -Arguments @('fmt', '--check')
 Invoke-LoggedNative -Name 'cargo-test-all-targets' -Exe 'cargo' -Arguments @('test', '--all-targets', '--locked')
+$downloadEnginePath = Join-Path $RepoRoot 'src\download.rs'
+$downloadEngineText = Get-Content -LiteralPath $downloadEnginePath -Raw
+$downloadEngineTestMarker = '#[cfg(test)]'
+$downloadEngineTestStart = $downloadEngineText.IndexOf($downloadEngineTestMarker, [System.StringComparison]::Ordinal)
+if ($downloadEngineTestStart -lt 0) {
+    throw 'download engine test marker missing: #[cfg(test)]'
+}
+$downloadEngineProdText = $downloadEngineText.Substring(0, $downloadEngineTestStart)
+$downloadEngineProdPanicForbidden = @(
+    '.lock().unwrap()',
+    '.wait(guard).unwrap()',
+    '.lock().expect(',
+    'panic!(',
+    'todo!(',
+    'unimplemented!('
+)
+$downloadEngineProdPanicPresent = @($downloadEngineProdPanicForbidden | Where-Object {
+    $downloadEngineProdText.IndexOf($_, [System.StringComparison]::Ordinal) -ge 0
+})
+if ($downloadEngineProdPanicPresent.Count -gt 0) {
+    throw "download engine production path contains panic-prone lock/panic patterns: $($downloadEngineProdPanicPresent -join ', ')"
+}
 $Receipt.checks.download_engine_contract = [ordered]@{
     ok = $true
     retry = 'transient request send failures are retried before a direct download fails'
     resumable = 'single-download resume and ignored-range restart paths are covered'
     segmented = 'segmented range writes and resume metadata cleanup are covered'
+    panic_prone_locking = [ordered]@{
+        production_forbidden_patterns_absent = $downloadEngineProdPanicForbidden
+        covered_by = 'download_engine_lock_helper_reports_poisoned_mutex'
+    }
     covered_by = Assert-CommandLogContains `
         -CommandName 'cargo-test-all-targets' `
         -RequiredPatterns @(
+            'download_engine_lock_helper_reports_poisoned_mutex',
             'download_single_retries_transient_request_send_failure',
             'download_single_creates_new_temp_file_with_write_access',
             'download_single_restarts_when_resume_range_is_ignored',

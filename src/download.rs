@@ -5,7 +5,7 @@ use std::fs;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{mpsc, Arc, Condvar, Mutex, OnceLock};
+use std::sync::{mpsc, Arc, Condvar, Mutex, MutexGuard, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -61,6 +61,26 @@ impl DownloadControl {
     }
 }
 
+fn lock_mutex<'a, T>(mutex: &'a Mutex<T>, label: &str) -> Result<MutexGuard<'a, T>, String> {
+    mutex.lock().map_err(|_| format!("{label} lock poisoned"))
+}
+
+fn wait_condvar<'a>(
+    condvar: &Condvar,
+    guard: MutexGuard<'a, ()>,
+    label: &str,
+) -> Result<MutexGuard<'a, ()>, String> {
+    condvar
+        .wait(guard)
+        .map_err(|_| format!("{label} lock poisoned"))
+}
+
+fn push_shared_error(errors: &Arc<Mutex<Vec<String>>>, error: String) {
+    if let Ok(mut guard) = errors.lock() {
+        guard.push(error);
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct DownloadProbe {
     pub(crate) total: u64,
@@ -105,7 +125,7 @@ pub(crate) fn build_client(
 ) -> Result<Client, String> {
     static GLOBAL_CLIENT: OnceLock<Mutex<Option<CachedClient>>> = OnceLock::new();
     let cell = GLOBAL_CLIENT.get_or_init(|| Mutex::new(None));
-    let mut guard = cell.lock().unwrap();
+    let mut guard = lock_mutex(cell, "client cache")?;
     if let Some(ref cached) = *guard {
         if cached.proxy == proxy
             && cached.timeout_secs == timeout_secs
@@ -312,9 +332,9 @@ fn wait_for_download_turn(ctrl: &Arc<DownloadControl>) -> Result<(), String> {
         return Err("Cancelled".into());
     }
 
-    let mut guard = ctrl.pause_mutex.lock().unwrap();
+    let mut guard = lock_mutex(&ctrl.pause_mutex, "download pause")?;
     while ctrl.pause_flag.load(Ordering::Relaxed) && !ctrl.cancel_flag.load(Ordering::Relaxed) {
-        guard = ctrl.pause_condvar.wait(guard).unwrap();
+        guard = wait_condvar(&ctrl.pause_condvar, guard, "download pause")?;
     }
 
     if ctrl.cancel_flag.load(Ordering::Relaxed) {
@@ -331,7 +351,7 @@ fn report_progress(
     total: u64,
     start_time: Instant,
     force: bool,
-) {
+) -> Result<(), String> {
     let elapsed = start_time.elapsed().as_secs_f64();
     let speed = if elapsed > 0.0 {
         (downloaded as f64) / (elapsed * 1024.0)
@@ -339,7 +359,7 @@ fn report_progress(
         0.0
     };
 
-    let mut last_report = report_state.lock().unwrap();
+    let mut last_report = lock_mutex(report_state, "download progress")?;
     if force
         || last_report.elapsed().as_millis() >= PROGRESS_INTERVAL_MS
         || downloaded >= total && total > 0
@@ -347,6 +367,7 @@ fn report_progress(
         *last_report = Instant::now();
         let _ = progress_tx.send((downloaded, total, speed, elapsed));
     }
+    Ok(())
 }
 
 fn segment_len(segment: &SegmentState) -> u64 {
@@ -459,10 +480,8 @@ pub(crate) fn download_segmented(
     let failed = Arc::new(AtomicBool::new(false));
     let errors = Arc::new(Mutex::new(Vec::<String>::new()));
     let report_state = Arc::new(Mutex::new(Instant::now()));
-    let worker_count = config
-        .concurrency
-        .max(1)
-        .min(queue.lock().unwrap().len().max(1));
+    let queued_segments = lock_mutex(&queue, "segment queue")?.len().max(1);
+    let worker_count = config.concurrency.max(1).min(queued_segments);
 
     let mut workers = Vec::new();
     for _ in 0..worker_count {
@@ -488,8 +507,14 @@ pub(crate) fn download_segmented(
             }
 
             let segment = {
-                let mut queue = worker_queue.lock().unwrap();
-                queue.pop_front()
+                match lock_mutex(&worker_queue, "segment queue") {
+                    Ok(mut queue) => queue.pop_front(),
+                    Err(e) => {
+                        worker_failed.store(true, Ordering::Relaxed);
+                        push_shared_error(&worker_errors, e);
+                        return;
+                    }
+                }
             };
 
             let Some(segment) = segment else {
@@ -514,7 +539,14 @@ pub(crate) fn download_segmented(
                             .fetch_add(segment_len(&segment), Ordering::Relaxed)
                             + segment_len(&segment);
                         {
-                            let mut meta = worker_meta.lock().unwrap();
+                            let mut meta = match lock_mutex(&worker_meta, "segment metadata") {
+                                Ok(meta) => meta,
+                                Err(e) => {
+                                    worker_failed.store(true, Ordering::Relaxed);
+                                    push_shared_error(&worker_errors, e);
+                                    return;
+                                }
+                            };
                             if let Some(found) = meta
                                 .segments
                                 .iter_mut()
@@ -524,18 +556,22 @@ pub(crate) fn download_segmented(
                             }
                             if let Err(e) = save_segment_meta(&worker_meta_path, &meta) {
                                 worker_failed.store(true, Ordering::Relaxed);
-                                worker_errors.lock().unwrap().push(e);
+                                push_shared_error(&worker_errors, e);
                                 return;
                             }
                         }
-                        report_progress(
+                        if let Err(e) = report_progress(
                             &worker_tx,
                             &worker_report_state,
                             downloaded,
                             worker_total,
                             start_time,
                             false,
-                        );
+                        ) {
+                            worker_failed.store(true, Ordering::Relaxed);
+                            push_shared_error(&worker_errors, e);
+                            return;
+                        }
                         continue 'worker_loop;
                     }
                     Err(e) => {
@@ -549,7 +585,7 @@ pub(crate) fn download_segmented(
 
             worker_failed.store(true, Ordering::Relaxed);
             if let Some(e) = last_err {
-                worker_errors.lock().unwrap().push(e);
+                push_shared_error(&worker_errors, e);
             }
             return;
         }));
@@ -558,10 +594,7 @@ pub(crate) fn download_segmented(
     for worker in workers {
         if worker.join().is_err() {
             failed.store(true, Ordering::Relaxed);
-            errors
-                .lock()
-                .unwrap()
-                .push("Segment worker panicked".to_string());
+            push_shared_error(&errors, "Segment worker panicked".to_string());
         }
     }
 
@@ -572,7 +605,7 @@ pub(crate) fn download_segmented(
     }
 
     if failed.load(Ordering::Relaxed) {
-        let joined = errors.lock().unwrap().join("; ");
+        let joined = lock_mutex(&errors, "segment errors")?.join("; ");
         return Err(if joined.is_empty() {
             "Segmented download failed".to_string()
         } else {
@@ -601,7 +634,7 @@ pub(crate) fn download_segmented(
         probe.total,
         start_time,
         true,
-    );
+    )?;
     Ok(())
 }
 
@@ -644,7 +677,7 @@ fn download_segment(
         }
 
         {
-            let mut file = file.lock().unwrap();
+            let mut file = lock_mutex(file, "segment output file")?;
             file.seek(SeekFrom::Start(offset))
                 .map_err(|e| format!("Segment seek error: {e}"))?;
             file.write_all(&buf[..n])
@@ -769,7 +802,7 @@ pub(crate) fn download_single(
                 total,
                 start_time,
                 false,
-            );
+            )?;
         }
 
         if total > 0 && downloaded >= total {
@@ -785,7 +818,7 @@ pub(crate) fn download_single(
         total,
         start_time,
         true,
-    );
+    )?;
     Ok(())
 }
 
@@ -813,6 +846,23 @@ mod tests {
     use reqwest::blocking::Client;
     use std::net::TcpListener;
     use std::path::PathBuf;
+
+    #[test]
+    fn download_engine_lock_helper_reports_poisoned_mutex() {
+        let poisoned = Arc::new(Mutex::new(()));
+        let worker_poisoned = poisoned.clone();
+        let handle = thread::spawn(move || {
+            let _guard = worker_poisoned.lock().unwrap();
+            panic!("poison the test mutex");
+        });
+        assert!(handle.join().is_err());
+
+        let err = match lock_mutex(&poisoned, "test mutex") {
+            Ok(_) => panic!("poisoned mutex should be reported as an error"),
+            Err(err) => err,
+        };
+        assert_eq!(err, "test mutex lock poisoned");
+    }
 
     fn unique_test_path(name: &str) -> PathBuf {
         let nonce = std::time::SystemTime::now()
