@@ -2824,6 +2824,53 @@ function Assert-GoalAnchorContract {
     }
 }
 
+function Assert-PhaseMilestoneBoundary {
+    $relativeFiles = @(
+        'AGENTS.md',
+        'README.md',
+        'docs\ARCHITECTURE.md',
+        'docs\GOAL-ANCHOR.json'
+    )
+    $scanFiles = @()
+    foreach ($relativeFile in $relativeFiles) {
+        $path = Join-Path $RepoRoot $relativeFile
+        if (Test-Path -LiteralPath $path) {
+            $scanFiles += [ordered]@{ relative = $relativeFile; path = $path }
+        }
+    }
+    Get-ChildItem -LiteralPath (Join-Path $RepoRoot 'src') -Recurse -Filter '*.rs' |
+        Where-Object { -not $_.PSIsContainer } |
+        ForEach-Object {
+            $relative = $_.FullName.Substring($RepoRoot.Length).TrimStart('\', '/')
+            $scanFiles += [ordered]@{ relative = $relative; path = $_.FullName }
+        }
+
+    $pattern = '(?i)(\bphase\s*(3|4|5|6)\b|\bphase(3|4|5|6)\b)'
+    $findings = @()
+    foreach ($file in $scanFiles) {
+        $lines = @(Get-Content -LiteralPath $file.path)
+        for ($lineIndex = 0; $lineIndex -lt $lines.Count; $lineIndex++) {
+            if ($lines[$lineIndex] -match $pattern) {
+                $findings += [ordered]@{
+                    path = $file.relative
+                    line = $lineIndex + 1
+                    text = $lines[$lineIndex].Trim()
+                }
+            }
+        }
+    }
+    if ($findings.Count -gt 0) {
+        throw "numbered phase labels leaked outside roadmap milestones: $($findings | ConvertTo-Json -Compress -Depth 4)"
+    }
+
+    return [ordered]@{
+        ok = $true
+        contract = 'numbered phases are roadmap milestones only; runtime and non-roadmap anchors use ArtifactDecision/CoreRuntime mechanism names'
+        roadmap_phase_headings_allowed = 'docs\ROADMAP.md'
+        scanned = @($scanFiles | ForEach-Object { $_.relative })
+    }
+}
+
 function Assert-CoreBackendConvergence {
     $backendPath = Join-Path $RepoRoot 'src\backend_contract.rs'
     $runtimePath = Join-Path $RepoRoot 'src\core_runtime.rs'
@@ -3200,6 +3247,7 @@ $Receipt.checks.route_guardrails = [ordered]@{
     ok = $true
     goal_anchor = Assert-GoalAnchorContract
     design_doc_inventory = Assert-DesignDocInventory
+    phase_milestone_boundary = Assert-PhaseMilestoneBoundary
     core_backend_convergence = Assert-CoreBackendConvergence
     agents = Assert-FileContains `
         -RelativePath 'AGENTS.md' `
@@ -3344,6 +3392,7 @@ $Receipt.checks.artifact_decision_contract = [ordered]@{
         -CommandName 'cargo-test-all-targets' `
         -RequiredPatterns @(
             'artifact_decision_contract_formula_is_single_pipeline',
+            'artifact_decision_serialization_keeps_phase_labels_out_of_runtime_contract',
             'artifact_decision_wraps_update_candidate_as_evidence_verdict_action_plan',
             'artifact_decision_wraps_update_stage_as_next_apply_plan_intent',
             'artifact_decision_wraps_update_apply_plan_as_action_plan_surface',

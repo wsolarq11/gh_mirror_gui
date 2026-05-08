@@ -21,7 +21,7 @@ use std::sync::Arc;
 
 /// Core runtime orchestrator.
 ///
-/// This is an internal "composition point" that wires together the stable Phase 5 seams.
+/// This is an internal "composition point" that wires together stable artifact-decision seams.
 ///
 /// Long-term direction:
 /// - `backend_contract` stays a small, stable front door (DTOs + a few use-cases)
@@ -1797,7 +1797,7 @@ mod tests {
     }
 
     #[test]
-    fn core_runtime_new_wires_phase5_seams() {
+    fn core_runtime_new_wires_artifact_decision_seams() {
         let source_calls = Arc::new(Mutex::new(0usize));
         let plan_calls = Arc::new(Mutex::new(0usize));
         let verify_calls = Arc::new(Mutex::new(0usize));

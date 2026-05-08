@@ -4,7 +4,7 @@ use crate::verification::{DownloadVerificationPlan, VerificationReport};
 use reqwest::blocking::Client;
 use std::path::Path;
 
-/// Verification adapter (Phase 5: Artifact Trust Broker).
+/// Verification adapter for the Artifact Trust Broker route.
 ///
 /// Today we only ship the GitHub Release verifier, but this trait is the stable
 /// internal seam that lets us add future verification sources without rewriting

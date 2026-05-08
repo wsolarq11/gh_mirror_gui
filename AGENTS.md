@@ -19,7 +19,7 @@ Phase 只作为里程碑标签；机制统一归入上述 artifact-decision cont
 1. **Now**: trusted GitHub Release discovery / asset picker / adaptive resumable download / checksum-provenance-source-trust verification / evidence / policy.
 2. **Completed in `v0.1.3`**: signed source is real in a public release, with publisher key pinning and `.sig` assets.
 3. **Completed in `v0.1.6`**: public signed release consumption gate + no-mutation self-update candidate contract (Stage 1 check + Stage 2 staging, no install/replace), all proven by `tools\\release-verify.ps1` receipts.
-4. **Next**: auto-update MVP (still trust-first, staged, reversible) and a cleaner core/backend contract (Phase 4 convergence).
+4. **Next**: auto-update MVP (still trust-first, staged, reversible) and a cleaner core/backend contract convergence.
 5. **Later**: source/verifier/policy adapters make GitHub Release only the first adapter in an Artifact Trust Broker.
 6. **North star**: Windows Local Software Trust Root: acquisition, verification, policy, update, rollback, revocation, and audit.
 

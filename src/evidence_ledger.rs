@@ -3,7 +3,7 @@ use std::fs;
 use std::io::Write;
 use std::path::Path;
 
-/// Evidence ledger seam (Phase 5: Artifact Trust Broker / future storage backends).
+/// Evidence ledger seam for Artifact Trust Broker / future storage backends.
 ///
 /// Today we write evidence to the local filesystem (JSON + JSONL). This trait is the
 /// stable internal seam that lets us evolve toward alternative ledgers (SQLite, remote

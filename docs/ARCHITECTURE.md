@@ -33,18 +33,18 @@ UI Shell
 - `src/releases.rs`: GitHub Release discovery and asset selection helpers.
 - `src/artifact_decision.rs`: first-class decision DTOs and formula:
   `Source + Intent + Policy -> Evidence + Verdict + ActionPlan`.
-- `src/source_adapter.rs`: artifact source adapter seam (Phase 5); today it wraps GitHub Release resolution.
+- `src/source_adapter.rs`: artifact source adapter seam; today it wraps GitHub Release resolution.
 - `src/download.rs`: direct, resumable, and segmented download primitives.
 - `src/bench.rs`: headless benchmark and adaptive strategy evaluation.
 - `src/verification.rs`: checksum/provenance parsing, source selection, hash verification, and source-trust attachment.
-- `src/verifier_adapter.rs`: verification adapter seam (Phase 5); today it wraps GitHub Release checksum/provenance verification.
+- `src/verifier_adapter.rs`: verification adapter seam; today it wraps GitHub Release checksum/provenance verification.
 - `src/core_runtime.rs`: internal composition point that wires adapters behind a stable `backend_contract` front door.
 - `src/source_trust.rs`: Ed25519 detached signature verification/signing, publisher key pinning, and `source_trust` evidence.
 - `src/trust_policy.rs`: trust policy, file disposition, quarantine/delete/open-location decisions.
 - `src/trust_center.rs`: UI-framework-free Trust Center snapshot contract built from backend/core verification reports, policy snapshots, and evidence paths.
 - `src/update_candidate.rs`: no-mutation self-update candidate contract; it accepts only newer trusted signed releases and refuses same-version, unsigned, bad-signature, or missing-key candidates.
 - `src/update_apply_plan.rs`: pure staged apply/install/rollback plan DTO; it describes a reversible no-mutation plan for a staged candidate and is previewable by the UI through `backend_contract`.
-- `src/evidence_ledger.rs`: evidence ledger seam (Phase 5); today it writes JSON/JSONL evidence to the filesystem.
+- `src/evidence_ledger.rs`: evidence ledger seam; today it writes JSON/JSONL evidence to the filesystem.
 - `src/history.rs`: benchmark history and verification evidence JSON.
 - `src/gui_app.rs`: egui application state and UI orchestration. This layer should stay thin over `backend_contract` and only render backend/core DTO verdicts (Trust Center snapshot, update candidate status, evidence paths, etc.).
 - `src/main.rs`: thin Windows entrypoint that wires CLI dispatch + GUI startup and delegates UI behavior to the UI modules.

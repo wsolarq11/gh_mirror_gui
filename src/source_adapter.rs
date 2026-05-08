@@ -3,7 +3,7 @@ use crate::source_spec::SourceSpec;
 use reqwest::blocking::Client;
 use reqwest::Url;
 
-/// Artifact source adapter (Phase 5: Artifact Trust Broker).
+/// Artifact source adapter for the Artifact Trust Broker route.
 ///
 /// Today we only ship the GitHub Release adapter, but this trait is the stable
 /// internal seam that lets us add future adapters without rewriting the trust,

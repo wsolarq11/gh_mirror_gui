@@ -1,6 +1,6 @@
 use crate::releases::ReleaseQuery;
 
-/// Artifact Trust Broker source specification (Phase 5).
+/// Artifact Trust Broker source specification.
 ///
 /// Today we only support GitHub Release resolution, but the stable contract is a
 /// tagged union so future adapters can plug in without rewriting the backend

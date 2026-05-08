@@ -27,6 +27,13 @@ pipeline.
 Phases are milestone labels; mechanism belongs to the one-line artifact
 decision contract and the `ArtifactDecision` backend surface.
 
+Boundary rule: numbered Phase headings in this roadmap are schedule/milestone
+labels only. Runtime types, module comments, and non-roadmap design anchors
+should name mechanisms by `ArtifactIntent`, `ArtifactVerdict`,
+`ArtifactActionPlan`, `SourceAdapter`, `VerifierAdapter`, `EvidenceLedger`, and
+`CoreRuntime`; do not create Phase-specific runtime types or architecture
+comments.
+
 ## Non-goals
 
 - Not a mirror-list aggregator.

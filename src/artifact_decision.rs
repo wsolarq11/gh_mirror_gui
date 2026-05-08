@@ -9,6 +9,7 @@ const ARTIFACT_DECISION_SCHEMA_VERSION: u32 = 1;
 const ARTIFACT_DECISION_FORMULA: &str =
     "Source + Intent + Policy -> Evidence + Verdict + ActionPlan";
 
+/// Runtime intent names the core action, not a roadmap phase.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ArtifactIntent {
@@ -88,6 +89,7 @@ pub struct ArtifactActionPlan {
     pub steps: Vec<String>,
 }
 
+/// Single runtime decision DTO. Numbered phases stay in roadmap milestones only.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ArtifactDecision {
     pub schema_version: u32,
@@ -347,6 +349,23 @@ mod tests {
             ARTIFACT_DECISION_FORMULA,
             "Source + Intent + Policy -> Evidence + Verdict + ActionPlan"
         );
+    }
+
+    #[test]
+    fn artifact_decision_serialization_keeps_phase_labels_out_of_runtime_contract() {
+        let decision = ArtifactDecision::from_update_candidate_check(&check_report_fixture());
+        let value = serde_json::to_value(&decision)
+            .expect("artifact decision should serialize in unit tests");
+        let serialized = serde_json::to_string(&value)
+            .expect("artifact decision JSON should serialize in unit tests");
+
+        assert!(
+            !serialized.to_ascii_lowercase().contains("phase"),
+            "runtime decision JSON must not carry roadmap phase labels: {serialized}"
+        );
+        assert!(value.get("intent").is_some());
+        assert!(value.get("verdict").is_some());
+        assert!(value.get("action_plan").is_some());
     }
 
     #[test]
