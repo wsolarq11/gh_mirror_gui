@@ -2252,6 +2252,113 @@ function Invoke-UpdateApplyPlanContractSelfTest {
     return $selftest
 }
 
+function Invoke-UpdateApplyReadinessContractSelfTest {
+    param(
+        [string]$Exe,
+        [string]$JsonFile
+    )
+
+    Invoke-LoggedNative `
+        -Name 'update-apply-readiness-contract-selftest' `
+        -Exe $Exe `
+        -Arguments @(
+            '--update-apply-readiness-contract-selftest',
+            '--json', $JsonFile
+        )
+    if (!(Test-Path -LiteralPath $JsonFile)) {
+        throw "update apply readiness contract selftest JSON missing: $JsonFile"
+    }
+    $selftest = Get-Content -LiteralPath $JsonFile -Raw | ConvertFrom-Json
+    if (!$selftest.ok) {
+        throw 'update apply readiness contract selftest did not report ok=true'
+    }
+    if ([string]$selftest.module_owner -ne 'src/update_apply_readiness.rs') {
+        throw "update apply readiness module owner $($selftest.module_owner) was not src/update_apply_readiness.rs"
+    }
+    if (!$selftest.no_mutation -or !$selftest.no_live_mutation) {
+        throw 'update apply readiness contract selftest must be no-mutation and no-live-mutation'
+    }
+    if ($selftest.apply_performed -ne $false -or $selftest.install_performed -ne $false) {
+        throw 'update apply readiness contract selftest must not apply or install'
+    }
+    if (!$selftest.reversible) {
+        throw 'update apply readiness contract selftest must be reversible'
+    }
+    if (!$selftest.target_is_current_exe) {
+        throw 'update apply readiness contract selftest target was not current executable'
+    }
+    if (!$selftest.current_exe.unchanged) {
+        throw 'update apply readiness contract selftest mutated the current executable'
+    }
+    if ([string]$selftest.current_exe.before_sha256 -ne [string]$selftest.current_exe.after_sha256) {
+        throw 'update apply readiness contract selftest current executable hash changed'
+    }
+    if (!$selftest.approval_required -or [string]$selftest.status -ne 'APPROVAL_REQUIRED') {
+        throw "update apply readiness status $($selftest.status) was not APPROVAL_REQUIRED"
+    }
+    if ([string]$selftest.plan.status -ne 'PLANNED') {
+        throw "update apply readiness plan status $($selftest.plan.status) was not PLANNED"
+    }
+    if (!$selftest.plan.no_mutation -or !$selftest.plan.reversible) {
+        throw 'update apply readiness plan must be no-mutation and reversible'
+    }
+    if ([string]$selftest.plan.target_exe_path -ne [string]$selftest.current_exe.path) {
+        throw 'update apply readiness plan target did not match current executable'
+    }
+    if (!$selftest.evidence.ready) {
+        throw 'update apply readiness contract selftest did not write an evidence file'
+    }
+    $readinessEvidencePath = [string]$selftest.readiness.evidence_path
+    if ([string]::IsNullOrWhiteSpace($readinessEvidencePath) -or !(Test-Path -LiteralPath $readinessEvidencePath)) {
+        throw "update apply readiness evidence file missing: $readinessEvidencePath"
+    }
+    if (!$selftest.readiness.ok) {
+        throw 'update apply readiness evidence record did not report ok=true'
+    }
+    if ([string]$selftest.readiness.module_owner -ne 'src/update_apply_readiness.rs') {
+        throw "update apply readiness evidence module owner $($selftest.readiness.module_owner) was not src/update_apply_readiness.rs"
+    }
+    if (!$selftest.readiness.no_live_mutation) {
+        throw 'update apply readiness evidence must preserve no_live_mutation=true'
+    }
+    if ($selftest.readiness.apply_performed -ne $false -or $selftest.readiness.install_performed -ne $false) {
+        throw 'update apply readiness evidence must not apply or install'
+    }
+    if ([string]$selftest.readiness.manual_approval_state -ne 'REQUIRED') {
+        throw "update apply readiness manual approval state $($selftest.readiness.manual_approval_state) was not REQUIRED"
+    }
+    if ([string]$selftest.readiness.status -ne 'APPROVAL_REQUIRED') {
+        throw "update apply readiness evidence status $($selftest.readiness.status) was not APPROVAL_REQUIRED"
+    }
+    if ([string]$selftest.readiness.source_authenticity_status -ne 'TRUSTED_SIGNATURE') {
+        throw "update apply readiness source authenticity $($selftest.readiness.source_authenticity_status) was not TRUSTED_SIGNATURE"
+    }
+    if ([string]$selftest.readiness.source_trust_decision -ne 'TRUSTED') {
+        throw "update apply readiness source trust decision $($selftest.readiness.source_trust_decision) was not TRUSTED"
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$selftest.readiness.publisher_key_fingerprint_sha256)) {
+        throw 'update apply readiness publisher fingerprint was not recorded'
+    }
+    if ([string]$selftest.artifact_decision.intent -ne 'apply_readiness') {
+        throw "update apply readiness ArtifactDecision intent $($selftest.artifact_decision.intent) was not apply_readiness"
+    }
+    if ([string]$selftest.artifact_decision.verdict -ne 'APPROVAL_REQUIRED') {
+        throw "update apply readiness ArtifactDecision verdict $($selftest.artifact_decision.verdict) was not APPROVAL_REQUIRED"
+    }
+    if ([string]$selftest.artifact_decision.action_plan.kind -ne 'apply_readiness') {
+        throw "update apply readiness ArtifactDecision action kind $($selftest.artifact_decision.action_plan.kind) was not apply_readiness"
+    }
+    if (!$selftest.artifact_decision.action_plan.no_mutation) {
+        throw 'update apply readiness ArtifactDecision must be no-mutation'
+    }
+    $decisionSummary = ([string]$selftest.artifact_decision.action_plan.summary).ToLowerInvariant()
+    if ($decisionSummary.Contains('installed') -or $decisionSummary.Contains('applied')) {
+        throw "update apply readiness ArtifactDecision summary must not imply install/apply already happened: $decisionSummary"
+    }
+
+    return $selftest
+}
+
 
 function Invoke-UpdateApplyFixtureContractSelfTest {
     param(
@@ -3159,6 +3266,7 @@ function Assert-PhaseMilestoneBoundary {
 function Assert-CoreBackendConvergence {
     $backendPath = Join-Path $RepoRoot 'src\backend_contract.rs'
     $runtimePath = Join-Path $RepoRoot 'src\core_runtime.rs'
+    $readinessPath = Join-Path $RepoRoot 'src\update_apply_readiness.rs'
     $guiAppPath = Join-Path $RepoRoot 'src\gui_app.rs'
     $guiTrustCenterPath = Join-Path $RepoRoot 'src\gui_trust_center.rs'
     $guiCommonPath = Join-Path $RepoRoot 'src\gui_common.rs'
@@ -3167,6 +3275,9 @@ function Assert-CoreBackendConvergence {
     }
     if (!(Test-Path -LiteralPath $runtimePath)) {
         throw 'core runtime module missing: src\core_runtime.rs'
+    }
+    if (!(Test-Path -LiteralPath $readinessPath)) {
+        throw 'live apply readiness module missing: src\update_apply_readiness.rs'
     }
     if (!(Test-Path -LiteralPath $guiAppPath)) {
         throw 'GUI app module missing: src\gui_app.rs'
@@ -3258,6 +3369,9 @@ function Assert-CoreBackendConvergence {
         'pub(crate) fn current_exe_update_apply_plan_for_stage2',
         'pub(crate) fn record_update_apply_plan_evidence_for_stage2',
         'pub(crate) fn record_update_apply_plan_evidence_for_current_exe',
+        'pub(crate) fn build_update_apply_readiness_for_stage2',
+        'pub(crate) fn record_update_apply_readiness_evidence_for_stage2',
+        'pub(crate) fn record_update_apply_readiness_evidence_for_current_exe',
         'pub(crate) fn resolve_download_intent',
         'pub(crate) fn official_github_artifact_hosts',
         'pub(crate) fn default_history_path',
@@ -3293,12 +3407,14 @@ function Assert-CoreBackendConvergence {
         'pub(crate) fn run_update_candidate_latest_selftest',
         'pub(crate) fn run_update_candidate_stage_selftest',
         'pub(crate) fn run_update_apply_plan_contract_selftest',
+        'pub(crate) fn run_update_apply_readiness_contract_selftest',
         'pub(crate) fn run_update_apply_fixture_contract_selftest',
         'pub(crate) fn artifact_decision_from_update_candidate_check',
         'pub(crate) fn artifact_decision_from_update_candidate_stage',
         'pub(crate) fn artifact_decision_from_update_apply_plan',
         'pub(crate) fn artifact_decision_from_update_apply_plan_evidence',
         'pub(crate) fn artifact_decision_from_update_apply_fixture_evidence',
+        'pub(crate) fn artifact_decision_from_update_apply_readiness',
         'pub(crate) fn artifact_decision_rows',
         'pub(crate) fn artifact_decision_step_rows',
         'pub(crate) fn artifact_decision_action_path',
@@ -3329,6 +3445,10 @@ function Assert-CoreBackendConvergence {
         'pub(crate) fn update_apply_fixture_summary_rows',
         'pub(crate) fn update_apply_fixture_evidence_warning',
         'pub(crate) fn update_apply_fixture_evidence_action',
+        'pub(crate) fn update_apply_readiness_summary_rows',
+        'pub(crate) fn update_apply_readiness_step_rows',
+        'pub(crate) fn update_apply_readiness_evidence_warning',
+        'pub(crate) fn update_apply_readiness_evidence_action',
         'pub(crate) fn resolve_release_context_for_download_best_effort',
         'pub(crate) fn trust_center_snapshot',
         'pub(crate) fn run_download_contract',
@@ -3699,6 +3819,10 @@ $Receipt.checks.artifact_decision_contract = [ordered]@{
             'artifact_decision_wraps_update_candidate_as_evidence_verdict_action_plan',
             'artifact_decision_wraps_update_stage_as_next_apply_plan_intent',
             'artifact_decision_wraps_update_apply_plan_as_action_plan_surface',
+            'artifact_decision_wraps_apply_readiness_as_not_installed',
+            'artifact_decision_refuses_untrusted_readiness',
+            'artifact_decision_requires_approval_for_ready_live_apply',
+            'artifact_decision_reports_unknown_readiness_without_trust_escalation',
             'artifact_decision_wraps_update_apply_fixture_as_evidence_verdict_action_plan',
             'artifact_decision_wraps_update_apply_fixture_refusal_without_action_path',
             'artifact_decision_wraps_update_apply_fixture_rollback_failed_as_risk',
@@ -3849,6 +3973,13 @@ $Receipt.checks.update_candidate_unit_tests = [ordered]@{
             'latest_update_stage_stages_newer_signed_candidate_to_local_directory',
             'update_apply_plan_refuses_non_staged_report',
             'update_apply_plan_builds_reversible_steps_without_mutation',
+            'update_apply_readiness_refuses_non_staged_report',
+            'update_apply_readiness_builds_reversible_preflight_without_mutation',
+            'update_apply_readiness_refuses_untrusted_source_before_live_boundary',
+            'update_apply_readiness_reports_unknown_when_backup_boundary_cannot_be_proven_side_effect_free',
+            'update_apply_readiness_refuses_stale_staged_sha_before_live_boundary',
+            'update_apply_readiness_requires_manual_approval_before_live_apply',
+            'update_apply_readiness_selftest_preserves_current_exe_without_apply',
             'fixture_apply_refuses_unstaged_report',
             'fixture_apply_refuses_missing_stage_asset',
             'fixture_apply_refuses_missing_expected_sha256',
@@ -3928,6 +4059,9 @@ $Receipt.checks.update_candidate_contract = Invoke-UpdateCandidateContractSelfTe
 $Receipt.checks.update_apply_plan_contract = Invoke-UpdateApplyPlanContractSelfTest `
     -Exe $exe `
     -JsonFile (Join-Path $EvidenceDir 'update-apply-plan-contract.json')
+$Receipt.checks.update_apply_readiness_contract = Invoke-UpdateApplyReadinessContractSelfTest `
+    -Exe $exe `
+    -JsonFile (Join-Path $EvidenceDir 'update-apply-readiness-contract.json')
 $Receipt.checks.update_apply_fixture_contract = Invoke-UpdateApplyFixtureContractSelfTest `
     -Exe $exe `
     -JsonFile (Join-Path $EvidenceDir 'update-apply-fixture-contract.json')

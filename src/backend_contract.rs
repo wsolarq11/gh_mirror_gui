@@ -25,6 +25,9 @@ pub use crate::update_apply_plan::{
     UpdateApplyFixtureEvidenceRecord, UpdateApplyFixtureStatus, UpdateApplyPlan,
     UpdateApplyPlanEvidenceRecord, UpdateApplyPlanStatus, UpdateApplyStep,
 };
+pub use crate::update_apply_readiness::{
+    ManualApprovalState, UpdateApplyReadinessRecord, UpdateApplyReadinessStatus,
+};
 pub use crate::update_candidate::{UpdateCandidateCheckReport, UpdateCandidateStageReport};
 
 pub type DownloadProgressMessage = (u64, u64, f64, f64);
@@ -445,6 +448,10 @@ pub fn run_update_apply_plan_contract_selftest(args: &[String]) -> Result<(), St
     CoreRuntime::default().run_update_apply_plan_contract_selftest(args)
 }
 
+pub fn run_update_apply_readiness_contract_selftest(args: &[String]) -> Result<(), String> {
+    CoreRuntime::default().run_update_apply_readiness_contract_selftest(args)
+}
+
 pub fn run_update_apply_fixture_contract_selftest(args: &[String]) -> Result<(), String> {
     CoreRuntime::default().run_update_apply_fixture_contract_selftest(args)
 }
@@ -479,6 +486,12 @@ pub fn artifact_decision_from_update_apply_fixture_evidence(
     evidence: &UpdateApplyFixtureEvidenceRecord,
 ) -> ArtifactDecision {
     CoreRuntime::default().artifact_decision_from_update_apply_fixture_evidence(evidence)
+}
+
+pub fn artifact_decision_from_update_apply_readiness(
+    record: &UpdateApplyReadinessRecord,
+) -> ArtifactDecision {
+    CoreRuntime::default().artifact_decision_from_update_apply_readiness(record)
 }
 
 pub fn artifact_decision_rows(decision: &ArtifactDecision) -> Vec<BackendDisplayRow> {
@@ -625,6 +638,34 @@ pub fn update_apply_fixture_evidence_action(
 ) -> Option<BackendPathAction> {
     CoreRuntime::default()
         .update_apply_fixture_evidence_action(record)
+        .map(backend_path_action_from_core)
+}
+
+pub fn update_apply_readiness_summary_rows(
+    record: &UpdateApplyReadinessRecord,
+) -> Vec<BackendDisplayRow> {
+    CoreRuntime::default()
+        .update_apply_readiness_summary_rows(record)
+        .into_iter()
+        .map(backend_display_row_from_core)
+        .collect()
+}
+
+pub fn update_apply_readiness_step_rows(record: &UpdateApplyReadinessRecord) -> Vec<String> {
+    CoreRuntime::default().update_apply_readiness_step_rows(record)
+}
+
+pub fn update_apply_readiness_evidence_warning(
+    record: &UpdateApplyReadinessRecord,
+) -> Option<String> {
+    CoreRuntime::default().update_apply_readiness_evidence_warning(record)
+}
+
+pub fn update_apply_readiness_evidence_action(
+    record: &UpdateApplyReadinessRecord,
+) -> Option<BackendPathAction> {
+    CoreRuntime::default()
+        .update_apply_readiness_evidence_action(record)
         .map(backend_path_action_from_core)
 }
 
@@ -1084,6 +1125,73 @@ mod tests {
             })
         );
 
+        let readiness_record = UpdateApplyReadinessRecord {
+            schema_version: 1,
+            ok: true,
+            module_owner: "src/update_apply_readiness.rs".to_string(),
+            no_live_mutation: true,
+            apply_performed: false,
+            install_performed: false,
+            status: UpdateApplyReadinessStatus::ApprovalRequired,
+            reason: "live apply readiness proven but manual approval is required before execution (no live mutation)".to_string(),
+            repo: "owner/repo".to_string(),
+            release_tag: "v1.2.3".to_string(),
+            stage_dir: Some("stage".to_string()),
+            stage_evidence_path: Some("stage-evidence.json".to_string()),
+            stage_status: "Staged".to_string(),
+            staged_asset_path: Some("stage/gh_mirror_gui.exe".to_string()),
+            expected_sha256: Some("abc".to_string()),
+            staged_sha256: Some("abc".to_string()),
+            verification_status: Some("VERIFIED".to_string()),
+            source_authenticity_status: Some("TRUSTED_SIGNATURE".to_string()),
+            source_trust_decision: Some("TRUSTED".to_string()),
+            publisher_key_fingerprint_sha256: Some("FINGERPRINT".to_string()),
+            target_current_exe_path: Some("current.exe".to_string()),
+            target_canonical_path: Some("current.exe".to_string()),
+            staged_asset_canonical_path: Some("stage/gh_mirror_gui.exe".to_string()),
+            backup_destination_path: Some("stage/current.exe.bak-readiness".to_string()),
+            backup_boundary_path: Some("stage".to_string()),
+            rollback_plan: vec!["restore backup".to_string()],
+            manual_approval_state: ManualApprovalState::Required,
+            refusal_reasons: vec![],
+            evidence_path: Some("stage/update-apply-readiness.json".to_string()),
+            write_error: Some("readiness write failed".to_string()),
+            plan: plan.clone(),
+        };
+        let readiness_decision = artifact_decision_from_update_apply_readiness(&readiness_record);
+        assert_eq!(
+            readiness_decision.verdict,
+            ArtifactVerdict::ApprovalRequired
+        );
+        let readiness_rows = update_apply_readiness_summary_rows(&readiness_record);
+        assert!(readiness_rows.contains(&BackendDisplayRow {
+            label: "No live mutation",
+            value: "true".to_string()
+        }));
+        assert!(readiness_rows.contains(&BackendDisplayRow {
+            label: "Apply performed",
+            value: "false".to_string()
+        }));
+        assert_eq!(
+            update_apply_readiness_step_rows(&readiness_record),
+            vec!["1: Backup current executable current.exe -> current.exe.bak".to_string()]
+        );
+        assert_eq!(
+            update_apply_readiness_evidence_warning(&readiness_record),
+            Some("Evidence write warning: readiness write failed".to_string())
+        );
+        assert_eq!(
+            update_apply_readiness_evidence_action(&readiness_record),
+            Some(BackendPathAction {
+                label: "📄 Open live apply readiness evidence",
+                path: "stage/update-apply-readiness.json".to_string(),
+                missing_message:
+                    "Live apply readiness evidence path is recorded but not present on disk."
+                        .to_string(),
+                kind: BackendPathActionKind::File
+            })
+        );
+
         let current_exe_plan = current_exe_update_apply_plan_for_stage2(&stage)
             .expect("current executable should be available in tests");
         assert_eq!(current_exe_plan.status, UpdateApplyPlanStatus::Planned);
@@ -1325,6 +1433,40 @@ pub fn record_update_apply_plan_evidence_for_current_exe(
     stage_report: &UpdateCandidateStageReport,
 ) -> Result<UpdateApplyPlanEvidenceRecord, String> {
     CoreRuntime::default().record_update_apply_plan_evidence_for_current_exe(stage_report)
+}
+
+pub fn build_update_apply_readiness_for_stage2(
+    stage_report: &UpdateCandidateStageReport,
+    target_exe_path: &Path,
+    backup_boundary_dir: Option<&Path>,
+    manual_approval_state: ManualApprovalState,
+) -> UpdateApplyReadinessRecord {
+    CoreRuntime::default().build_update_apply_readiness_for_stage2(
+        stage_report,
+        target_exe_path,
+        backup_boundary_dir,
+        manual_approval_state,
+    )
+}
+
+pub fn record_update_apply_readiness_evidence_for_stage2(
+    stage_report: &UpdateCandidateStageReport,
+    target_exe_path: &Path,
+    backup_boundary_dir: Option<&Path>,
+    manual_approval_state: ManualApprovalState,
+) -> UpdateApplyReadinessRecord {
+    CoreRuntime::default().record_update_apply_readiness_evidence_for_stage2(
+        stage_report,
+        target_exe_path,
+        backup_boundary_dir,
+        manual_approval_state,
+    )
+}
+
+pub fn record_update_apply_readiness_evidence_for_current_exe(
+    stage_report: &UpdateCandidateStageReport,
+) -> Result<UpdateApplyReadinessRecord, String> {
+    CoreRuntime::default().record_update_apply_readiness_evidence_for_current_exe(stage_report)
 }
 
 pub fn apply_update_fixture_for_stage2(

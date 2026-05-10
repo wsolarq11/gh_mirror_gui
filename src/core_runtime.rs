@@ -12,6 +12,7 @@ use crate::trust_policy::{AppliedFileDisposition, PlannedFileDisposition, TrustP
 use crate::update_apply_plan::{
     UpdateApplyFixtureEvidenceRecord, UpdateApplyPlan, UpdateApplyPlanEvidenceRecord,
 };
+use crate::update_apply_readiness::{ManualApprovalState, UpdateApplyReadinessRecord};
 use crate::update_candidate::{UpdateCandidateCheckReport, UpdateCandidateStageReport};
 use crate::verification::{DownloadVerificationPlan, VerificationReport};
 use crate::verifier_adapter::{GitHubReleaseVerifierAdapter, VerifierAdapter};
@@ -854,6 +855,13 @@ impl CoreRuntime {
         crate::update_apply_plan::run_update_apply_plan_contract_selftest(args)
     }
 
+    pub(crate) fn run_update_apply_readiness_contract_selftest(
+        &self,
+        args: &[String],
+    ) -> Result<(), String> {
+        crate::update_apply_readiness::run_update_apply_readiness_contract_selftest(args)
+    }
+
     pub(crate) fn run_update_apply_fixture_contract_selftest(
         &self,
         args: &[String],
@@ -899,6 +907,13 @@ impl CoreRuntime {
         evidence: &UpdateApplyFixtureEvidenceRecord,
     ) -> ArtifactDecision {
         ArtifactDecision::from_update_apply_fixture_evidence(evidence)
+    }
+
+    pub(crate) fn artifact_decision_from_update_apply_readiness(
+        &self,
+        record: &UpdateApplyReadinessRecord,
+    ) -> ArtifactDecision {
+        ArtifactDecision::from_update_apply_readiness(record)
     }
 
     pub(crate) fn artifact_decision_rows(
@@ -1331,6 +1346,81 @@ impl CoreRuntime {
                 "📄 Open fixture apply evidence",
                 path.clone(),
                 "Fixture apply evidence path is recorded but not present on disk.",
+            )
+        })
+    }
+
+    pub(crate) fn update_apply_readiness_summary_rows(
+        &self,
+        record: &UpdateApplyReadinessRecord,
+    ) -> Vec<CoreDisplayRow> {
+        vec![
+            CoreDisplayRow::new("Status", format!("{:?}", record.status).to_lowercase()),
+            CoreDisplayRow::new("Reason", record.reason.clone()),
+            CoreDisplayRow::new(
+                "Release",
+                format!("{} @ {}", record.repo, record.release_tag),
+            ),
+            CoreDisplayRow::new(
+                "Target exe",
+                record
+                    .target_current_exe_path
+                    .as_deref()
+                    .unwrap_or("not recorded"),
+            ),
+            CoreDisplayRow::new(
+                "Backup destination",
+                record
+                    .backup_destination_path
+                    .as_deref()
+                    .unwrap_or("not recorded"),
+            ),
+            CoreDisplayRow::new(
+                "Manual approval",
+                format!("{:?}", record.manual_approval_state).to_lowercase(),
+            ),
+            CoreDisplayRow::new("No live mutation", record.no_live_mutation.to_string()),
+            CoreDisplayRow::new("Apply performed", record.apply_performed.to_string()),
+            CoreDisplayRow::new("Install performed", record.install_performed.to_string()),
+            CoreDisplayRow::new(
+                "Evidence path",
+                record.evidence_path.as_deref().unwrap_or("not recorded"),
+            ),
+        ]
+    }
+
+    pub(crate) fn update_apply_readiness_step_rows(
+        &self,
+        record: &UpdateApplyReadinessRecord,
+    ) -> Vec<String> {
+        record
+            .plan
+            .steps
+            .iter()
+            .enumerate()
+            .map(|(idx, step)| format!("{}: {}", idx + 1, self.describe_update_apply_step(step)))
+            .collect()
+    }
+
+    pub(crate) fn update_apply_readiness_evidence_warning(
+        &self,
+        record: &UpdateApplyReadinessRecord,
+    ) -> Option<String> {
+        record
+            .write_error
+            .as_deref()
+            .map(|error| format!("Evidence write warning: {error}"))
+    }
+
+    pub(crate) fn update_apply_readiness_evidence_action(
+        &self,
+        record: &UpdateApplyReadinessRecord,
+    ) -> Option<CorePathAction> {
+        record.evidence_path.as_ref().map(|path| {
+            CorePathAction::file(
+                "📄 Open live apply readiness evidence",
+                path.clone(),
+                "Live apply readiness evidence path is recorded but not present on disk.",
             )
         })
     }
@@ -1802,6 +1892,50 @@ impl CoreRuntime {
         let target_exe_path = std::env::current_exe()
             .map_err(|e| format!("current executable path unavailable: {e}"))?;
         Ok(self.record_update_apply_plan_evidence_for_stage2(stage_report, &target_exe_path))
+    }
+
+    pub(crate) fn build_update_apply_readiness_for_stage2(
+        &self,
+        stage_report: &UpdateCandidateStageReport,
+        target_exe_path: &Path,
+        backup_boundary_dir: Option<&Path>,
+        manual_approval_state: ManualApprovalState,
+    ) -> UpdateApplyReadinessRecord {
+        crate::update_apply_readiness::build_update_apply_readiness(
+            stage_report,
+            target_exe_path,
+            backup_boundary_dir,
+            manual_approval_state,
+        )
+    }
+
+    pub(crate) fn record_update_apply_readiness_evidence_for_stage2(
+        &self,
+        stage_report: &UpdateCandidateStageReport,
+        target_exe_path: &Path,
+        backup_boundary_dir: Option<&Path>,
+        manual_approval_state: ManualApprovalState,
+    ) -> UpdateApplyReadinessRecord {
+        crate::update_apply_readiness::write_update_apply_readiness_evidence_for_stage2(
+            stage_report,
+            target_exe_path,
+            backup_boundary_dir,
+            manual_approval_state,
+        )
+    }
+
+    pub(crate) fn record_update_apply_readiness_evidence_for_current_exe(
+        &self,
+        stage_report: &UpdateCandidateStageReport,
+    ) -> Result<UpdateApplyReadinessRecord, String> {
+        let target_exe_path = std::env::current_exe()
+            .map_err(|e| format!("current executable path unavailable: {e}"))?;
+        Ok(self.record_update_apply_readiness_evidence_for_stage2(
+            stage_report,
+            &target_exe_path,
+            None,
+            ManualApprovalState::Required,
+        ))
     }
 
     pub(crate) fn apply_update_fixture_for_stage2(

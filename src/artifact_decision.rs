@@ -2,6 +2,7 @@ use crate::update_apply_plan::{
     UpdateApplyFixtureEvidenceRecord, UpdateApplyFixtureStatus, UpdateApplyPlan,
     UpdateApplyPlanStatus, UpdateApplyStep,
 };
+use crate::update_apply_readiness::{UpdateApplyReadinessRecord, UpdateApplyReadinessStatus};
 use crate::update_candidate::{
     UpdateCandidateCheckReport, UpdateCandidateStageReport, UpdateCandidateStageStatus,
     UpdateCandidateStatus,
@@ -20,6 +21,7 @@ pub enum ArtifactIntent {
     CheckUpdate,
     StageUpdate,
     PlanApply,
+    ApplyReadiness,
     AuditOnly,
 }
 
@@ -33,6 +35,10 @@ pub enum ArtifactVerdict {
     Staged,
     NoUpdate,
     Planned,
+    Ready,
+    ApprovalRequired,
+    Unknown,
+    Blocked,
     Refused,
 }
 
@@ -46,6 +52,7 @@ pub enum ArtifactActionKind {
     Download,
     Stage,
     PlanApply,
+    ApplyReadiness,
     AuditOnly,
 }
 
@@ -339,6 +346,109 @@ impl ArtifactDecision {
             },
         )
     }
+
+    pub fn from_update_apply_readiness(record: &UpdateApplyReadinessRecord) -> Self {
+        let trusted_readiness = update_apply_readiness_trusted(record);
+        let verdict = match record.status {
+            UpdateApplyReadinessStatus::ReadyForManualApply if trusted_readiness => {
+                ArtifactVerdict::Ready
+            }
+            UpdateApplyReadinessStatus::ApprovalRequired if trusted_readiness => {
+                ArtifactVerdict::ApprovalRequired
+            }
+            UpdateApplyReadinessStatus::Unknown => ArtifactVerdict::Unknown,
+            UpdateApplyReadinessStatus::Blocked => ArtifactVerdict::Blocked,
+            UpdateApplyReadinessStatus::Refused
+            | UpdateApplyReadinessStatus::StaleStage
+            | UpdateApplyReadinessStatus::ReadyForManualApply
+            | UpdateApplyReadinessStatus::ApprovalRequired => ArtifactVerdict::Refused,
+        };
+        let action_kind = match verdict {
+            ArtifactVerdict::Ready | ArtifactVerdict::ApprovalRequired => {
+                ArtifactActionKind::ApplyReadiness
+            }
+            ArtifactVerdict::Unknown | ArtifactVerdict::Blocked => ArtifactActionKind::AuditOnly,
+            _ => ArtifactActionKind::None,
+        };
+        let mut steps: Vec<String> = record
+            .plan
+            .steps
+            .iter()
+            .map(describe_update_apply_step)
+            .collect();
+        steps.push(format!(
+            "live apply readiness result: {} (no_live_mutation={}, apply_performed={}, install_performed={})",
+            record.reason, record.no_live_mutation, record.apply_performed, record.install_performed
+        ));
+
+        Self::new(
+            ArtifactIntent::ApplyReadiness,
+            ArtifactCandidate {
+                source: record.repo.clone(),
+                artifact_name: record
+                    .staged_asset_path
+                    .as_deref()
+                    .and_then(|path| Path::new(path).file_name())
+                    .map(|name| name.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "unknown".to_string()),
+                version_or_tag: Some(record.release_tag.clone()),
+                uri: record.staged_asset_path.clone(),
+            },
+            ArtifactEvidenceSummary {
+                evidence_path: record.evidence_path.clone(),
+                hash_status: record.verification_status.clone(),
+                source_authenticity: record.source_authenticity_status.clone(),
+                publisher_key_fingerprint_sha256: record.publisher_key_fingerprint_sha256.clone(),
+                policy_verdict: record
+                    .source_trust_decision
+                    .clone()
+                    .or_else(|| Some(readiness_status_label(record.status).to_string())),
+            },
+            verdict,
+            ArtifactActionPlan {
+                kind: action_kind,
+                status: readiness_status_label(record.status).to_string(),
+                summary: record.reason.clone(),
+                reversible: record.plan.reversible,
+                no_mutation: record.plan.no_mutation
+                    && record.no_live_mutation
+                    && !record.apply_performed
+                    && !record.install_performed,
+                path_action: None,
+                steps,
+            },
+        )
+    }
+}
+
+fn update_apply_readiness_trusted(record: &UpdateApplyReadinessRecord) -> bool {
+    record.ok
+        && record.no_live_mutation
+        && !record.apply_performed
+        && !record.install_performed
+        && record.plan.no_mutation
+        && record.plan.reversible
+        && record
+            .verification_status
+            .as_deref()
+            .map(|status| status.eq_ignore_ascii_case("VERIFIED"))
+            .unwrap_or(false)
+        && record
+            .source_authenticity_status
+            .as_deref()
+            .map(|status| status.eq_ignore_ascii_case("TRUSTED_SIGNATURE"))
+            .unwrap_or(false)
+        && record
+            .source_trust_decision
+            .as_deref()
+            .map(|decision| decision.eq_ignore_ascii_case("TRUSTED"))
+            .unwrap_or(false)
+        && record
+            .publisher_key_fingerprint_sha256
+            .as_deref()
+            .map(str::trim)
+            .map(|fingerprint| !fingerprint.is_empty())
+            .unwrap_or(false)
 }
 
 fn fixture_apply_trusted(record: &UpdateApplyFixtureEvidenceRecord) -> bool {
@@ -385,6 +495,17 @@ fn fixture_status_label(status: UpdateApplyFixtureStatus) -> &'static str {
     }
 }
 
+fn readiness_status_label(status: UpdateApplyReadinessStatus) -> &'static str {
+    match status {
+        UpdateApplyReadinessStatus::Refused => "refused",
+        UpdateApplyReadinessStatus::ReadyForManualApply => "ready-for-manual-apply",
+        UpdateApplyReadinessStatus::Blocked => "blocked",
+        UpdateApplyReadinessStatus::Unknown => "unknown",
+        UpdateApplyReadinessStatus::StaleStage => "stale-stage",
+        UpdateApplyReadinessStatus::ApprovalRequired => "approval-required",
+    }
+}
+
 fn stage_status_label(status: UpdateCandidateStageStatus) -> &'static str {
     match status {
         UpdateCandidateStageStatus::Staged => "staged",
@@ -423,6 +544,10 @@ mod tests {
         UpdateApplyFixtureEvidenceRecord, UpdateApplyFixtureStatus, UpdateApplyPlan,
         UpdateApplyPlanStatus, UpdateApplyStep,
     };
+    use crate::update_apply_readiness::{
+        ManualApprovalState, UpdateApplyReadinessRecord, UpdateApplyReadinessStatus,
+        UPDATE_APPLY_READINESS_MODULE_OWNER,
+    };
     use crate::update_candidate::{
         UpdateCandidateCheckReport, UpdateCandidateEvaluation, UpdateCandidateStageReport,
         UpdateCandidateStageStatus, UpdateCandidateStatus,
@@ -456,6 +581,88 @@ mod tests {
                 no_mutation: true,
             },
             evidence_write_error: None,
+        }
+    }
+
+    fn readiness_record_fixture(status: UpdateApplyReadinessStatus) -> UpdateApplyReadinessRecord {
+        let plan_status = match status {
+            UpdateApplyReadinessStatus::ReadyForManualApply
+            | UpdateApplyReadinessStatus::ApprovalRequired => UpdateApplyPlanStatus::Planned,
+            _ => UpdateApplyPlanStatus::Refused,
+        };
+        let plan = UpdateApplyPlan {
+            schema_version: 1,
+            status: plan_status,
+            reason: "live apply readiness proven but manual approval is required before execution (no live mutation)".to_string(),
+            repo: "owner/repo".to_string(),
+            release_tag: "v1.2.3".to_string(),
+            stage_dir: Some("stage".to_string()),
+            staged_asset_path: Some("stage/gh_mirror_gui.exe".to_string()),
+            expected_sha256: Some("abc".to_string()),
+            target_exe_path: Some("current/gh_mirror_gui.exe".to_string()),
+            backup_exe_path: Some("stage/gh_mirror_gui.exe.bak-readiness".to_string()),
+            reversible: matches!(
+                status,
+                UpdateApplyReadinessStatus::ReadyForManualApply
+                    | UpdateApplyReadinessStatus::ApprovalRequired
+            ),
+            no_mutation: true,
+            steps: vec![UpdateApplyStep::BackupCurrentExecutable {
+                from: "current/gh_mirror_gui.exe".to_string(),
+                to: "stage/gh_mirror_gui.exe.bak-readiness".to_string(),
+            }],
+        };
+
+        UpdateApplyReadinessRecord {
+            schema_version: 1,
+            ok: matches!(
+                status,
+                UpdateApplyReadinessStatus::ReadyForManualApply
+                    | UpdateApplyReadinessStatus::ApprovalRequired
+            ),
+            module_owner: UPDATE_APPLY_READINESS_MODULE_OWNER.to_string(),
+            no_live_mutation: true,
+            apply_performed: false,
+            install_performed: false,
+            status,
+            reason: match status {
+                UpdateApplyReadinessStatus::Unknown => {
+                    "backup readiness cannot be proven side-effect-free".to_string()
+                }
+                UpdateApplyReadinessStatus::Refused | UpdateApplyReadinessStatus::StaleStage => {
+                    "live apply readiness refused before mutation".to_string()
+                }
+                _ => "live apply readiness proven but manual approval is required before execution (no live mutation)".to_string(),
+            },
+            repo: "owner/repo".to_string(),
+            release_tag: "v1.2.3".to_string(),
+            stage_dir: Some("stage".to_string()),
+            stage_evidence_path: Some("stage/update-candidate-stage.json".to_string()),
+            stage_status: "Staged".to_string(),
+            staged_asset_path: Some("stage/gh_mirror_gui.exe".to_string()),
+            expected_sha256: Some("abc".to_string()),
+            staged_sha256: Some("abc".to_string()),
+            verification_status: Some("VERIFIED".to_string()),
+            source_authenticity_status: Some("TRUSTED_SIGNATURE".to_string()),
+            source_trust_decision: Some("TRUSTED".to_string()),
+            publisher_key_fingerprint_sha256: Some("FINGERPRINT".to_string()),
+            target_current_exe_path: Some("current/gh_mirror_gui.exe".to_string()),
+            target_canonical_path: Some("current/gh_mirror_gui.exe".to_string()),
+            staged_asset_canonical_path: Some("stage/gh_mirror_gui.exe".to_string()),
+            backup_destination_path: Some("stage/gh_mirror_gui.exe.bak-readiness".to_string()),
+            backup_boundary_path: Some("stage".to_string()),
+            rollback_plan: vec![
+                "restore stage/gh_mirror_gui.exe.bak-readiness to current/gh_mirror_gui.exe"
+                    .to_string(),
+            ],
+            manual_approval_state: match status {
+                UpdateApplyReadinessStatus::ReadyForManualApply => ManualApprovalState::Granted,
+                _ => ManualApprovalState::Required,
+            },
+            refusal_reasons: Vec::new(),
+            evidence_path: Some("stage/update-apply-readiness.json".to_string()),
+            write_error: None,
+            plan,
         }
     }
 
@@ -593,6 +800,80 @@ mod tests {
             Some("plan-evidence.json")
         );
         assert!(decision.action_plan.steps[0].contains("verify staged candidate sha256"));
+    }
+
+    #[test]
+    fn artifact_decision_wraps_apply_readiness_as_not_installed() {
+        let record = readiness_record_fixture(UpdateApplyReadinessStatus::ApprovalRequired);
+        let decision = ArtifactDecision::from_update_apply_readiness(&record);
+
+        assert_eq!(decision.intent, ArtifactIntent::ApplyReadiness);
+        assert_eq!(decision.verdict, ArtifactVerdict::ApprovalRequired);
+        assert_eq!(
+            decision.action_plan.kind,
+            ArtifactActionKind::ApplyReadiness
+        );
+        assert!(decision.action_plan.no_mutation);
+        assert_eq!(
+            decision.evidence.source_authenticity.as_deref(),
+            Some("TRUSTED_SIGNATURE")
+        );
+        assert_eq!(decision.evidence.policy_verdict.as_deref(), Some("TRUSTED"));
+        assert!(
+            !decision
+                .action_plan
+                .summary
+                .to_ascii_lowercase()
+                .contains("installed"),
+            "readiness summary must not imply installation"
+        );
+        assert!(
+            !decision
+                .action_plan
+                .summary
+                .to_ascii_lowercase()
+                .contains("applied"),
+            "readiness summary must not imply apply already happened"
+        );
+    }
+
+    #[test]
+    fn artifact_decision_refuses_untrusted_readiness() {
+        let mut record = readiness_record_fixture(UpdateApplyReadinessStatus::ApprovalRequired);
+        record.source_trust_decision = Some("BLOCK".to_string());
+        let decision = ArtifactDecision::from_update_apply_readiness(&record);
+
+        assert_eq!(decision.intent, ArtifactIntent::ApplyReadiness);
+        assert_eq!(decision.verdict, ArtifactVerdict::Refused);
+        assert_eq!(decision.action_plan.kind, ArtifactActionKind::None);
+        assert!(decision.action_plan.no_mutation);
+    }
+
+    #[test]
+    fn artifact_decision_requires_approval_for_ready_live_apply() {
+        let record = readiness_record_fixture(UpdateApplyReadinessStatus::ApprovalRequired);
+        let decision = ArtifactDecision::from_update_apply_readiness(&record);
+
+        assert_eq!(decision.verdict, ArtifactVerdict::ApprovalRequired);
+        assert_eq!(decision.action_plan.status, "approval-required");
+        assert_eq!(
+            decision.action_plan.kind,
+            ArtifactActionKind::ApplyReadiness
+        );
+        assert!(decision.action_plan.reversible);
+        assert!(decision.action_plan.no_mutation);
+    }
+
+    #[test]
+    fn artifact_decision_reports_unknown_readiness_without_trust_escalation() {
+        let record = readiness_record_fixture(UpdateApplyReadinessStatus::Unknown);
+        let decision = ArtifactDecision::from_update_apply_readiness(&record);
+
+        assert_eq!(decision.intent, ArtifactIntent::ApplyReadiness);
+        assert_eq!(decision.verdict, ArtifactVerdict::Unknown);
+        assert_eq!(decision.action_plan.kind, ArtifactActionKind::AuditOnly);
+        assert!(decision.action_plan.no_mutation);
+        assert!(!decision.action_plan.reversible);
     }
 
     #[test]

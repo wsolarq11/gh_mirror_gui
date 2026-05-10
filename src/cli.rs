@@ -407,6 +407,14 @@ pub(crate) fn dispatch_cli(args: &[String]) -> bool {
         return true;
     }
 
+    if args.first().map(|s| s.as_str()) == Some("--update-apply-readiness-contract-selftest") {
+        if let Err(e) = backend_contract::run_update_apply_readiness_contract_selftest(&args[1..]) {
+            eprintln!("update apply readiness contract selftest failed: {e}");
+            std::process::exit(2);
+        }
+        return true;
+    }
+
     if args.first().map(|s| s.as_str()) == Some("--update-apply-fixture-contract-selftest") {
         if let Err(e) = backend_contract::run_update_apply_fixture_contract_selftest(&args[1..]) {
             eprintln!("update apply fixture contract selftest failed: {e}");
