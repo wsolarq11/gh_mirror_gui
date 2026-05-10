@@ -9,7 +9,9 @@ use crate::source_adapter::{GitHubReleaseAdapter, SourceAdapter};
 use crate::source_spec::SourceSpec;
 use crate::source_trust::SourceTrustPolicyConfig;
 use crate::trust_policy::{AppliedFileDisposition, PlannedFileDisposition, TrustPolicyConfig};
-use crate::update_apply_plan::{UpdateApplyPlan, UpdateApplyPlanEvidenceRecord};
+use crate::update_apply_plan::{
+    UpdateApplyFixtureEvidenceRecord, UpdateApplyPlan, UpdateApplyPlanEvidenceRecord,
+};
 use crate::update_candidate::{UpdateCandidateCheckReport, UpdateCandidateStageReport};
 use crate::verification::{DownloadVerificationPlan, VerificationReport};
 use crate::verifier_adapter::{GitHubReleaseVerifierAdapter, VerifierAdapter};
@@ -852,6 +854,13 @@ impl CoreRuntime {
         crate::update_apply_plan::run_update_apply_plan_contract_selftest(args)
     }
 
+    pub(crate) fn run_update_apply_fixture_contract_selftest(
+        &self,
+        args: &[String],
+    ) -> Result<(), String> {
+        crate::update_apply_plan::run_update_apply_fixture_contract_selftest(args)
+    }
+
     pub(crate) fn artifact_decision_from_update_candidate_check(
         &self,
         report: &UpdateCandidateCheckReport,
@@ -883,6 +892,13 @@ impl CoreRuntime {
             plan,
             evidence.and_then(|record| record.evidence_path.as_deref()),
         )
+    }
+
+    pub(crate) fn artifact_decision_from_update_apply_fixture_evidence(
+        &self,
+        evidence: &UpdateApplyFixtureEvidenceRecord,
+    ) -> ArtifactDecision {
+        ArtifactDecision::from_update_apply_fixture_evidence(evidence)
     }
 
     pub(crate) fn artifact_decision_rows(
@@ -1250,6 +1266,73 @@ impl CoreRuntime {
         } else {
             None
         }
+    }
+
+    pub(crate) fn update_apply_fixture_summary_rows(
+        &self,
+        record: &UpdateApplyFixtureEvidenceRecord,
+    ) -> Vec<CoreDisplayRow> {
+        vec![
+            CoreDisplayRow::new("Status", format!("{:?}", record.status).to_lowercase()),
+            CoreDisplayRow::new("Reason", record.reason.clone()),
+            CoreDisplayRow::new(
+                "Release",
+                format!("{} @ {}", record.plan.repo, record.plan.release_tag),
+            ),
+            CoreDisplayRow::new("Fixture only", record.fixture_only.to_string()),
+            CoreDisplayRow::new("No live mutation", record.no_live_mutation.to_string()),
+            CoreDisplayRow::new("Rollback ok", record.rollback_ok.to_string()),
+            CoreDisplayRow::new(
+                "Target fixture",
+                record
+                    .target_fixture_path
+                    .as_deref()
+                    .unwrap_or("not recorded"),
+            ),
+            CoreDisplayRow::new(
+                "Backup",
+                record.backup_path.as_deref().unwrap_or("not recorded"),
+            ),
+            CoreDisplayRow::new(
+                "Expected SHA256",
+                record.expected_sha256.as_deref().unwrap_or("not recorded"),
+            ),
+            CoreDisplayRow::new(
+                "Installed SHA256",
+                record.installed_sha256.as_deref().unwrap_or("not recorded"),
+            ),
+            CoreDisplayRow::new(
+                "Rollback SHA256",
+                record.rollback_sha256.as_deref().unwrap_or("not recorded"),
+            ),
+            CoreDisplayRow::new(
+                "Evidence path",
+                record.evidence_path.as_deref().unwrap_or("not recorded"),
+            ),
+        ]
+    }
+
+    pub(crate) fn update_apply_fixture_evidence_warning(
+        &self,
+        record: &UpdateApplyFixtureEvidenceRecord,
+    ) -> Option<String> {
+        record
+            .write_error
+            .as_deref()
+            .map(|error| format!("Evidence write warning: {error}"))
+    }
+
+    pub(crate) fn update_apply_fixture_evidence_action(
+        &self,
+        record: &UpdateApplyFixtureEvidenceRecord,
+    ) -> Option<CorePathAction> {
+        record.evidence_path.as_ref().map(|path| {
+            CorePathAction::file(
+                "📄 Open fixture apply evidence",
+                path.clone(),
+                "Fixture apply evidence path is recorded but not present on disk.",
+            )
+        })
     }
 
     pub(crate) fn verification_plan_from_download_context(
@@ -1719,6 +1802,14 @@ impl CoreRuntime {
         let target_exe_path = std::env::current_exe()
             .map_err(|e| format!("current executable path unavailable: {e}"))?;
         Ok(self.record_update_apply_plan_evidence_for_stage2(stage_report, &target_exe_path))
+    }
+
+    pub(crate) fn apply_update_fixture_for_stage2(
+        &self,
+        stage_report: &UpdateCandidateStageReport,
+        target_fixture_path: &Path,
+    ) -> UpdateApplyFixtureEvidenceRecord {
+        crate::update_apply_plan::apply_update_fixture_for_stage2(stage_report, target_fixture_path)
     }
 }
 

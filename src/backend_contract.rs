@@ -22,7 +22,8 @@ pub use crate::source_trust::SourceTrustPolicyConfig;
 pub use crate::trust_policy::{AppliedFileDisposition, FileDispositionAction};
 pub use crate::trust_policy::{MismatchFilePolicy, TrustPolicyConfig};
 pub use crate::update_apply_plan::{
-    UpdateApplyPlan, UpdateApplyPlanEvidenceRecord, UpdateApplyPlanStatus, UpdateApplyStep,
+    UpdateApplyFixtureEvidenceRecord, UpdateApplyFixtureStatus, UpdateApplyPlan,
+    UpdateApplyPlanEvidenceRecord, UpdateApplyPlanStatus, UpdateApplyStep,
 };
 pub use crate::update_candidate::{UpdateCandidateCheckReport, UpdateCandidateStageReport};
 
@@ -444,6 +445,10 @@ pub fn run_update_apply_plan_contract_selftest(args: &[String]) -> Result<(), St
     CoreRuntime::default().run_update_apply_plan_contract_selftest(args)
 }
 
+pub fn run_update_apply_fixture_contract_selftest(args: &[String]) -> Result<(), String> {
+    CoreRuntime::default().run_update_apply_fixture_contract_selftest(args)
+}
+
 pub fn artifact_decision_from_update_candidate_check(
     report: &UpdateCandidateCheckReport,
 ) -> ArtifactDecision {
@@ -468,6 +473,12 @@ pub fn artifact_decision_from_update_apply_plan_evidence(
     evidence: Option<&UpdateApplyPlanEvidenceRecord>,
 ) -> ArtifactDecision {
     CoreRuntime::default().artifact_decision_from_update_apply_plan_evidence(plan, evidence)
+}
+
+pub fn artifact_decision_from_update_apply_fixture_evidence(
+    evidence: &UpdateApplyFixtureEvidenceRecord,
+) -> ArtifactDecision {
+    CoreRuntime::default().artifact_decision_from_update_apply_fixture_evidence(evidence)
 }
 
 pub fn artifact_decision_rows(decision: &ArtifactDecision) -> Vec<BackendDisplayRow> {
@@ -591,6 +602,30 @@ pub fn update_apply_plan_missing_evidence_message(
     evidence: Option<&UpdateApplyPlanEvidenceRecord>,
 ) -> Option<&'static str> {
     CoreRuntime::default().update_apply_plan_missing_evidence_message(evidence)
+}
+
+pub fn update_apply_fixture_summary_rows(
+    record: &UpdateApplyFixtureEvidenceRecord,
+) -> Vec<BackendDisplayRow> {
+    CoreRuntime::default()
+        .update_apply_fixture_summary_rows(record)
+        .into_iter()
+        .map(backend_display_row_from_core)
+        .collect()
+}
+
+pub fn update_apply_fixture_evidence_warning(
+    record: &UpdateApplyFixtureEvidenceRecord,
+) -> Option<String> {
+    CoreRuntime::default().update_apply_fixture_evidence_warning(record)
+}
+
+pub fn update_apply_fixture_evidence_action(
+    record: &UpdateApplyFixtureEvidenceRecord,
+) -> Option<BackendPathAction> {
+    CoreRuntime::default()
+        .update_apply_fixture_evidence_action(record)
+        .map(backend_path_action_from_core)
 }
 
 #[cfg(test)]
@@ -997,6 +1032,58 @@ mod tests {
             Some("Apply plan evidence is not recorded for this preview.")
         );
 
+        let fixture_record = UpdateApplyFixtureEvidenceRecord {
+            schema_version: 1,
+            ok: true,
+            fixture_only: true,
+            no_live_mutation: true,
+            rollback_ok: true,
+            status: UpdateApplyFixtureStatus::AppliedAndRolledBack,
+            reason: "fixture apply backed up, replaced, verified, and rolled back".to_string(),
+            stage_dir: Some("stage".to_string()),
+            stage_evidence_path: Some("stage-evidence.json".to_string()),
+            staged_asset_path: Some("stage/gh_mirror_gui.exe".to_string()),
+            verification_status: Some("VERIFIED".to_string()),
+            source_authenticity_status: Some("TRUSTED_SIGNATURE".to_string()),
+            source_trust_decision: Some("TRUSTED".to_string()),
+            publisher_key_fingerprint_sha256: Some("FINGERPRINT".to_string()),
+            target_fixture_path: Some("fixture/gh_mirror_gui.exe".to_string()),
+            backup_path: Some("fixture/gh_mirror_gui.exe.bak-fixture".to_string()),
+            expected_sha256: Some("abc".to_string()),
+            staged_sha256: Some("abc".to_string()),
+            installed_sha256: Some("abc".to_string()),
+            rollback_sha256: Some("original".to_string()),
+            evidence_path: Some("fixture/update-apply-fixture.json".to_string()),
+            write_error: Some("fixture write failed".to_string()),
+            plan: plan.clone(),
+        };
+        let fixture_decision =
+            artifact_decision_from_update_apply_fixture_evidence(&fixture_record);
+        assert_eq!(fixture_decision.verdict, ArtifactVerdict::Trusted);
+        let fixture_rows = update_apply_fixture_summary_rows(&fixture_record);
+        assert!(fixture_rows.contains(&BackendDisplayRow {
+            label: "Fixture only",
+            value: "true".to_string()
+        }));
+        assert!(fixture_rows.contains(&BackendDisplayRow {
+            label: "No live mutation",
+            value: "true".to_string()
+        }));
+        assert_eq!(
+            update_apply_fixture_evidence_warning(&fixture_record),
+            Some("Evidence write warning: fixture write failed".to_string())
+        );
+        assert_eq!(
+            update_apply_fixture_evidence_action(&fixture_record),
+            Some(BackendPathAction {
+                label: "📄 Open fixture apply evidence",
+                path: "fixture/update-apply-fixture.json".to_string(),
+                missing_message: "Fixture apply evidence path is recorded but not present on disk."
+                    .to_string(),
+                kind: BackendPathActionKind::File
+            })
+        );
+
         let current_exe_plan = current_exe_update_apply_plan_for_stage2(&stage)
             .expect("current executable should be available in tests");
         assert_eq!(current_exe_plan.status, UpdateApplyPlanStatus::Planned);
@@ -1238,6 +1325,13 @@ pub fn record_update_apply_plan_evidence_for_current_exe(
     stage_report: &UpdateCandidateStageReport,
 ) -> Result<UpdateApplyPlanEvidenceRecord, String> {
     CoreRuntime::default().record_update_apply_plan_evidence_for_current_exe(stage_report)
+}
+
+pub fn apply_update_fixture_for_stage2(
+    stage_report: &UpdateCandidateStageReport,
+    target_fixture_path: &Path,
+) -> UpdateApplyFixtureEvidenceRecord {
+    CoreRuntime::default().apply_update_fixture_for_stage2(stage_report, target_fixture_path)
 }
 
 pub fn run_download_contract(

@@ -2252,6 +2252,92 @@ function Invoke-UpdateApplyPlanContractSelfTest {
     return $selftest
 }
 
+
+function Invoke-UpdateApplyFixtureContractSelfTest {
+    param(
+        [string]$Exe,
+        [string]$JsonFile
+    )
+
+    Invoke-LoggedNative `
+        -Name 'update-apply-fixture-contract-selftest' `
+        -Exe $Exe `
+        -Arguments @(
+            '--update-apply-fixture-contract-selftest',
+            '--json', $JsonFile
+        )
+    if (!(Test-Path -LiteralPath $JsonFile)) {
+        throw "update apply fixture contract selftest JSON missing: $JsonFile"
+    }
+    $selftest = Get-Content -LiteralPath $JsonFile -Raw | ConvertFrom-Json
+    if (!$selftest.ok) {
+        throw 'update apply fixture contract selftest did not report ok=true'
+    }
+    if (!$selftest.fixture_only) {
+        throw 'update apply fixture contract selftest must be fixture-only'
+    }
+    if (!$selftest.no_live_mutation) {
+        throw 'update apply fixture contract selftest must not mutate the live executable'
+    }
+    if (!$selftest.rollback_ok) {
+        throw 'update apply fixture contract selftest must roll back successfully'
+    }
+    if ([string]$selftest.status -ne 'APPLIED_AND_ROLLED_BACK') {
+        throw "update apply fixture contract selftest status $($selftest.status) was not APPLIED_AND_ROLLED_BACK"
+    }
+    if (!$selftest.evidence.ready) {
+        throw 'update apply fixture contract selftest did not write an evidence file'
+    }
+    if (!$selftest.fixture_apply.ok) {
+        throw 'update apply fixture evidence record did not report ok=true'
+    }
+    if ([string]$selftest.fixture_apply.verification_status -ne 'VERIFIED') {
+        throw "update apply fixture verification status $($selftest.fixture_apply.verification_status) was not VERIFIED"
+    }
+    if ([string]$selftest.fixture_apply.source_authenticity_status -ne 'TRUSTED_SIGNATURE') {
+        throw "update apply fixture source authenticity $($selftest.fixture_apply.source_authenticity_status) was not TRUSTED_SIGNATURE"
+    }
+    if ([string]$selftest.fixture_apply.source_trust_decision -ne 'TRUSTED') {
+        throw "update apply fixture source trust decision $($selftest.fixture_apply.source_trust_decision) was not TRUSTED"
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$selftest.fixture_apply.publisher_key_fingerprint_sha256)) {
+        throw 'update apply fixture publisher fingerprint was not recorded'
+    }
+    if ($selftest.fixture_apply.plan.no_mutation -ne $false) {
+        throw 'update apply fixture executed plan must report no_mutation=false while no_live_mutation=true'
+    }
+    if ([string]$selftest.fixture.expected_sha256 -ne [string]$selftest.fixture_apply.installed_sha256) {
+        throw "update apply fixture installed hash $($selftest.fixture_apply.installed_sha256) did not match expected $($selftest.fixture.expected_sha256)"
+    }
+    if ([string]$selftest.fixture.original_sha256 -ne [string]$selftest.fixture.target_after_sha256) {
+        throw "update apply fixture rollback hash $($selftest.fixture.target_after_sha256) did not restore original $($selftest.fixture.original_sha256)"
+    }
+    $fixtureEvidencePath = [string]$selftest.fixture_apply.evidence_path
+    if ([string]::IsNullOrWhiteSpace($fixtureEvidencePath) -or !(Test-Path -LiteralPath $fixtureEvidencePath)) {
+        throw "update apply fixture evidence file missing: $fixtureEvidencePath"
+    }
+    if ([string]$selftest.artifact_decision.verdict -ne 'TRUSTED') {
+        throw "update apply fixture ArtifactDecision verdict $($selftest.artifact_decision.verdict) was not TRUSTED"
+    }
+    if ([string]$selftest.artifact_decision.action_plan.kind -ne 'audit_only') {
+        throw "update apply fixture ArtifactDecision action kind $($selftest.artifact_decision.action_plan.kind) was not audit_only"
+    }
+    if ($selftest.artifact_decision.action_plan.no_mutation -ne $false) {
+        throw 'update apply fixture ArtifactDecision must preserve executed fixture plan no_mutation=false'
+    }
+    if ([string]$selftest.artifact_decision.evidence.source_authenticity -ne 'TRUSTED_SIGNATURE') {
+        throw "update apply fixture ArtifactDecision source authenticity $($selftest.artifact_decision.evidence.source_authenticity) was not TRUSTED_SIGNATURE"
+    }
+    if ([string]$selftest.artifact_decision.evidence.policy_verdict -ne 'TRUSTED') {
+        throw "update apply fixture ArtifactDecision policy verdict $($selftest.artifact_decision.evidence.policy_verdict) was not TRUSTED"
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$selftest.artifact_decision.evidence.publisher_key_fingerprint_sha256)) {
+        throw 'update apply fixture ArtifactDecision publisher fingerprint was not recorded'
+    }
+
+    return $selftest
+}
+
 function Invoke-UpdateCandidateLatestSelfTest {
     param(
         [string]$Exe,
@@ -3107,6 +3193,8 @@ function Assert-CoreBackendConvergence {
         'crate::update_candidate::UpdateCandidateStageConfig',
         'crate::update_apply_plan::build_update_apply_plan',
         'crate::update_apply_plan::write_update_apply_plan_evidence_for_stage2',
+        'crate::update_apply_plan::apply_update_fixture_for_stage2',
+        'crate::update_apply_plan::run_update_apply_fixture_contract_selftest',
         'parse_github_intent(',
         'crate::url_policy::official_github_artifact_hosts',
         'crate::github_intent::ParsedGithubIntent',
@@ -3125,6 +3213,7 @@ function Assert-CoreBackendConvergence {
         'pub use crate::bench::run_bench_download',
         'pub use crate::staged_release::run_staged_release_download_selftest',
         'pub use crate::update_apply_plan::run_update_apply_plan_contract_selftest',
+        'pub use crate::update_apply_plan::run_update_apply_fixture_contract_selftest',
         'pub use crate::update_candidate::run_update_candidate_contract_selftest',
         'pub use crate::update_candidate::run_update_candidate_latest_selftest',
         'pub use crate::update_candidate::run_update_candidate_stage_selftest',
@@ -3204,10 +3293,12 @@ function Assert-CoreBackendConvergence {
         'pub(crate) fn run_update_candidate_latest_selftest',
         'pub(crate) fn run_update_candidate_stage_selftest',
         'pub(crate) fn run_update_apply_plan_contract_selftest',
+        'pub(crate) fn run_update_apply_fixture_contract_selftest',
         'pub(crate) fn artifact_decision_from_update_candidate_check',
         'pub(crate) fn artifact_decision_from_update_candidate_stage',
         'pub(crate) fn artifact_decision_from_update_apply_plan',
         'pub(crate) fn artifact_decision_from_update_apply_plan_evidence',
+        'pub(crate) fn artifact_decision_from_update_apply_fixture_evidence',
         'pub(crate) fn artifact_decision_rows',
         'pub(crate) fn artifact_decision_step_rows',
         'pub(crate) fn artifact_decision_action_path',
@@ -3235,6 +3326,9 @@ function Assert-CoreBackendConvergence {
         'pub(crate) fn update_apply_plan_evidence_warning',
         'pub(crate) fn update_apply_plan_evidence_action',
         'pub(crate) fn update_apply_plan_missing_evidence_message',
+        'pub(crate) fn update_apply_fixture_summary_rows',
+        'pub(crate) fn update_apply_fixture_evidence_warning',
+        'pub(crate) fn update_apply_fixture_evidence_action',
         'pub(crate) fn resolve_release_context_for_download_best_effort',
         'pub(crate) fn trust_center_snapshot',
         'pub(crate) fn run_download_contract',
@@ -3246,7 +3340,8 @@ function Assert-CoreBackendConvergence {
         'pub(crate) fn resolve_release_assets_for_query',
         'pub(crate) fn import_publisher_key_from_release_asset_for_settings',
         'pub(crate) fn run_update_candidate_check',
-        'pub(crate) fn run_update_candidate_stage'
+        'pub(crate) fn run_update_candidate_stage',
+        'pub(crate) fn apply_update_fixture_for_stage2'
     )
     $missing = @($runtimeRequired | Where-Object {
         $runtimeText.IndexOf($_, [System.StringComparison]::Ordinal) -lt 0
@@ -3604,6 +3699,10 @@ $Receipt.checks.artifact_decision_contract = [ordered]@{
             'artifact_decision_wraps_update_candidate_as_evidence_verdict_action_plan',
             'artifact_decision_wraps_update_stage_as_next_apply_plan_intent',
             'artifact_decision_wraps_update_apply_plan_as_action_plan_surface',
+            'artifact_decision_wraps_update_apply_fixture_as_evidence_verdict_action_plan',
+            'artifact_decision_wraps_update_apply_fixture_refusal_without_action_path',
+            'artifact_decision_wraps_update_apply_fixture_rollback_failed_as_risk',
+            'artifact_decision_does_not_trust_fixture_success_without_hash_match',
             'artifact_decision_backend_surface_replaces_phase_specific_update_rows'
         )
 }
@@ -3749,7 +3848,14 @@ $Receipt.checks.update_candidate_unit_tests = [ordered]@{
             'latest_update_check_refuses_newer_candidate_without_pinned_key_before_download',
             'latest_update_stage_stages_newer_signed_candidate_to_local_directory',
             'update_apply_plan_refuses_non_staged_report',
-            'update_apply_plan_builds_reversible_steps_without_mutation'
+            'update_apply_plan_builds_reversible_steps_without_mutation',
+            'fixture_apply_refuses_unstaged_report',
+            'fixture_apply_refuses_missing_stage_asset',
+            'fixture_apply_refuses_missing_expected_sha256',
+            'fixture_apply_refuses_untrusted_source_before_mutation',
+            'fixture_apply_refuses_mismatched_staged_sha_before_mutation',
+            'fixture_apply_backs_up_replaces_verifies_and_rolls_back',
+            'fixture_apply_never_accepts_live_current_exe_path_by_default'
         )
 }
 Invoke-LoggedNative -Name 'cargo-clippy-all-targets' -Exe 'cargo' -Arguments @('clippy', '--all-targets', '--locked', '--', '-D', 'warnings')
@@ -3822,6 +3928,9 @@ $Receipt.checks.update_candidate_contract = Invoke-UpdateCandidateContractSelfTe
 $Receipt.checks.update_apply_plan_contract = Invoke-UpdateApplyPlanContractSelfTest `
     -Exe $exe `
     -JsonFile (Join-Path $EvidenceDir 'update-apply-plan-contract.json')
+$Receipt.checks.update_apply_fixture_contract = Invoke-UpdateApplyFixtureContractSelfTest `
+    -Exe $exe `
+    -JsonFile (Join-Path $EvidenceDir 'update-apply-fixture-contract.json')
  
 # Private repo compatibility:
 # - PowerShell GitHub probes use `Get-GitHubAccessToken` directly.

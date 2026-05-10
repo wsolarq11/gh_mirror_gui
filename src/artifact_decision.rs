@@ -1,4 +1,7 @@
-use crate::update_apply_plan::{UpdateApplyPlan, UpdateApplyPlanStatus, UpdateApplyStep};
+use crate::update_apply_plan::{
+    UpdateApplyFixtureEvidenceRecord, UpdateApplyFixtureStatus, UpdateApplyPlan,
+    UpdateApplyPlanStatus, UpdateApplyStep,
+};
 use crate::update_candidate::{
     UpdateCandidateCheckReport, UpdateCandidateStageReport, UpdateCandidateStageStatus,
     UpdateCandidateStatus,
@@ -263,12 +266,122 @@ impl ArtifactDecision {
             },
         )
     }
+
+    pub fn from_update_apply_fixture_evidence(record: &UpdateApplyFixtureEvidenceRecord) -> Self {
+        let trusted_fixture = fixture_apply_trusted(record);
+        let verdict = match record.status {
+            UpdateApplyFixtureStatus::AppliedAndRolledBack if trusted_fixture => {
+                ArtifactVerdict::Trusted
+            }
+            UpdateApplyFixtureStatus::RollbackFailed => ArtifactVerdict::Risk,
+            UpdateApplyFixtureStatus::AppliedAndRolledBack | UpdateApplyFixtureStatus::Refused => {
+                ArtifactVerdict::Refused
+            }
+        };
+        let action_kind = match record.status {
+            UpdateApplyFixtureStatus::AppliedAndRolledBack if trusted_fixture => {
+                ArtifactActionKind::AuditOnly
+            }
+            UpdateApplyFixtureStatus::RollbackFailed => ArtifactActionKind::AuditOnly,
+            UpdateApplyFixtureStatus::AppliedAndRolledBack | UpdateApplyFixtureStatus::Refused => {
+                ArtifactActionKind::None
+            }
+        };
+        let mut steps: Vec<String> = record
+            .plan
+            .steps
+            .iter()
+            .map(describe_update_apply_step)
+            .collect();
+        steps.push(format!(
+            "fixture apply result: {} (fixture_only={}, rollback_ok={}, no_live_mutation={})",
+            record.reason, record.fixture_only, record.rollback_ok, record.no_live_mutation
+        ));
+
+        Self::new(
+            ArtifactIntent::PlanApply,
+            ArtifactCandidate {
+                source: record.plan.repo.clone(),
+                artifact_name: record
+                    .staged_asset_path
+                    .as_deref()
+                    .and_then(|path| Path::new(path).file_name())
+                    .map(|name| name.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "unknown".to_string()),
+                version_or_tag: Some(record.plan.release_tag.clone()),
+                uri: record.staged_asset_path.clone(),
+            },
+            ArtifactEvidenceSummary {
+                evidence_path: record.evidence_path.clone(),
+                hash_status: record.verification_status.clone().or_else(|| {
+                    record
+                        .installed_sha256
+                        .as_ref()
+                        .filter(|_| trusted_fixture)
+                        .map(|_| "VERIFIED".to_string())
+                }),
+                source_authenticity: record.source_authenticity_status.clone(),
+                publisher_key_fingerprint_sha256: record.publisher_key_fingerprint_sha256.clone(),
+                policy_verdict: record
+                    .source_trust_decision
+                    .clone()
+                    .or_else(|| Some(fixture_status_label(record.status).to_string())),
+            },
+            verdict,
+            ArtifactActionPlan {
+                kind: action_kind,
+                status: fixture_status_label(record.status).to_string(),
+                summary: record.reason.clone(),
+                reversible: record.rollback_ok || record.plan.reversible,
+                no_mutation: record.plan.no_mutation,
+                path_action: None,
+                steps,
+            },
+        )
+    }
+}
+
+fn fixture_apply_trusted(record: &UpdateApplyFixtureEvidenceRecord) -> bool {
+    record.ok
+        && record.fixture_only
+        && record.no_live_mutation
+        && record.rollback_ok
+        && record
+            .installed_sha256
+            .as_deref()
+            .zip(record.expected_sha256.as_deref())
+            .map(|(installed, expected)| installed.eq_ignore_ascii_case(expected))
+            .unwrap_or(false)
+        && record
+            .source_authenticity_status
+            .as_deref()
+            .map(|status| status.eq_ignore_ascii_case("TRUSTED_SIGNATURE"))
+            .unwrap_or(false)
+        && record
+            .source_trust_decision
+            .as_deref()
+            .map(|decision| decision.eq_ignore_ascii_case("TRUSTED"))
+            .unwrap_or(false)
+        && record
+            .publisher_key_fingerprint_sha256
+            .as_deref()
+            .map(str::trim)
+            .map(|fingerprint| !fingerprint.is_empty())
+            .unwrap_or(false)
 }
 
 fn report_status_label(status: UpdateApplyPlanStatus) -> String {
     match status {
         UpdateApplyPlanStatus::Planned => "planned".to_string(),
         UpdateApplyPlanStatus::Refused => "refused".to_string(),
+    }
+}
+
+fn fixture_status_label(status: UpdateApplyFixtureStatus) -> &'static str {
+    match status {
+        UpdateApplyFixtureStatus::Refused => "refused",
+        UpdateApplyFixtureStatus::AppliedAndRolledBack => "applied-and-rolled-back",
+        UpdateApplyFixtureStatus::RollbackFailed => "rollback-failed",
     }
 }
 
@@ -306,7 +419,10 @@ fn describe_update_apply_step(step: &UpdateApplyStep) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::update_apply_plan::{UpdateApplyPlan, UpdateApplyPlanStatus, UpdateApplyStep};
+    use crate::update_apply_plan::{
+        UpdateApplyFixtureEvidenceRecord, UpdateApplyFixtureStatus, UpdateApplyPlan,
+        UpdateApplyPlanStatus, UpdateApplyStep,
+    };
     use crate::update_candidate::{
         UpdateCandidateCheckReport, UpdateCandidateEvaluation, UpdateCandidateStageReport,
         UpdateCandidateStageStatus, UpdateCandidateStatus,
@@ -477,5 +593,235 @@ mod tests {
             Some("plan-evidence.json")
         );
         assert!(decision.action_plan.steps[0].contains("verify staged candidate sha256"));
+    }
+
+    #[test]
+    fn artifact_decision_wraps_update_apply_fixture_as_evidence_verdict_action_plan() {
+        let plan = UpdateApplyPlan {
+            schema_version: 1,
+            status: UpdateApplyPlanStatus::Planned,
+            reason: "fixture apply plan executes only inside fixture and rolls back".to_string(),
+            repo: "owner/repo".to_string(),
+            release_tag: "v1.2.3".to_string(),
+            stage_dir: Some("fixture/stage".to_string()),
+            staged_asset_path: Some("fixture/stage/gh_mirror_gui.exe".to_string()),
+            expected_sha256: Some("FILESHA".to_string()),
+            target_exe_path: Some("fixture/gh_mirror_gui.exe".to_string()),
+            backup_exe_path: Some("fixture/gh_mirror_gui.exe.bak-fixture".to_string()),
+            reversible: true,
+            no_mutation: false,
+            steps: vec![UpdateApplyStep::RollbackByRestoringBackup {
+                from_backup: "fixture/gh_mirror_gui.exe.bak-fixture".to_string(),
+                to_target: "fixture/gh_mirror_gui.exe".to_string(),
+            }],
+        };
+        let record = UpdateApplyFixtureEvidenceRecord {
+            schema_version: 1,
+            ok: true,
+            fixture_only: true,
+            no_live_mutation: true,
+            rollback_ok: true,
+            status: UpdateApplyFixtureStatus::AppliedAndRolledBack,
+            reason: "fixture apply backed up, replaced, verified, and rolled back".to_string(),
+            stage_dir: Some("fixture/stage".to_string()),
+            stage_evidence_path: Some("fixture/stage/update-candidate-stage.json".to_string()),
+            staged_asset_path: Some("fixture/stage/gh_mirror_gui.exe".to_string()),
+            verification_status: Some("VERIFIED".to_string()),
+            source_authenticity_status: Some("TRUSTED_SIGNATURE".to_string()),
+            source_trust_decision: Some("TRUSTED".to_string()),
+            publisher_key_fingerprint_sha256: Some("FINGERPRINT".to_string()),
+            target_fixture_path: Some("fixture/gh_mirror_gui.exe".to_string()),
+            backup_path: Some("fixture/gh_mirror_gui.exe.bak-fixture".to_string()),
+            expected_sha256: Some("FILESHA".to_string()),
+            staged_sha256: Some("FILESHA".to_string()),
+            installed_sha256: Some("FILESHA".to_string()),
+            rollback_sha256: Some("ORIGINALSHA".to_string()),
+            evidence_path: Some("fixture/update-apply-fixture.json".to_string()),
+            write_error: None,
+            plan,
+        };
+
+        let decision = ArtifactDecision::from_update_apply_fixture_evidence(&record);
+
+        assert_eq!(decision.intent, ArtifactIntent::PlanApply);
+        assert_eq!(decision.verdict, ArtifactVerdict::Trusted);
+        assert_eq!(decision.action_plan.kind, ArtifactActionKind::AuditOnly);
+        assert!(!decision.action_plan.no_mutation);
+        assert!(decision.action_plan.reversible);
+        assert_eq!(
+            decision.evidence.source_authenticity.as_deref(),
+            Some("TRUSTED_SIGNATURE")
+        );
+        assert_eq!(
+            decision
+                .evidence
+                .publisher_key_fingerprint_sha256
+                .as_deref(),
+            Some("FINGERPRINT")
+        );
+        assert_eq!(
+            decision.evidence.evidence_path.as_deref(),
+            Some("fixture/update-apply-fixture.json")
+        );
+        assert!(decision
+            .action_plan
+            .steps
+            .iter()
+            .any(|step| step.contains("rollback_ok=true")));
+    }
+
+    #[test]
+    fn artifact_decision_wraps_update_apply_fixture_refusal_without_action_path() {
+        let plan = UpdateApplyPlan {
+            schema_version: 1,
+            status: UpdateApplyPlanStatus::Refused,
+            reason: "fixture apply requires expected_sha256".to_string(),
+            repo: "owner/repo".to_string(),
+            release_tag: "v1.2.3".to_string(),
+            stage_dir: None,
+            staged_asset_path: None,
+            expected_sha256: None,
+            target_exe_path: Some("fixture/gh_mirror_gui.exe".to_string()),
+            backup_exe_path: None,
+            reversible: false,
+            no_mutation: true,
+            steps: vec![],
+        };
+        let record = UpdateApplyFixtureEvidenceRecord {
+            schema_version: 1,
+            ok: false,
+            fixture_only: true,
+            no_live_mutation: true,
+            rollback_ok: false,
+            status: UpdateApplyFixtureStatus::Refused,
+            reason: "fixture apply requires expected_sha256".to_string(),
+            stage_dir: None,
+            stage_evidence_path: None,
+            staged_asset_path: None,
+            verification_status: None,
+            source_authenticity_status: None,
+            source_trust_decision: None,
+            publisher_key_fingerprint_sha256: None,
+            target_fixture_path: Some("fixture/gh_mirror_gui.exe".to_string()),
+            backup_path: None,
+            expected_sha256: None,
+            staged_sha256: None,
+            installed_sha256: None,
+            rollback_sha256: None,
+            evidence_path: Some("fixture/update-apply-fixture.json".to_string()),
+            write_error: None,
+            plan,
+        };
+
+        let decision = ArtifactDecision::from_update_apply_fixture_evidence(&record);
+
+        assert_eq!(decision.verdict, ArtifactVerdict::Refused);
+        assert_eq!(decision.action_plan.kind, ArtifactActionKind::None);
+        assert_eq!(decision.action_plan.path_action, None);
+        assert!(decision.action_plan.no_mutation);
+        assert_eq!(decision.evidence.source_authenticity, None);
+        assert_eq!(
+            decision.evidence.policy_verdict,
+            Some("refused".to_string())
+        );
+    }
+
+    #[test]
+    fn artifact_decision_wraps_update_apply_fixture_rollback_failed_as_risk() {
+        let plan = UpdateApplyPlan {
+            schema_version: 1,
+            status: UpdateApplyPlanStatus::Planned,
+            reason: "fixture apply plan executes only inside fixture and rolls back".to_string(),
+            repo: "owner/repo".to_string(),
+            release_tag: "v1.2.3".to_string(),
+            stage_dir: Some("fixture/stage".to_string()),
+            staged_asset_path: Some("fixture/stage/gh_mirror_gui.exe".to_string()),
+            expected_sha256: Some("FILESHA".to_string()),
+            target_exe_path: Some("fixture/gh_mirror_gui.exe".to_string()),
+            backup_exe_path: Some("fixture/gh_mirror_gui.exe.bak-fixture".to_string()),
+            reversible: true,
+            no_mutation: false,
+            steps: vec![],
+        };
+        let record = UpdateApplyFixtureEvidenceRecord {
+            schema_version: 1,
+            ok: false,
+            fixture_only: true,
+            no_live_mutation: true,
+            rollback_ok: false,
+            status: UpdateApplyFixtureStatus::RollbackFailed,
+            reason: "fixture apply verified but rollback failed".to_string(),
+            stage_dir: Some("fixture/stage".to_string()),
+            stage_evidence_path: Some("fixture/stage/update-candidate-stage.json".to_string()),
+            staged_asset_path: Some("fixture/stage/gh_mirror_gui.exe".to_string()),
+            verification_status: Some("VERIFIED".to_string()),
+            source_authenticity_status: Some("TRUSTED_SIGNATURE".to_string()),
+            source_trust_decision: Some("TRUSTED".to_string()),
+            publisher_key_fingerprint_sha256: Some("FINGERPRINT".to_string()),
+            target_fixture_path: Some("fixture/gh_mirror_gui.exe".to_string()),
+            backup_path: Some("fixture/gh_mirror_gui.exe.bak-fixture".to_string()),
+            expected_sha256: Some("FILESHA".to_string()),
+            staged_sha256: Some("FILESHA".to_string()),
+            installed_sha256: Some("FILESHA".to_string()),
+            rollback_sha256: None,
+            evidence_path: Some("fixture/update-apply-fixture.json".to_string()),
+            write_error: None,
+            plan,
+        };
+
+        let decision = ArtifactDecision::from_update_apply_fixture_evidence(&record);
+
+        assert_eq!(decision.verdict, ArtifactVerdict::Risk);
+        assert_eq!(decision.action_plan.kind, ArtifactActionKind::AuditOnly);
+        assert!(!decision.action_plan.no_mutation);
+    }
+
+    #[test]
+    fn artifact_decision_does_not_trust_fixture_success_without_hash_match() {
+        let plan = UpdateApplyPlan {
+            schema_version: 1,
+            status: UpdateApplyPlanStatus::Planned,
+            reason: "fixture apply plan executes only inside fixture and rolls back".to_string(),
+            repo: "owner/repo".to_string(),
+            release_tag: "v1.2.3".to_string(),
+            stage_dir: Some("fixture/stage".to_string()),
+            staged_asset_path: Some("fixture/stage/gh_mirror_gui.exe".to_string()),
+            expected_sha256: Some("FILESHA".to_string()),
+            target_exe_path: Some("fixture/gh_mirror_gui.exe".to_string()),
+            backup_exe_path: Some("fixture/gh_mirror_gui.exe.bak-fixture".to_string()),
+            reversible: true,
+            no_mutation: false,
+            steps: vec![],
+        };
+        let record = UpdateApplyFixtureEvidenceRecord {
+            schema_version: 1,
+            ok: true,
+            fixture_only: true,
+            no_live_mutation: true,
+            rollback_ok: true,
+            status: UpdateApplyFixtureStatus::AppliedAndRolledBack,
+            reason: "fixture apply backed up, replaced, verified, and rolled back".to_string(),
+            stage_dir: Some("fixture/stage".to_string()),
+            stage_evidence_path: Some("fixture/stage/update-candidate-stage.json".to_string()),
+            staged_asset_path: Some("fixture/stage/gh_mirror_gui.exe".to_string()),
+            verification_status: Some("VERIFIED".to_string()),
+            source_authenticity_status: Some("TRUSTED_SIGNATURE".to_string()),
+            source_trust_decision: Some("TRUSTED".to_string()),
+            publisher_key_fingerprint_sha256: Some("FINGERPRINT".to_string()),
+            target_fixture_path: Some("fixture/gh_mirror_gui.exe".to_string()),
+            backup_path: Some("fixture/gh_mirror_gui.exe.bak-fixture".to_string()),
+            expected_sha256: Some("FILESHA".to_string()),
+            staged_sha256: Some("FILESHA".to_string()),
+            installed_sha256: Some("DIFFERENT".to_string()),
+            rollback_sha256: Some("ORIGINALSHA".to_string()),
+            evidence_path: Some("fixture/update-apply-fixture.json".to_string()),
+            write_error: None,
+            plan,
+        };
+
+        let decision = ArtifactDecision::from_update_apply_fixture_evidence(&record);
+
+        assert_eq!(decision.verdict, ArtifactVerdict::Refused);
+        assert_eq!(decision.action_plan.kind, ArtifactActionKind::None);
     }
 }
