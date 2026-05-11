@@ -50,6 +50,9 @@ const BODY_TWO_COLUMN_MIN_WIDTH: f32 = 820.0;
 const BODY_THREE_COLUMN_MIN_WIDTH: f32 = 1120.0;
 const BODY_THREE_COLUMN_SHORT_MIN_WIDTH: f32 = 1040.0;
 const BODY_FILL_MIN_HEIGHT: f32 = 430.0;
+const RESIZE_HYSTERESIS: f32 = 32.0;
+const BODY_SCROLL_ENTER_MAX_HEIGHT: f32 = BODY_FILL_MIN_HEIGHT - RESIZE_HYSTERESIS;
+const BODY_SCROLL_EXIT_MIN_HEIGHT: f32 = BODY_FILL_MIN_HEIGHT + RESIZE_HYSTERESIS;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ViewportDensity {
@@ -66,6 +69,40 @@ impl ViewportDensity {
             Self::Spacious
         } else {
             Self::Regular
+        }
+    }
+
+    fn for_resized_size(current: Self, size: egui::Vec2) -> Self {
+        if !size.x.is_finite() || !size.y.is_finite() {
+            return current;
+        }
+
+        match current {
+            Self::Dense => {
+                if size.x >= 900.0 + RESIZE_HYSTERESIS && size.y >= 620.0 + RESIZE_HYSTERESIS {
+                    Self::Regular
+                } else {
+                    Self::Dense
+                }
+            }
+            Self::Regular => {
+                if size.x < 900.0 - RESIZE_HYSTERESIS || size.y < 620.0 - RESIZE_HYSTERESIS {
+                    Self::Dense
+                } else if size.x >= 1500.0 + RESIZE_HYSTERESIS
+                    && size.y >= 900.0 + RESIZE_HYSTERESIS
+                {
+                    Self::Spacious
+                } else {
+                    Self::Regular
+                }
+            }
+            Self::Spacious => {
+                if size.x < 1500.0 - RESIZE_HYSTERESIS || size.y < 900.0 - RESIZE_HYSTERESIS {
+                    Self::Regular
+                } else {
+                    Self::Spacious
+                }
+            }
         }
     }
 
@@ -161,6 +198,50 @@ fn body_layout_for_viewport(total_width: f32, body_height: f32) -> BodyLayout {
     }
 }
 
+fn body_layout_for_resized_viewport(
+    current: BodyLayout,
+    total_width: f32,
+    body_height: f32,
+) -> BodyLayout {
+    if !total_width.is_finite() || !body_height.is_finite() {
+        return current;
+    }
+
+    match current {
+        BodyLayout::Single => {
+            if total_width >= BODY_TWO_COLUMN_MIN_WIDTH + RESIZE_HYSTERESIS {
+                body_layout_for_viewport(total_width, body_height)
+            } else {
+                BodyLayout::Single
+            }
+        }
+        BodyLayout::GoldenTwo => {
+            if total_width < BODY_TWO_COLUMN_MIN_WIDTH - RESIZE_HYSTERESIS {
+                BodyLayout::Single
+            } else if total_width >= BODY_THREE_COLUMN_MIN_WIDTH + RESIZE_HYSTERESIS
+                || (body_height < 620.0 - RESIZE_HYSTERESIS
+                    && total_width >= BODY_THREE_COLUMN_SHORT_MIN_WIDTH + RESIZE_HYSTERESIS)
+            {
+                BodyLayout::GoldenThree
+            } else {
+                BodyLayout::GoldenTwo
+            }
+        }
+        BodyLayout::GoldenThree => {
+            if total_width < BODY_TWO_COLUMN_MIN_WIDTH - RESIZE_HYSTERESIS {
+                BodyLayout::Single
+            } else if total_width < BODY_THREE_COLUMN_MIN_WIDTH - RESIZE_HYSTERESIS
+                && !(body_height < 620.0 + RESIZE_HYSTERESIS
+                    && total_width >= BODY_THREE_COLUMN_SHORT_MIN_WIDTH - RESIZE_HYSTERESIS)
+            {
+                BodyLayout::GoldenTwo
+            } else {
+                BodyLayout::GoldenThree
+            }
+        }
+    }
+}
+
 fn golden_two_column_widths(total_width: f32, gap: f32) -> (f32, f32) {
     let usable_width = (total_width - gap).max(0.0);
     let major_width = usable_width * GOLDEN_MAJOR;
@@ -188,12 +269,29 @@ fn body_fill_height(total_height: f32) -> Option<f32> {
     }
 }
 
+#[cfg(test)]
 fn body_scroll_fallback_for_viewport(total_width: f32, body_height: f32) -> bool {
     body_fill_height(body_height).is_none()
         || matches!(
             body_layout_for_viewport(total_width, body_height),
             BodyLayout::Single
         )
+}
+
+fn body_scroll_fallback_for_resized_viewport(
+    current: bool,
+    layout: BodyLayout,
+    body_height: f32,
+) -> bool {
+    if matches!(layout, BodyLayout::Single) {
+        return true;
+    }
+
+    if current {
+        body_height < BODY_SCROLL_EXIT_MIN_HEIGHT
+    } else {
+        body_height < BODY_SCROLL_ENTER_MAX_HEIGHT
+    }
 }
 
 fn weighted_stack_heights(total_height: f32, gap: f32, weights: &[f32]) -> Vec<f32> {
@@ -536,6 +634,10 @@ fn default_unknown_keep_file() -> bool {
 pub(crate) struct GhMirrorGui {
     url: String,
     last_viewport_size: egui::Vec2,
+    viewport_density: ViewportDensity,
+    applied_density: Option<ViewportDensity>,
+    body_layout: BodyLayout,
+    body_scroll_fallback: bool,
     save_dir: PathBuf,
     proxy: String,
     locale: UiLocale,
@@ -694,6 +796,10 @@ impl GhMirrorGui {
         Self {
             url: String::new(),
             last_viewport_size: egui::vec2(1366.0, 860.0),
+            viewport_density: ViewportDensity::for_size(egui::vec2(1366.0, 860.0)),
+            applied_density: None,
+            body_layout: BodyLayout::GoldenThree,
+            body_scroll_fallback: false,
             save_dir: PathBuf::from(&save_dir),
             proxy,
             locale,
@@ -791,16 +897,26 @@ impl GhMirrorGui {
     }
 
     fn current_density(&self) -> ViewportDensity {
-        ViewportDensity::for_size(self.last_viewport_size)
+        self.viewport_density
     }
 
-    fn apply_adaptive_style(&self, ctx: &egui::Context) {
+    fn update_viewport_density(&mut self, viewport_size: egui::Vec2) {
+        self.last_viewport_size = viewport_size;
+        self.viewport_density =
+            ViewportDensity::for_resized_size(self.viewport_density, viewport_size);
+    }
+
+    fn apply_adaptive_style(&mut self, ctx: &egui::Context) {
         let density = self.current_density();
+        if self.applied_density == Some(density) {
+            return;
+        }
         ctx.style_mut(|style| {
             style.spacing.item_spacing = density.item_spacing();
             style.spacing.button_padding = density.button_padding();
             style.spacing.window_margin = density.panel_margin();
         });
+        self.applied_density = Some(density);
     }
 
     fn add_card_gap(&self, ui: &mut egui::Ui) {
@@ -1064,21 +1180,27 @@ impl GhMirrorGui {
         let density = self.current_density();
         let body_height = ui.available_height();
         let total_width = ui.available_width();
-        if body_scroll_fallback_for_viewport(total_width, body_height) {
+        let layout = body_layout_for_resized_viewport(self.body_layout, total_width, body_height);
+        self.body_layout = layout;
+        self.body_scroll_fallback = body_scroll_fallback_for_resized_viewport(
+            self.body_scroll_fallback,
+            layout,
+            body_height,
+        );
+
+        if self.body_scroll_fallback {
             egui::ScrollArea::vertical()
                 .id_salt("proof_to_action_main_scroll")
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     ui.add_space(density.card_gap());
                     let total_width = ui.available_width();
-                    let layout = body_layout_for_viewport(total_width, body_height);
-                    self.render_body_layout(ui, layout, total_width, body_height, None);
+                    self.render_body_layout(ui, self.body_layout, total_width, body_height, None);
                 });
         } else {
             ui.add_space(density.card_gap());
-            let layout = body_layout_for_viewport(total_width, body_height);
             let fill_height = body_fill_height((body_height - density.card_gap()).max(0.0));
-            self.render_body_layout(ui, layout, total_width, body_height, fill_height);
+            self.render_body_layout(ui, self.body_layout, total_width, body_height, fill_height);
         }
     }
 
@@ -2317,7 +2439,7 @@ impl eframe::App for GhMirrorGui {
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.last_viewport_size = ctx.screen_rect().size();
+        self.update_viewport_density(ctx.screen_rect().size());
         self.apply_adaptive_style(ctx);
 
         // Check for speed test completion
@@ -2659,6 +2781,70 @@ mod tests {
         assert!(body_scroll_fallback_for_viewport(760.0, 700.0));
         assert!(body_scroll_fallback_for_viewport(1200.0, 360.0));
         assert!(!body_scroll_fallback_for_viewport(1200.0, 700.0));
+    }
+
+    #[test]
+    fn body_scroll_fallback_uses_hysteresis_during_resize() {
+        assert!(body_scroll_fallback_for_resized_viewport(
+            true,
+            BodyLayout::GoldenTwo,
+            420.0
+        ));
+        assert!(!body_scroll_fallback_for_resized_viewport(
+            true,
+            BodyLayout::GoldenTwo,
+            470.0
+        ));
+        assert!(body_scroll_fallback_for_resized_viewport(
+            false,
+            BodyLayout::GoldenTwo,
+            390.0
+        ));
+        assert!(!body_scroll_fallback_for_resized_viewport(
+            false,
+            BodyLayout::GoldenTwo,
+            450.0
+        ));
+    }
+
+    #[test]
+    fn body_layout_uses_hysteresis_to_reduce_resize_thrashing() {
+        assert_eq!(
+            body_layout_for_resized_viewport(BodyLayout::Single, 819.0, 700.0),
+            BodyLayout::Single
+        );
+        assert_eq!(
+            body_layout_for_resized_viewport(BodyLayout::Single, 852.0, 700.0),
+            BodyLayout::GoldenTwo
+        );
+        assert_eq!(
+            body_layout_for_resized_viewport(BodyLayout::GoldenThree, 1100.0, 700.0),
+            BodyLayout::GoldenThree
+        );
+        assert_eq!(
+            body_layout_for_resized_viewport(BodyLayout::GoldenThree, 1070.0, 700.0),
+            BodyLayout::GoldenTwo
+        );
+    }
+
+    #[test]
+    fn viewport_density_uses_hysteresis_to_reduce_resize_thrashing() {
+        assert_eq!(
+            ViewportDensity::for_resized_size(ViewportDensity::Dense, egui::vec2(934.0, 655.0)),
+            ViewportDensity::Regular
+        );
+        assert_eq!(
+            ViewportDensity::for_resized_size(ViewportDensity::Regular, egui::vec2(860.0, 580.0)),
+            ViewportDensity::Dense
+        );
+        assert_eq!(
+            ViewportDensity::for_resized_size(ViewportDensity::Regular, egui::vec2(1535.0, 940.0)),
+            ViewportDensity::Spacious
+        );
+        assert_eq!(
+            ViewportDensity::for_resized_size(ViewportDensity::Spacious, egui::vec2(1460.0, 860.0)),
+            ViewportDensity::Regular
+        );
     }
 
     #[test]
