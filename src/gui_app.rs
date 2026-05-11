@@ -530,100 +530,185 @@ impl GhMirrorGui {
     fn render_command_panel(&mut self, ui: &mut egui::Ui) {
         ui.group(|ui| {
             ui.set_min_width(ui.available_width());
-
             let layout_mode = layout_mode_for_width(ui.available_width());
-            ui.label(egui::RichText::new(self.t(TextKey::UrlLabel)).strong());
-            let url_response = ui.add_sized(
-                [ui.available_width(), 28.0],
-                egui::TextEdit::singleline(&mut self.url),
-            );
-            if url_response.changed() {
+            let wide_layout = matches!(layout_mode, LayoutMode::Medium | LayoutMode::Wide);
+
+            if wide_layout {
+                let total_width = ui.available_width();
+                let gap = ui.spacing().item_spacing.x;
+                let left_width = (total_width * 0.618).clamp(420.0, total_width - 220.0);
+                let right_width = (total_width - left_width - gap).max(220.0);
+
+                ui.horizontal_top(|ui| {
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(left_width, 0.0),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| {
+                            self.render_command_primary_stack(ui, layout_mode);
+                        },
+                    );
+                    ui.add_space(gap);
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(right_width, 0.0),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| {
+                            self.render_command_hint_card(ui);
+                        },
+                    );
+                });
+            } else {
+                self.render_command_primary_stack(ui, layout_mode);
+                ui.separator();
+                self.render_command_hint_card(ui);
+            }
+        });
+    }
+
+    fn render_command_primary_stack(&mut self, ui: &mut egui::Ui, layout_mode: LayoutMode) {
+        ui.set_min_width(ui.available_width());
+
+        ui.label(egui::RichText::new(self.t(TextKey::UrlLabel)).strong());
+        let url_response = ui.add_sized(
+            [ui.available_width(), 28.0],
+            egui::TextEdit::singleline(&mut self.url),
+        );
+        if url_response.changed() {
+            self.clear_release_lookup_result();
+        }
+        if url_response.lost_focus()
+            && ui.input(|i| i.key_pressed(egui::Key::Enter))
+            && matches!(
+                backend_contract::resolve_download_intent(&self.url),
+                backend_contract::IntentDTO::NeedsAssetPick { .. }
+            )
+        {
+            self.start_release_lookup();
+        }
+
+        let button_layout = match layout_mode {
+            LayoutMode::Compact => egui::Layout::top_down(egui::Align::Min),
+            LayoutMode::Medium | LayoutMode::Wide => {
+                egui::Layout::left_to_right(egui::Align::Center)
+            }
+        };
+
+        ui.with_layout(button_layout, |ui| {
+            let paste_label = self.t(TextKey::PasteButton);
+            let clear_label = self.t(TextKey::ClearButton);
+            let find_assets_label = self.t(TextKey::FindReleaseAssetsButton);
+            if ui.button(paste_label).clicked() {
+                if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                    if let Ok(text) = clipboard.get_text() {
+                        self.url = text;
+                        self.clear_release_lookup_result();
+                        if matches!(
+                            backend_contract::resolve_download_intent(&self.url),
+                            backend_contract::IntentDTO::NeedsAssetPick { .. }
+                        ) {
+                            self.start_release_lookup();
+                        }
+                    }
+                }
+            }
+            if ui.button(clear_label).clicked() {
+                self.url.clear();
                 self.clear_release_lookup_result();
             }
-            if url_response.lost_focus()
-                && ui.input(|i| i.key_pressed(egui::Key::Enter))
-                && matches!(
-                    backend_contract::resolve_download_intent(&self.url),
-                    backend_contract::IntentDTO::NeedsAssetPick { .. }
-                )
-            {
+            if ui.button(find_assets_label).clicked() {
                 self.start_release_lookup();
             }
+            if self.release_lookup_thread.is_some() {
+                ui.label(format!(
+                    "⏳ {}",
+                    self.t(TextKey::StatusResolvingReleaseAssets)
+                ));
+            } else if !self.release_status.is_empty() {
+                ui.label(egui::RichText::new(&self.release_status).strong());
+            }
+        });
 
-            let button_layout = match layout_mode {
-                LayoutMode::Compact => egui::Layout::top_down(egui::Align::Min),
-                LayoutMode::Medium | LayoutMode::Wide => {
-                    egui::Layout::left_to_right(egui::Align::Center)
-                }
-            };
+        ui.separator();
 
-            ui.with_layout(button_layout, |ui| {
-                let paste_label = self.t(TextKey::PasteButton);
-                let clear_label = self.t(TextKey::ClearButton);
-                let find_assets_label = self.t(TextKey::FindReleaseAssetsButton);
-                if ui.button(paste_label).clicked() {
-                    if let Ok(mut clipboard) = arboard::Clipboard::new() {
-                        if let Ok(text) = clipboard.get_text() {
-                            self.url = text;
-                            self.clear_release_lookup_result();
-                            if matches!(
-                                backend_contract::resolve_download_intent(&self.url),
-                                backend_contract::IntentDTO::NeedsAssetPick { .. }
-                            ) {
-                                self.start_release_lookup();
-                            }
-                        }
+        ui.horizontal_wrapped(|ui| {
+            if ui.button(self.t(TextKey::DownloadButton)).clicked() {
+                self.start_download();
+            }
+            if let Some(ctrl) = &self.control {
+                if ctrl.is_paused() {
+                    if ui.button(self.t(TextKey::ResumeButton)).clicked() {
+                        ctrl.resume();
                     }
+                } else if ui.button(self.t(TextKey::PauseButton)).clicked() {
+                    ctrl.pause();
                 }
-                if ui.button(clear_label).clicked() {
-                    self.url.clear();
-                    self.clear_release_lookup_result();
+                if ui.button(self.t(TextKey::CancelButton)).clicked() {
+                    ctrl.cancel();
+                    self.download_thread = None;
+                    self.control = None;
+                    self.status = self.t(TextKey::StatusCancelled).to_string();
                 }
-                if ui.button(find_assets_label).clicked() {
-                    self.start_release_lookup();
-                }
-                if self.release_lookup_thread.is_some() {
-                    ui.label(format!(
-                        "⏳ {}",
-                        self.t(TextKey::StatusResolvingReleaseAssets)
-                    ));
-                } else if !self.release_status.is_empty() {
-                    ui.label(egui::RichText::new(&self.release_status).strong());
-                }
-            });
+            }
+        });
+
+        if let Some(progress) = self.download_progress_projection() {
+            let mut bar =
+                egui::ProgressBar::new(progress.fraction).text(progress.primary_text.clone());
+            if progress.indeterminate {
+                bar = bar.animate(true);
+            }
+            ui.add_sized([ui.available_width(), 22.0], bar);
+            ui.small(progress.detail_text);
+        }
+    }
+
+    fn render_command_hint_card(&mut self, ui: &mut egui::Ui) {
+        ui.group(|ui| {
+            ui.set_min_width(ui.available_width());
+            let url_is_empty = self.url.trim().is_empty();
+            ui.label(
+                egui::RichText::new(if url_is_empty {
+                    self.t(TextKey::StatusEnterUrlFirst)
+                } else {
+                    self.t(TextKey::StatusReady)
+                })
+                .strong(),
+            );
+
+            if url_is_empty {
+                ui.small(self.t(TextKey::ReleasePickerHint));
+            } else if !self.release_status.is_empty() {
+                ui.small(&self.release_status);
+            } else {
+                ui.small(self.t(TextKey::ReleasePickerHint));
+            }
+
+            if !self.status.is_empty() && self.status != self.release_status {
+                ui.label(&self.status);
+            }
 
             ui.separator();
-
-            ui.horizontal_wrapped(|ui| {
-                if ui.button(self.t(TextKey::DownloadButton)).clicked() {
-                    self.start_download();
+            ui.small(format!(
+                "{} {}",
+                self.t(TextKey::SaveToLabel),
+                self.save_dir.display()
+            ));
+            ui.small(format!(
+                "{} {}",
+                self.t(TextKey::ProxyLabel),
+                if self.proxy.trim().is_empty() {
+                    "auto-detect on action start"
+                } else {
+                    &self.proxy
                 }
-                if let Some(ctrl) = &self.control {
-                    if ctrl.is_paused() {
-                        if ui.button(self.t(TextKey::ResumeButton)).clicked() {
-                            ctrl.resume();
-                        }
-                    } else if ui.button(self.t(TextKey::PauseButton)).clicked() {
-                        ctrl.pause();
-                    }
-                    if ui.button(self.t(TextKey::CancelButton)).clicked() {
-                        ctrl.cancel();
-                        self.download_thread = None;
-                        self.control = None;
-                        self.status = self.t(TextKey::StatusCancelled).to_string();
-                    }
+            ));
+            ui.small(format!(
+                "TLS: {}",
+                if self.allow_invalid_certs {
+                    "unsafe debugging mode"
+                } else {
+                    "strict verification"
                 }
-            });
-
-            if let Some(progress) = self.download_progress_projection() {
-                let mut bar =
-                    egui::ProgressBar::new(progress.fraction).text(progress.primary_text.clone());
-                if progress.indeterminate {
-                    bar = bar.animate(true);
-                }
-                ui.add_sized([ui.available_width(), 22.0], bar);
-                ui.small(progress.detail_text);
-            }
+            ));
         });
     }
 
@@ -1251,7 +1336,7 @@ impl eframe::App for GhMirrorGui {
                 .id_salt("proof_to_action_main_scroll")
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
-                    ui.add_space(4.0);
+                    ui.add_space(2.0);
             if let Some(release) = self.release.clone() {
                 ui.group(|ui| {
                     let release_name = release
