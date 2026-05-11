@@ -59,6 +59,38 @@ const RESIZE_CHANGE_EPSILON: f32 = 0.5;
 const RESIZE_STABILIZE_WINDOW_MS: u64 = 180;
 const RESIZE_REPAINT_FRAME_MS: u64 = 16;
 
+fn app_background_color() -> egui::Color32 {
+    egui::Color32::from_rgb(18, 20, 24)
+}
+
+fn app_chrome_color() -> egui::Color32 {
+    egui::Color32::from_rgb(20, 23, 28)
+}
+
+fn app_surface_color() -> egui::Color32 {
+    egui::Color32::from_rgb(26, 30, 37)
+}
+
+fn app_surface_stroke() -> egui::Stroke {
+    egui::Stroke::new(1.0, egui::Color32::from_rgb(50, 56, 67))
+}
+
+fn app_clear_color() -> [f32; 4] {
+    app_background_color().to_normalized_gamma_f32()
+}
+
+fn chrome_panel_frame() -> egui::Frame {
+    egui::Frame::none()
+        .fill(app_chrome_color())
+        .inner_margin(egui::Margin::symmetric(6.0, 2.0))
+}
+
+fn body_panel_frame() -> egui::Frame {
+    egui::Frame::none()
+        .fill(app_background_color())
+        .inner_margin(egui::Margin::symmetric(6.0, 6.0))
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ViewportDensity {
     Dense,
@@ -465,6 +497,23 @@ fn read_first_existing_font(candidates: &[&str]) -> Option<Vec<u8>> {
 
 fn configure_comfortable_app_style(ctx: &egui::Context) {
     ctx.style_mut(|style| {
+        style.visuals.panel_fill = app_background_color();
+        style.visuals.window_fill = app_surface_color();
+        style.visuals.extreme_bg_color = egui::Color32::from_rgb(14, 16, 20);
+        style.visuals.faint_bg_color = egui::Color32::from_rgb(24, 27, 33);
+        style.visuals.widgets.noninteractive.bg_fill = app_surface_color();
+        style.visuals.widgets.noninteractive.weak_bg_fill = app_surface_color();
+        style.visuals.widgets.noninteractive.bg_stroke = app_surface_stroke();
+        style.visuals.widgets.inactive.bg_fill = egui::Color32::from_rgb(36, 41, 50);
+        style.visuals.widgets.inactive.weak_bg_fill = egui::Color32::from_rgb(32, 37, 45);
+        style.visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(44, 50, 60);
+        style.visuals.widgets.hovered.weak_bg_fill = egui::Color32::from_rgb(40, 46, 55);
+        style.visuals.widgets.active.bg_fill = egui::Color32::from_rgb(52, 59, 70);
+        style.visuals.widgets.open.bg_fill = app_surface_color();
+        style.visuals.hyperlink_color = egui::Color32::from_rgb(105, 170, 255);
+        style.visuals.selection.bg_fill = egui::Color32::from_rgb(56, 112, 190);
+        style.visuals.selection.stroke =
+            egui::Stroke::new(1.0, egui::Color32::from_rgb(190, 218, 255));
         style.text_styles.insert(
             egui::TextStyle::Heading,
             egui::FontId::new(18.0, egui::FontFamily::Proportional),
@@ -1038,6 +1087,8 @@ impl GhMirrorGui {
         add_contents: impl FnOnce(&mut egui::Ui) -> R,
     ) -> R {
         egui::Frame::group(ui.style())
+            .fill(app_surface_color())
+            .stroke(app_surface_stroke())
             .inner_margin(density.panel_margin())
             .show(ui, add_contents)
             .inner
@@ -1047,6 +1098,7 @@ impl GhMirrorGui {
         let density = self.current_density();
         Self::gallery_panel(ui, density, |ui| {
             ui.set_min_width(ui.available_width());
+            ui.set_min_height(ui.available_height());
             let layout_mode = self.command_layout_mode;
             let wide_layout = matches!(layout_mode, LayoutMode::Medium | LayoutMode::Wide);
 
@@ -2486,6 +2538,10 @@ impl GhMirrorGui {
 }
 
 impl eframe::App for GhMirrorGui {
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        app_clear_color()
+    }
+
     fn save(&mut self, storage: &mut dyn Storage) {
         let state = SavedState {
             selected_mirror: self.selected_mirror,
@@ -2776,6 +2832,9 @@ impl eframe::App for GhMirrorGui {
         let density = self.current_density();
         egui::TopBottomPanel::top("proof_to_action_top_bar")
             .exact_height(density.top_bar_height())
+            .resizable(false)
+            .show_separator_line(false)
+            .frame(chrome_panel_frame())
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.heading(format!("🚀 {}", self.t(TextKey::AppTitle)));
@@ -2796,14 +2855,19 @@ impl eframe::App for GhMirrorGui {
 
         egui::TopBottomPanel::top("proof_to_action_command_panel")
             .exact_height(density.command_panel_height(self.command_layout_mode))
+            .resizable(false)
+            .show_separator_line(false)
+            .frame(chrome_panel_frame())
             .show(ctx, |ui| {
                 self.render_command_panel(ui);
             });
 
         // Draw UI body. Scroll is a fallback safety net after responsive layout projection.
-        egui::CentralPanel::default().show(ctx, |ui| {
-            self.render_body(ui);
-        });
+        egui::CentralPanel::default()
+            .frame(body_panel_frame())
+            .show(ctx, |ui| {
+                self.render_body(ui);
+            });
     }
 }
 
@@ -2947,6 +3011,18 @@ mod tests {
             ViewportDensity::Regular.command_panel_height(LayoutMode::Compact)
                 > ViewportDensity::Regular.command_panel_height(LayoutMode::Wide)
         );
+    }
+
+    #[test]
+    fn app_palette_avoids_black_resize_clear_and_empty_bars() {
+        assert_ne!(app_background_color(), egui::Color32::BLACK);
+        assert_ne!(app_chrome_color(), egui::Color32::BLACK);
+        assert_ne!(app_surface_color(), egui::Color32::BLACK);
+        let clear = app_clear_color();
+        assert!(clear[0] > 0.05);
+        assert!(clear[1] > 0.05);
+        assert!(clear[2] > 0.05);
+        assert_eq!(clear[3], 1.0);
     }
 
     #[test]
