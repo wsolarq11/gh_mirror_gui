@@ -46,13 +46,119 @@ type DownloadResultMessage = Result<DownloadCompletion, String>;
 
 const GOLDEN_MAJOR: f32 = 0.618_034;
 const GOLDEN_MINOR: f32 = 1.0 - GOLDEN_MAJOR;
-const COMMAND_COLUMN_GAP: f32 = 6.0;
-const BODY_COLUMN_GAP: f32 = 6.0;
 const BODY_TWO_COLUMN_MIN_WIDTH: f32 = 820.0;
 const BODY_THREE_COLUMN_MIN_WIDTH: f32 = 1120.0;
-const CARD_STACK_GAP: f32 = 1.0;
-const COMMAND_INPUT_HEIGHT: f32 = 24.0;
-const PROGRESS_HEIGHT: f32 = 18.0;
+const BODY_THREE_COLUMN_SHORT_MIN_WIDTH: f32 = 1040.0;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ViewportDensity {
+    Dense,
+    Regular,
+    Spacious,
+}
+
+impl ViewportDensity {
+    fn for_size(size: egui::Vec2) -> Self {
+        if !size.x.is_finite() || !size.y.is_finite() || size.x < 900.0 || size.y < 620.0 {
+            Self::Dense
+        } else if size.x >= 1500.0 && size.y >= 900.0 {
+            Self::Spacious
+        } else {
+            Self::Regular
+        }
+    }
+
+    const fn is_dense(self) -> bool {
+        matches!(self, Self::Dense)
+    }
+
+    const fn advanced_default_open(self) -> bool {
+        matches!(self, Self::Spacious)
+    }
+
+    fn panel_margin(self) -> egui::Margin {
+        match self {
+            Self::Dense => egui::Margin::symmetric(4.0, 3.0),
+            Self::Regular => egui::Margin::symmetric(6.0, 5.0),
+            Self::Spacious => egui::Margin::symmetric(7.0, 6.0),
+        }
+    }
+
+    fn item_spacing(self) -> egui::Vec2 {
+        match self {
+            Self::Dense => egui::vec2(4.0, 2.0),
+            Self::Regular => egui::vec2(6.0, 4.0),
+            Self::Spacious => egui::vec2(7.0, 5.0),
+        }
+    }
+
+    fn button_padding(self) -> egui::Vec2 {
+        match self {
+            Self::Dense => egui::vec2(5.0, 2.0),
+            Self::Regular => egui::vec2(6.0, 3.0),
+            Self::Spacious => egui::vec2(7.0, 4.0),
+        }
+    }
+
+    const fn command_gap(self) -> f32 {
+        match self {
+            Self::Dense => 4.0,
+            Self::Regular => 6.0,
+            Self::Spacious => 8.0,
+        }
+    }
+
+    const fn body_gap(self) -> f32 {
+        match self {
+            Self::Dense => 4.0,
+            Self::Regular => 6.0,
+            Self::Spacious => 8.0,
+        }
+    }
+
+    const fn card_gap(self) -> f32 {
+        match self {
+            Self::Dense => 0.0,
+            Self::Regular => 1.0,
+            Self::Spacious => 2.0,
+        }
+    }
+
+    const fn input_height(self) -> f32 {
+        match self {
+            Self::Dense => 22.0,
+            Self::Regular => 24.0,
+            Self::Spacious => 26.0,
+        }
+    }
+
+    const fn progress_height(self) -> f32 {
+        match self {
+            Self::Dense => 16.0,
+            Self::Regular => 18.0,
+            Self::Spacious => 20.0,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BodyLayout {
+    Single,
+    GoldenTwo,
+    GoldenThree,
+}
+
+fn body_layout_for_viewport(total_width: f32, body_height: f32) -> BodyLayout {
+    if total_width < BODY_TWO_COLUMN_MIN_WIDTH {
+        BodyLayout::Single
+    } else if total_width >= BODY_THREE_COLUMN_MIN_WIDTH
+        || (body_height < 620.0 && total_width >= BODY_THREE_COLUMN_SHORT_MIN_WIDTH)
+    {
+        BodyLayout::GoldenThree
+    } else {
+        BodyLayout::GoldenTwo
+    }
+}
 
 fn golden_two_column_widths(total_width: f32, gap: f32) -> (f32, f32) {
     let usable_width = (total_width - gap).max(0.0);
@@ -352,6 +458,7 @@ fn default_unknown_keep_file() -> bool {
 
 pub(crate) struct GhMirrorGui {
     url: String,
+    last_viewport_size: egui::Vec2,
     save_dir: PathBuf,
     proxy: String,
     locale: UiLocale,
@@ -509,6 +616,7 @@ impl GhMirrorGui {
 
         Self {
             url: String::new(),
+            last_viewport_size: egui::vec2(1366.0, 860.0),
             save_dir: PathBuf::from(&save_dir),
             proxy,
             locale,
@@ -605,6 +713,23 @@ impl GhMirrorGui {
         ui_text(self.locale, key)
     }
 
+    fn current_density(&self) -> ViewportDensity {
+        ViewportDensity::for_size(self.last_viewport_size)
+    }
+
+    fn apply_adaptive_style(&self, ctx: &egui::Context) {
+        let density = self.current_density();
+        ctx.style_mut(|style| {
+            style.spacing.item_spacing = density.item_spacing();
+            style.spacing.button_padding = density.button_padding();
+            style.spacing.window_margin = density.panel_margin();
+        });
+    }
+
+    fn add_card_gap(&self, ui: &mut egui::Ui) {
+        ui.add_space(self.current_density().card_gap());
+    }
+
     fn tr(&self, en: &'static str, zh: &'static str) -> &'static str {
         match self.locale {
             UiLocale::En => en,
@@ -642,22 +767,27 @@ impl GhMirrorGui {
         Some(proxy)
     }
 
-    fn gallery_panel<R>(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    fn gallery_panel<R>(
+        ui: &mut egui::Ui,
+        density: ViewportDensity,
+        add_contents: impl FnOnce(&mut egui::Ui) -> R,
+    ) -> R {
         egui::Frame::group(ui.style())
-            .inner_margin(egui::Margin::symmetric(6.0, 5.0))
+            .inner_margin(density.panel_margin())
             .show(ui, add_contents)
             .inner
     }
 
     fn render_command_panel(&mut self, ui: &mut egui::Ui) {
-        Self::gallery_panel(ui, |ui| {
+        let density = self.current_density();
+        Self::gallery_panel(ui, density, |ui| {
             ui.set_min_width(ui.available_width());
             let layout_mode = layout_mode_for_width(ui.available_width());
             let wide_layout = matches!(layout_mode, LayoutMode::Medium | LayoutMode::Wide);
 
             if wide_layout {
                 let total_width = ui.available_width();
-                let gap = COMMAND_COLUMN_GAP;
+                let gap = density.command_gap();
                 let (left_width, right_width) = golden_two_column_widths(total_width, gap);
 
                 ui.horizontal_top(|ui| {
@@ -665,7 +795,7 @@ impl GhMirrorGui {
                         egui::vec2(left_width, 0.0),
                         egui::Layout::top_down(egui::Align::Min),
                         |ui| {
-                            self.render_command_primary_stack(ui, layout_mode);
+                            self.render_command_primary_stack(ui, layout_mode, density);
                         },
                     );
                     ui.add_space(gap);
@@ -678,19 +808,24 @@ impl GhMirrorGui {
                     );
                 });
             } else {
-                self.render_command_primary_stack(ui, layout_mode);
+                self.render_command_primary_stack(ui, layout_mode, density);
                 ui.separator();
                 self.render_command_hint_content(ui);
             }
         });
     }
 
-    fn render_command_primary_stack(&mut self, ui: &mut egui::Ui, layout_mode: LayoutMode) {
+    fn render_command_primary_stack(
+        &mut self,
+        ui: &mut egui::Ui,
+        layout_mode: LayoutMode,
+        density: ViewportDensity,
+    ) {
         ui.set_min_width(ui.available_width());
 
         ui.label(egui::RichText::new(self.t(TextKey::UrlLabel)).strong());
         let url_response = ui.add_sized(
-            [ui.available_width(), COMMAND_INPUT_HEIGHT],
+            [ui.available_width(), density.input_height()],
             egui::TextEdit::singleline(&mut self.url),
         );
         if url_response.changed() {
@@ -772,10 +907,10 @@ impl GhMirrorGui {
             }
         });
 
-        self.render_download_progress(ui);
+        self.render_download_progress(ui, density);
     }
 
-    fn render_download_progress(&self, ui: &mut egui::Ui) {
+    fn render_download_progress(&self, ui: &mut egui::Ui, density: ViewportDensity) {
         let Some(progress) = self.download_progress_projection() else {
             return;
         };
@@ -787,7 +922,7 @@ impl GhMirrorGui {
             });
         } else {
             ui.add_sized(
-                [ui.available_width(), PROGRESS_HEIGHT],
+                [ui.available_width(), density.progress_height()],
                 egui::ProgressBar::new(progress.fraction).text(progress.primary_text.clone()),
             );
         }
@@ -849,66 +984,72 @@ impl GhMirrorGui {
     }
 
     fn render_body(&mut self, ui: &mut egui::Ui) {
+        let density = self.current_density();
+        let body_height = ui.available_height();
         egui::ScrollArea::vertical()
             .id_salt("proof_to_action_main_scroll")
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                ui.add_space(1.0);
+                ui.add_space(density.card_gap());
                 let total_width = ui.available_width();
-                if total_width < BODY_TWO_COLUMN_MIN_WIDTH {
-                    self.render_body_primary_column(ui);
-                    self.render_body_secondary_column(ui);
-                } else if total_width >= BODY_THREE_COLUMN_MIN_WIDTH {
-                    let gap = BODY_COLUMN_GAP;
-                    let (primary_width, policy_width, update_width) =
-                        golden_three_column_widths(total_width, gap);
+                match body_layout_for_viewport(total_width, body_height) {
+                    BodyLayout::Single => {
+                        self.render_body_primary_column(ui);
+                        self.render_body_secondary_column(ui);
+                    }
+                    BodyLayout::GoldenThree => {
+                        let gap = density.body_gap();
+                        let (primary_width, policy_width, update_width) =
+                            golden_three_column_widths(total_width, gap);
 
-                    ui.horizontal_top(|ui| {
-                        ui.allocate_ui_with_layout(
-                            egui::vec2(primary_width, 0.0),
-                            egui::Layout::top_down(egui::Align::Min),
-                            |ui| {
-                                self.render_body_primary_column(ui);
-                            },
-                        );
-                        ui.add_space(gap);
-                        ui.allocate_ui_with_layout(
-                            egui::vec2(policy_width, 0.0),
-                            egui::Layout::top_down(egui::Align::Min),
-                            |ui| {
-                                self.render_body_policy_column(ui);
-                            },
-                        );
-                        ui.add_space(gap);
-                        ui.allocate_ui_with_layout(
-                            egui::vec2(update_width, 0.0),
-                            egui::Layout::top_down(egui::Align::Min),
-                            |ui| {
-                                self.render_body_update_column(ui);
-                            },
-                        );
-                    });
-                } else {
-                    let gap = BODY_COLUMN_GAP;
-                    let (left_width, right_width) = golden_two_column_widths(total_width, gap);
+                        ui.horizontal_top(|ui| {
+                            ui.allocate_ui_with_layout(
+                                egui::vec2(primary_width, 0.0),
+                                egui::Layout::top_down(egui::Align::Min),
+                                |ui| {
+                                    self.render_body_primary_column(ui);
+                                },
+                            );
+                            ui.add_space(gap);
+                            ui.allocate_ui_with_layout(
+                                egui::vec2(policy_width, 0.0),
+                                egui::Layout::top_down(egui::Align::Min),
+                                |ui| {
+                                    self.render_body_policy_column(ui);
+                                },
+                            );
+                            ui.add_space(gap);
+                            ui.allocate_ui_with_layout(
+                                egui::vec2(update_width, 0.0),
+                                egui::Layout::top_down(egui::Align::Min),
+                                |ui| {
+                                    self.render_body_update_column(ui);
+                                },
+                            );
+                        });
+                    }
+                    BodyLayout::GoldenTwo => {
+                        let gap = density.body_gap();
+                        let (left_width, right_width) = golden_two_column_widths(total_width, gap);
 
-                    ui.horizontal_top(|ui| {
-                        ui.allocate_ui_with_layout(
-                            egui::vec2(left_width, 0.0),
-                            egui::Layout::top_down(egui::Align::Min),
-                            |ui| {
-                                self.render_body_primary_column(ui);
-                            },
-                        );
-                        ui.add_space(gap);
-                        ui.allocate_ui_with_layout(
-                            egui::vec2(right_width, 0.0),
-                            egui::Layout::top_down(egui::Align::Min),
-                            |ui| {
-                                self.render_body_secondary_column(ui);
-                            },
-                        );
-                    });
+                        ui.horizontal_top(|ui| {
+                            ui.allocate_ui_with_layout(
+                                egui::vec2(left_width, 0.0),
+                                egui::Layout::top_down(egui::Align::Min),
+                                |ui| {
+                                    self.render_body_primary_column(ui);
+                                },
+                            );
+                            ui.add_space(gap);
+                            ui.allocate_ui_with_layout(
+                                egui::vec2(right_width, 0.0),
+                                egui::Layout::top_down(egui::Align::Min),
+                                |ui| {
+                                    self.render_body_secondary_column(ui);
+                                },
+                            );
+                        });
+                    }
                 }
             });
     }
@@ -934,7 +1075,8 @@ impl GhMirrorGui {
     }
 
     fn render_workspace_summary_card(&mut self, ui: &mut egui::Ui) {
-        Self::gallery_panel(ui, |ui| {
+        let density = self.current_density();
+        Self::gallery_panel(ui, density, |ui| {
             ui.set_min_width(ui.available_width());
             ui.label(egui::RichText::new(self.tr("Workspace", "工作区")).strong());
 
@@ -1001,8 +1143,35 @@ impl GhMirrorGui {
                     ui.label(policy_summary);
                     ui.end_row();
                 });
+
+            if !density.is_dense() {
+                ui.separator();
+                self.render_decision_chain(ui);
+            }
         });
-        ui.add_space(CARD_STACK_GAP);
+        self.add_card_gap(ui);
+    }
+
+    fn render_decision_chain(&self, ui: &mut egui::Ui) {
+        ui.small(self.tr("Decision flow", "决策流"));
+        ui.horizontal_wrapped(|ui| {
+            for (idx, label) in [
+                self.tr("Source", "来源"),
+                self.tr("Intent", "意图"),
+                self.tr("Policy", "策略"),
+                self.tr("Evidence", "证据"),
+                self.tr("Verdict", "裁决"),
+                self.tr("Action", "动作"),
+            ]
+            .iter()
+            .enumerate()
+            {
+                if idx > 0 {
+                    ui.small("→");
+                }
+                ui.label(egui::RichText::new(*label).small().strong());
+            }
+        });
     }
 
     fn render_release_picker_card(&mut self, ui: &mut egui::Ui) {
@@ -1010,7 +1179,7 @@ impl GhMirrorGui {
             return;
         };
 
-        Self::gallery_panel(ui, |ui| {
+        Self::gallery_panel(ui, self.current_density(), |ui| {
             ui.set_min_width(ui.available_width());
             let release_name = release
                 .name
@@ -1111,11 +1280,12 @@ impl GhMirrorGui {
                 }
             }
         });
-        ui.add_space(CARD_STACK_GAP);
+        self.add_card_gap(ui);
     }
 
     fn render_transfer_settings_card(&mut self, ui: &mut egui::Ui) {
-        Self::gallery_panel(ui, |ui| {
+        let density = self.current_density();
+        Self::gallery_panel(ui, density, |ui| {
             ui.set_min_width(ui.available_width());
 
             // Route guardrail: this project is not a mirror-list aggregator.
@@ -1209,7 +1379,7 @@ impl GhMirrorGui {
                 let clear_width = 84.0;
                 let edit_width = (ui.available_width() - clear_width).max(180.0);
                 ui.add_sized(
-                    [edit_width, 22.0],
+                    [edit_width, density.input_height()],
                     egui::TextEdit::singleline(&mut self.proxy),
                 );
                 if ui.button(self.t(TextKey::ClearProxyButton)).clicked() {
@@ -1229,37 +1399,41 @@ impl GhMirrorGui {
             });
 
             ui.separator();
-            ui.label(egui::RichText::new(self.t(TextKey::NetworkPolicyTitle)).strong());
-            ui.small(
-                "Outbound HTTP(S) requests are restricted to GitHub official artifact hosts (https only).",
-            );
-            let hosts = backend_contract::official_github_artifact_hosts();
-            ui.horizontal_wrapped(|ui| {
-                if ui.button(self.t(TextKey::CopyAllowlistButton)).clicked() {
-                    let mut text = String::new();
-                    for (i, host) in hosts.iter().enumerate() {
-                        if i > 0 {
-                            text.push('\n');
+            egui::CollapsingHeader::new(self.t(TextKey::NetworkPolicyTitle))
+                .default_open(density.advanced_default_open())
+                .show(ui, |ui| {
+                    ui.small(
+                        "Outbound HTTP(S) requests are restricted to GitHub official artifact hosts (https only).",
+                    );
+                    let hosts = backend_contract::official_github_artifact_hosts();
+                    ui.horizontal_wrapped(|ui| {
+                        if ui.button(self.t(TextKey::CopyAllowlistButton)).clicked() {
+                            let mut text = String::new();
+                            for (i, host) in hosts.iter().enumerate() {
+                                if i > 0 {
+                                    text.push('\n');
+                                }
+                                text.push_str(host);
+                            }
+                            ui.ctx().copy_text(text);
+                            self.status =
+                                "Copied official artifact host allowlist to clipboard".to_string();
                         }
-                        text.push_str(host);
-                    }
-                    ui.ctx().copy_text(text);
-                    self.status =
-                        "Copied official artifact host allowlist to clipboard".to_string();
-                }
-                ui.small(format!("{} hosts", hosts.len()));
-            });
-            ui.collapsing(self.t(TextKey::ShowAllowlist), |ui| {
-                for host in hosts {
-                    ui.monospace(*host);
-                }
-            });
+                        ui.small(format!("{} hosts", hosts.len()));
+                    });
+                    ui.collapsing(self.t(TextKey::ShowAllowlist), |ui| {
+                        for host in hosts {
+                            ui.monospace(*host);
+                        }
+                    });
+                });
         });
-        ui.add_space(CARD_STACK_GAP);
+        self.add_card_gap(ui);
     }
 
     fn render_trust_policy_card(&mut self, ui: &mut egui::Ui) {
-        Self::gallery_panel(ui, |ui| {
+        let density = self.current_density();
+        Self::gallery_panel(ui, density, |ui| {
             ui.set_min_width(ui.available_width());
             ui.label(egui::RichText::new(self.t(TextKey::TrustPolicyTitle)).strong());
             let keep_unknown_downloads_label = self.t(TextKey::KeepUnknownDownloads);
@@ -1296,124 +1470,146 @@ impl GhMirrorGui {
                         );
                     });
             });
-            ui.separator();
-            ui.label(egui::RichText::new(self.t(TextKey::VerificationSourceTrustTitle)).strong());
             let mut require_trusted_source =
                 backend_contract::source_trust_requires_signed(&self.trust_policy);
-            if ui
-                .checkbox(
-                    &mut require_trusted_source,
-                    self.t(TextKey::RequireSignedChecksumSource),
-                )
-                .changed()
-            {
-                backend_contract::set_source_trust_requires_signed(
-                    &mut self.trust_policy,
-                    require_trusted_source,
-                );
-            }
+            let has_pinned_key =
+                backend_contract::trusted_publisher_key_fingerprint(&self.trust_policy).is_some();
+            ui.separator();
             ui.horizontal_wrapped(|ui| {
-                ui.label(self.t(TextKey::PinnedPublisherKeyLabel));
-                let mut trusted_publisher_key =
-                    backend_contract::trusted_publisher_key_text(&self.trust_policy);
-                let edit_width = ui.available_width().max(180.0);
                 if ui
-                    .add_sized(
-                        [edit_width, 22.0],
-                        egui::TextEdit::singleline(&mut trusted_publisher_key),
+                    .checkbox(
+                        &mut require_trusted_source,
+                        self.t(TextKey::RequireSignedChecksumSource),
                     )
                     .changed()
                 {
-                    backend_contract::set_trusted_publisher_key_from_manual_input(
+                    backend_contract::set_source_trust_requires_signed(
                         &mut self.trust_policy,
-                        &mut self.publisher_key_source,
-                        trusted_publisher_key,
+                        require_trusted_source,
                     );
                 }
+
+                if require_trusted_source && !has_pinned_key {
+                    ui.colored_label(
+                        egui::Color32::from_rgb(220, 70, 70),
+                        self.tr("publisher key required", "需要发布者公钥"),
+                    );
+                } else if has_pinned_key {
+                    ui.small(self.tr("publisher key pinned", "已固定发布者公钥"));
+                } else {
+                    ui.small(self.tr("hash evidence only", "仅哈希证据"));
+                }
             });
-            ui.horizontal_wrapped(|ui| {
-                if ui.button(self.t(TextKey::ImportPublicKey)).clicked() {
-                    if let Some(path) = FileDialog::new()
-                        .add_filter("Public key", &["pub", "txt"])
-                        .pick_file()
+            let open_advanced =
+                density.advanced_default_open() || require_trusted_source || has_pinned_key;
+            egui::CollapsingHeader::new(self.t(TextKey::VerificationSourceTrustTitle))
+                .default_open(open_advanced)
+                .show(ui, |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(self.t(TextKey::PinnedPublisherKeyLabel));
+                        let mut trusted_publisher_key =
+                            backend_contract::trusted_publisher_key_text(&self.trust_policy);
+                        let edit_width = ui.available_width().max(180.0);
+                        if ui
+                            .add_sized(
+                                [edit_width, density.input_height()],
+                                egui::TextEdit::singleline(&mut trusted_publisher_key),
+                            )
+                            .changed()
+                        {
+                            backend_contract::set_trusted_publisher_key_from_manual_input(
+                                &mut self.trust_policy,
+                                &mut self.publisher_key_source,
+                                trusted_publisher_key,
+                            );
+                        }
+                    });
+                    ui.horizontal_wrapped(|ui| {
+                        if ui.button(self.t(TextKey::ImportPublicKey)).clicked() {
+                            if let Some(path) = FileDialog::new()
+                                .add_filter("Public key", &["pub", "txt"])
+                                .pick_file()
+                            {
+                                match import_publisher_key_pin_from_path(&path) {
+                                    Ok(pin) => {
+                                        self.status =
+                                            backend_contract::set_trusted_publisher_key_pin(
+                                                &mut self.trust_policy,
+                                                &mut self.publisher_key_source,
+                                                pin,
+                                                format!("local file {}", path.display()),
+                                            );
+                                    }
+                                    Err(e) => {
+                                        self.status = format!("❌ Public key import failed: {e}");
+                                    }
+                                }
+                            }
+                        }
+                        if ui.button(self.t(TextKey::NormalizeKey)).clicked() {
+                            match backend_contract::normalize_trusted_publisher_key(
+                                &mut self.trust_policy,
+                                &mut self.publisher_key_source,
+                            ) {
+                                Ok(status) => self.status = status,
+                                Err(e) => {
+                                    self.status = format!("❌ Publisher key is invalid: {e}");
+                                }
+                            }
+                        }
+                        if ui.button(self.t(TextKey::ClearKey)).clicked() {
+                            backend_contract::clear_trusted_publisher_key(
+                                &mut self.trust_policy,
+                                &mut self.publisher_key_source,
+                            );
+                        }
+                    });
+                    if let Some(fingerprint) =
+                        backend_contract::trusted_publisher_key_fingerprint(&self.trust_policy)
                     {
-                        match import_publisher_key_pin_from_path(&path) {
-                            Ok(pin) => {
-                                self.status = backend_contract::set_trusted_publisher_key_pin(
-                                    &mut self.trust_policy,
-                                    &mut self.publisher_key_source,
-                                    pin,
-                                    format!("local file {}", path.display()),
-                                );
-                            }
-                            Err(e) => {
-                                self.status = format!("❌ Public key import failed: {e}");
-                            }
-                        }
+                        ui.small(format!("Pinned key SHA256 fingerprint: {fingerprint}"));
+                        ui.small(format!(
+                            "Pinned key source: {}",
+                            backend_contract::publisher_key_source_label_for_policy(
+                                &self.trust_policy,
+                                &self.publisher_key_source
+                            )
+                        ));
+                    } else if backend_contract::source_trust_requires_signed(&self.trust_policy) {
+                        ui.colored_label(
+                            egui::Color32::from_rgb(220, 70, 70),
+                            "Required policy needs a pinned Ed25519 public key and .sig source assets.",
+                        );
+                    } else {
+                        ui.small("No key pinned: hash verification still works, but source authenticity is not checked.");
                     }
-                }
-                if ui.button(self.t(TextKey::NormalizeKey)).clicked() {
-                    match backend_contract::normalize_trusted_publisher_key(
-                        &mut self.trust_policy,
-                        &mut self.publisher_key_source,
-                    ) {
-                        Ok(status) => self.status = status,
-                        Err(e) => {
-                            self.status = format!("❌ Publisher key is invalid: {e}");
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(self.t(TextKey::HistoryPathLabel));
+                        let default_width = 80.0;
+                        let edit_width = (ui.available_width() - default_width).max(180.0);
+                        ui.add_sized(
+                            [edit_width, density.input_height()],
+                            egui::TextEdit::singleline(&mut self.history_path),
+                        );
+                        if ui.button(self.t(TextKey::DefaultButton)).clicked() {
+                            self.history_path.clear();
                         }
-                    }
-                }
-                if ui.button(self.t(TextKey::ClearKey)).clicked() {
-                    backend_contract::clear_trusted_publisher_key(
-                        &mut self.trust_policy,
-                        &mut self.publisher_key_source,
+                    });
+                    ui.small(format!(
+                        "Effective history: {}",
+                        self.effective_history_path().display()
+                    ));
+                    ui.small(
+                        "Open Evidence uses the exact JSON evidence path recorded for the completed download.",
                     );
-                }
-            });
-            if let Some(fingerprint) =
-                backend_contract::trusted_publisher_key_fingerprint(&self.trust_policy)
-            {
-                ui.small(format!("Pinned key SHA256 fingerprint: {fingerprint}"));
-                ui.small(format!(
-                    "Pinned key source: {}",
-                    backend_contract::publisher_key_source_label_for_policy(
-                        &self.trust_policy,
-                        &self.publisher_key_source
-                    )
-                ));
-            } else if backend_contract::source_trust_requires_signed(&self.trust_policy) {
-                ui.colored_label(
-                    egui::Color32::from_rgb(220, 70, 70),
-                    "Required policy needs a pinned Ed25519 public key and .sig source assets.",
-                );
-            } else {
-                ui.small("No key pinned: hash verification still works, but source authenticity is not checked.");
-            }
-            ui.horizontal_wrapped(|ui| {
-                ui.label(self.t(TextKey::HistoryPathLabel));
-                let default_width = 80.0;
-                let edit_width = (ui.available_width() - default_width).max(180.0);
-                ui.add_sized(
-                    [edit_width, 22.0],
-                    egui::TextEdit::singleline(&mut self.history_path),
-                );
-                if ui.button(self.t(TextKey::DefaultButton)).clicked() {
-                    self.history_path.clear();
-                }
-            });
-            ui.small(format!(
-                "Effective history: {}",
-                self.effective_history_path().display()
-            ));
-            ui.small(
-                "Open Evidence uses the exact JSON evidence path recorded for the completed download.",
-            );
+                });
         });
-        ui.add_space(CARD_STACK_GAP);
+        self.add_card_gap(ui);
     }
 
     fn render_update_card(&mut self, ui: &mut egui::Ui) {
-        Self::gallery_panel(ui, |ui| {
+        let density = self.current_density();
+        Self::gallery_panel(ui, density, |ui| {
             ui.set_min_width(ui.available_width());
             ui.label(egui::RichText::new(self.t(TextKey::Stage1Title)).strong());
             ui.small("Checks the public latest release and only reports candidate / no-update / refused.");
@@ -1439,72 +1635,85 @@ impl GhMirrorGui {
             }
 
             ui.separator();
-            ui.label(egui::RichText::new(self.t(TextKey::Stage2Title)).strong());
-            ui.small("Stages a verified candidate to a local folder (still no install).");
-            ui.horizontal_wrapped(|ui| {
-                let running = self.update_stage_thread.is_some();
-                if ui
-                    .add_enabled(
-                        !running,
-                        egui::Button::new(self.t(TextKey::StageLatestCandidateButton)),
-                    )
-                    .clicked()
-                {
-                    self.start_update_candidate_stage();
-                }
-                if running {
-                    ui.label(format!("⏳ {}", self.t(TextKey::StatusStagingCandidate)));
-                } else if !self.update_stage_status.is_empty() {
-                    ui.label(&self.update_stage_status);
-                }
-            });
-            if let Some(report) = self.update_stage_report.clone() {
-                render_update_candidate_stage(ui, &report);
-                ui.separator();
-                if let Some(record) = &self.update_apply_plan_evidence_record {
-                    render_update_apply_plan_preview(ui, &record.plan, Some(record));
-                } else {
-                    match backend_contract::current_exe_update_apply_plan_for_stage2(&report) {
-                        Ok(plan) => {
-                            render_update_apply_plan_preview(ui, &plan, None);
+            let stage2_open = density.advanced_default_open()
+                || self.update_stage_thread.is_some()
+                || self.update_stage_report.is_some()
+                || self.update_apply_bundle_evidence_record.is_some()
+                || !self.update_stage_status.is_empty()
+                || !self.update_apply_bundle_status.is_empty();
+            egui::CollapsingHeader::new(self.t(TextKey::Stage2Title))
+                .default_open(stage2_open)
+                .show(ui, |ui| {
+                    ui.small("Stages a verified candidate to a local folder (still no install).");
+                    ui.horizontal_wrapped(|ui| {
+                        let running = self.update_stage_thread.is_some();
+                        if ui
+                            .add_enabled(
+                                !running,
+                                egui::Button::new(self.t(TextKey::StageLatestCandidateButton)),
+                            )
+                            .clicked()
+                        {
+                            self.start_update_candidate_stage();
                         }
-                        Err(e) => {
-                            ui.small(format!("Update apply plan preview unavailable ({e})"));
+                        if running {
+                            ui.label(format!("⏳ {}", self.t(TextKey::StatusStagingCandidate)));
+                        } else if !self.update_stage_status.is_empty() {
+                            ui.label(&self.update_stage_status);
                         }
-                    }
-                }
-                ui.separator();
-                ui.horizontal_wrapped(|ui| {
-                    if ui
-                        .button(self.t(TextKey::PrepareHelperBundleButton))
-                        .clicked()
-                    {
-                        match backend_contract::record_update_apply_bundle_evidence_for_current_exe(
-                            &report,
-                        ) {
-                            Ok(record) => {
-                                self.update_apply_bundle_status =
-                                    "Controlled helper bundle prepared; helper execution is not launched by the UI."
-                                        .to_string();
-                                self.update_apply_bundle_evidence_record = Some(record);
-                            }
-                            Err(e) => {
-                                self.update_apply_bundle_status =
-                                    format!("Controlled helper bundle unavailable: {e}");
-                                self.update_apply_bundle_evidence_record = None;
+                    });
+                    if let Some(report) = self.update_stage_report.clone() {
+                        render_update_candidate_stage(ui, &report);
+                        ui.separator();
+                        if let Some(record) = &self.update_apply_plan_evidence_record {
+                            render_update_apply_plan_preview(ui, &record.plan, Some(record));
+                        } else {
+                            match backend_contract::current_exe_update_apply_plan_for_stage2(
+                                &report,
+                            ) {
+                                Ok(plan) => {
+                                    render_update_apply_plan_preview(ui, &plan, None);
+                                }
+                                Err(e) => {
+                                    ui.small(format!(
+                                        "Update apply plan preview unavailable ({e})"
+                                    ));
+                                }
                             }
                         }
-                    }
-                    if !self.update_apply_bundle_status.is_empty() {
-                        ui.label(&self.update_apply_bundle_status);
+                        ui.separator();
+                        ui.horizontal_wrapped(|ui| {
+                            if ui
+                                .button(self.t(TextKey::PrepareHelperBundleButton))
+                                .clicked()
+                            {
+                                match backend_contract::record_update_apply_bundle_evidence_for_current_exe(
+                                    &report,
+                                ) {
+                                    Ok(record) => {
+                                        self.update_apply_bundle_status =
+                                            "Controlled helper bundle prepared; helper execution is not launched by the UI."
+                                                .to_string();
+                                        self.update_apply_bundle_evidence_record = Some(record);
+                                    }
+                                    Err(e) => {
+                                        self.update_apply_bundle_status =
+                                            format!("Controlled helper bundle unavailable: {e}");
+                                        self.update_apply_bundle_evidence_record = None;
+                                    }
+                                }
+                            }
+                            if !self.update_apply_bundle_status.is_empty() {
+                                ui.label(&self.update_apply_bundle_status);
+                            }
+                        });
+                        if let Some(record) = &self.update_apply_bundle_evidence_record {
+                            render_update_apply_bundle_preview(ui, record);
+                        }
                     }
                 });
-                if let Some(record) = &self.update_apply_bundle_evidence_record {
-                    render_update_apply_bundle_preview(ui, record);
-                }
-            }
         });
-        ui.add_space(CARD_STACK_GAP);
+        self.add_card_gap(ui);
     }
 
     fn render_last_download_card(&mut self, ui: &mut egui::Ui) {
@@ -1512,7 +1721,7 @@ impl GhMirrorGui {
             return;
         };
 
-        Self::gallery_panel(ui, |ui| {
+        Self::gallery_panel(ui, self.current_density(), |ui| {
             ui.set_min_width(ui.available_width());
             ui.horizontal_wrapped(|ui| {
                 if let Some(notice) = backend_contract::last_download_status_notice(&snapshot) {
@@ -1552,7 +1761,7 @@ impl GhMirrorGui {
                 render_trust_center_snapshot(ui, &snapshot);
             }
         });
-        ui.add_space(CARD_STACK_GAP);
+        self.add_card_gap(ui);
     }
 
     fn update_candidate_evidence_dir(&self) -> PathBuf {
@@ -1915,6 +2124,9 @@ impl eframe::App for GhMirrorGui {
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.last_viewport_size = ctx.screen_rect().size();
+        self.apply_adaptive_style(ctx);
+
         // Check for speed test completion
         if let Some(rx) = &self.speed_test_rx {
             if let Ok(best_idx) = rx.try_recv() {
@@ -2220,6 +2432,39 @@ mod tests {
         assert!((primary + policy + update + gap * 2.0 - 1200.0).abs() < 0.01);
         assert!((policy / primary - GOLDEN_MAJOR).abs() < 0.001);
         assert!((update / policy - GOLDEN_MAJOR).abs() < 0.001);
+    }
+
+    #[test]
+    fn viewport_density_switches_with_screen_budget() {
+        assert_eq!(
+            ViewportDensity::for_size(egui::vec2(760.0, 520.0)),
+            ViewportDensity::Dense
+        );
+        assert_eq!(
+            ViewportDensity::for_size(egui::vec2(1366.0, 860.0)),
+            ViewportDensity::Regular
+        );
+        assert_eq!(
+            ViewportDensity::for_size(egui::vec2(1600.0, 960.0)),
+            ViewportDensity::Spacious
+        );
+    }
+
+    #[test]
+    fn body_layout_uses_width_and_short_viewport_reflow() {
+        assert_eq!(body_layout_for_viewport(760.0, 700.0), BodyLayout::Single);
+        assert_eq!(
+            body_layout_for_viewport(900.0, 700.0),
+            BodyLayout::GoldenTwo
+        );
+        assert_eq!(
+            body_layout_for_viewport(1040.0, 560.0),
+            BodyLayout::GoldenThree
+        );
+        assert_eq!(
+            body_layout_for_viewport(1120.0, 700.0),
+            BodyLayout::GoldenThree
+        );
     }
 
     #[test]
