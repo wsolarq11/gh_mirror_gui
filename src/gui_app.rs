@@ -141,13 +141,44 @@ fn ui_presentation_heartbeat_duration() -> Duration {
 fn chrome_panel_frame() -> egui::Frame {
     egui::Frame::none()
         .fill(app_chrome_color())
+        .rounding(app_panel_rounding())
         .inner_margin(egui::Margin::symmetric(10.0, 3.0))
 }
 
 fn body_panel_frame() -> egui::Frame {
     egui::Frame::none()
         .fill(app_background_color())
+        .rounding(app_panel_rounding())
         .inner_margin(egui::Margin::symmetric(8.0, 6.0))
+}
+
+fn rounded_singleline_text_edit(text: &mut String) -> egui::TextEdit<'_> {
+    egui::TextEdit::singleline(text).margin(egui::Margin::symmetric(8.0, 4.0))
+}
+
+fn add_sized_singleline_text_edit(
+    ui: &mut egui::Ui,
+    text: &mut String,
+    size: [f32; 2],
+) -> egui::Response {
+    ui.add_sized(size, rounded_singleline_text_edit(text))
+}
+
+fn app_combo_box(
+    id_salt: impl std::hash::Hash,
+    selected_text: impl Into<egui::WidgetText>,
+) -> egui::ComboBox {
+    egui::ComboBox::from_id_salt(id_salt)
+        .selected_text(selected_text)
+        .height(220.0)
+}
+
+fn add_rounded_checkbox(
+    ui: &mut egui::Ui,
+    checked: &mut bool,
+    text: impl Into<egui::WidgetText>,
+) -> egui::Response {
+    ui.checkbox(checked, text)
 }
 
 fn add_primary_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
@@ -1285,9 +1316,10 @@ impl GhMirrorGui {
         ui.set_min_width(ui.available_width());
 
         ui.label(egui::RichText::new(self.t(TextKey::UrlLabel)).strong());
-        let url_response = ui.add_sized(
+        let url_response = add_sized_singleline_text_edit(
+            ui,
+            &mut self.url,
             [ui.available_width(), density.input_height()],
-            egui::TextEdit::singleline(&mut self.url),
         );
         if url_response.changed() {
             self.clear_release_lookup_result();
@@ -1766,21 +1798,19 @@ impl GhMirrorGui {
 
                 ui.horizontal_wrapped(|ui| {
                     ui.label(self.t(TextKey::AssetLabel));
-                    egui::ComboBox::from_id_salt("release_asset_select")
-                        .selected_text(selected_text)
-                        .show_ui(ui, |ui| {
-                            for (idx, asset) in release.assets.iter().enumerate() {
-                                if ui
-                                    .selectable_label(
-                                        self.selected_release_asset == Some(idx),
-                                        backend_contract::release_asset_picker_label(asset),
-                                    )
-                                    .clicked()
-                                {
-                                    self.selected_release_asset = Some(idx);
-                                }
+                    app_combo_box("release_asset_select", selected_text).show_ui(ui, |ui| {
+                        for (idx, asset) in release.assets.iter().enumerate() {
+                            if ui
+                                .selectable_label(
+                                    self.selected_release_asset == Some(idx),
+                                    backend_contract::release_asset_picker_label(asset),
+                                )
+                                .clicked()
+                            {
+                                self.selected_release_asset = Some(idx);
                             }
-                        });
+                        }
+                    });
                     if add_tonal_button(ui, self.t(TextKey::UseSelectedAssetButton)).clicked() {
                         self.apply_selected_release_asset();
                     }
@@ -1834,15 +1864,16 @@ impl GhMirrorGui {
             if self.mirrors.len() > 1 {
                 ui.horizontal_wrapped(|ui| {
                     ui.label("Mirror:");
-                    egui::ComboBox::from_id_salt("mirror_select")
-                        .selected_text(&self.mirrors[self.selected_mirror])
-                        .show_ui(ui, |ui| {
+                    app_combo_box("mirror_select", &self.mirrors[self.selected_mirror]).show_ui(
+                        ui,
+                        |ui| {
                             for (i, name) in self.mirrors.iter().enumerate() {
                                 if ui.selectable_label(false, name).clicked() {
                                     self.selected_mirror = i;
                                 }
                             }
-                        });
+                        },
+                    );
                     if add_subtle_button(ui, self.t(TextKey::RetestButton)).clicked() {
                         self.retest_mirrors();
                     }
@@ -1918,9 +1949,10 @@ impl GhMirrorGui {
                 ui.label(self.t(TextKey::ProxyLabel));
                 let clear_width = 84.0;
                 let edit_width = (ui.available_width() - clear_width).max(180.0);
-                ui.add_sized(
+                add_sized_singleline_text_edit(
+                    ui,
+                    &mut self.proxy,
                     [edit_width, density.input_height()],
-                    egui::TextEdit::singleline(&mut self.proxy),
                 );
                 if add_subtle_button(ui, self.t(TextKey::ClearProxyButton)).clicked() {
                     self.proxy.clear();
@@ -1929,7 +1961,7 @@ impl GhMirrorGui {
 
             ui.horizontal_wrapped(|ui| {
                 let allow_invalid_certs_label = self.t(TextKey::AllowInvalidTlsCertificates);
-                ui.checkbox(&mut self.allow_invalid_certs, allow_invalid_certs_label);
+                add_rounded_checkbox(ui, &mut self.allow_invalid_certs, allow_invalid_certs_label);
                 if self.allow_invalid_certs {
                     ui.colored_label(
                         egui::Color32::from_rgb(255, 180, 0),
@@ -1988,7 +2020,8 @@ impl GhMirrorGui {
             }
             ui.label(egui::RichText::new(self.t(TextKey::TrustPolicyTitle)).strong());
             let keep_unknown_downloads_label = self.t(TextKey::KeepUnknownDownloads);
-            ui.checkbox(
+            add_rounded_checkbox(
+                ui,
                 &mut self.trust_policy.unknown_keep_file,
                 keep_unknown_downloads_label,
             );
@@ -1997,7 +2030,8 @@ impl GhMirrorGui {
             }
             let allow_open_unknown_downloads_label = self.t(TextKey::AllowOpenUnknownDownloads);
             ui.add_enabled_ui(self.trust_policy.unknown_keep_file, |ui| {
-                ui.checkbox(
+                add_rounded_checkbox(
+                    ui,
                     &mut self.trust_policy.unknown_allow_open,
                     allow_open_unknown_downloads_label,
                 );
@@ -2006,20 +2040,22 @@ impl GhMirrorGui {
                 ui.label(self.t(TextKey::MismatchFileActionLabel));
                 let quarantine_option_label = self.t(TextKey::QuarantineOption);
                 let delete_option_label = self.t(TextKey::DeleteOption);
-                egui::ComboBox::from_id_salt("mismatch_file_policy")
-                    .selected_text(self.trust_policy.mismatch_file_policy.as_str())
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(
-                            &mut self.trust_policy.mismatch_file_policy,
-                            MismatchFilePolicy::Quarantine,
-                            quarantine_option_label,
-                        );
-                        ui.selectable_value(
-                            &mut self.trust_policy.mismatch_file_policy,
-                            MismatchFilePolicy::Delete,
-                            delete_option_label,
-                        );
-                    });
+                app_combo_box(
+                    "mismatch_file_policy",
+                    self.trust_policy.mismatch_file_policy.as_str(),
+                )
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(
+                        &mut self.trust_policy.mismatch_file_policy,
+                        MismatchFilePolicy::Quarantine,
+                        quarantine_option_label,
+                    );
+                    ui.selectable_value(
+                        &mut self.trust_policy.mismatch_file_policy,
+                        MismatchFilePolicy::Delete,
+                        delete_option_label,
+                    );
+                });
             });
             let mut require_trusted_source =
                 backend_contract::source_trust_requires_signed(&self.trust_policy);
@@ -2027,12 +2063,12 @@ impl GhMirrorGui {
                 backend_contract::trusted_publisher_key_fingerprint(&self.trust_policy).is_some();
             ui.separator();
             ui.horizontal_wrapped(|ui| {
-                if ui
-                    .checkbox(
-                        &mut require_trusted_source,
-                        self.t(TextKey::RequireSignedChecksumSource),
-                    )
-                    .changed()
+                if add_rounded_checkbox(
+                    ui,
+                    &mut require_trusted_source,
+                    self.t(TextKey::RequireSignedChecksumSource),
+                )
+                .changed()
                 {
                     backend_contract::set_source_trust_requires_signed(
                         &mut self.trust_policy,
@@ -2066,7 +2102,7 @@ impl GhMirrorGui {
                         if ui
                             .add_sized(
                                 [edit_width, density.input_height()],
-                                egui::TextEdit::singleline(&mut trusted_publisher_key),
+                                rounded_singleline_text_edit(&mut trusted_publisher_key),
                             )
                             .changed()
                         {
@@ -2140,9 +2176,10 @@ impl GhMirrorGui {
                         ui.label(self.t(TextKey::HistoryPathLabel));
                         let default_width = 80.0;
                         let edit_width = (ui.available_width() - default_width).max(180.0);
-                        ui.add_sized(
+                        add_sized_singleline_text_edit(
+                            ui,
+                            &mut self.history_path,
                             [edit_width, density.input_height()],
-                            egui::TextEdit::singleline(&mut self.history_path),
                         );
                         if add_subtle_button(ui, self.t(TextKey::DefaultButton)).clicked() {
                             self.history_path.clear();
@@ -3237,6 +3274,49 @@ mod tests {
             assert_eq!(rounding.nw, rounding.sw);
             assert_eq!(rounding.nw, rounding.se);
         }
+    }
+
+    #[test]
+    fn visible_control_constructors_stay_behind_rounded_entrypoints() {
+        let source = include_str!("gui_app.rs");
+        let frame_ctor = concat!("egui::Frame", "::none()");
+        let panel_rounding = concat!(".rounding(", "app_panel_rounding())");
+        let progress_ctor = concat!("egui::ProgressBar", "::new(");
+        let focus_rounding = concat!(".rounding(", "app_focus_rounding())");
+
+        assert_eq!(
+            source.matches(frame_ctor).count(),
+            source.matches(panel_rounding).count(),
+            "Every visible Frame surface must explicitly apply complete panel rounding"
+        );
+        assert_eq!(
+            source
+                .matches(concat!("egui::TextEdit", "::singleline("))
+                .count(),
+            1,
+            "Raw TextEdit construction must stay centralized in rounded_singleline_text_edit"
+        );
+        assert_eq!(
+            source
+                .matches(concat!("egui::ComboBox", "::from_id_salt("))
+                .count(),
+            1,
+            "Raw ComboBox construction must stay centralized in app_combo_box"
+        );
+        assert_eq!(
+            source.matches(concat!("ui", ".checkbox(")).count(),
+            1,
+            "Raw checkbox construction must stay centralized in add_rounded_checkbox"
+        );
+        assert_eq!(
+            source.matches(progress_ctor).count(),
+            source.matches(focus_rounding).count(),
+            "Every progress bar must explicitly apply complete focus rounding"
+        );
+        assert!(
+            !source.contains(concat!("ui", ".button(")),
+            "Buttons must go through rounded button helpers"
+        );
     }
 
     #[test]
