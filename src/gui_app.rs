@@ -201,6 +201,11 @@ fn add_rounded_separator(ui: &mut egui::Ui) {
     ui.add_space(GOLDEN_SPACE_XS);
 }
 
+fn rounded_vertical_scroll_area() -> egui::ScrollArea {
+    egui::ScrollArea::vertical()
+        .scroll_bar_visibility(egui::containers::scroll_area::ScrollBarVisibility::AlwaysHidden)
+}
+
 fn add_primary_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
     ui.add(
         egui::Button::new(
@@ -1515,7 +1520,7 @@ impl GhMirrorGui {
         }
 
         if self.body_scroll_fallback {
-            egui::ScrollArea::vertical()
+            rounded_vertical_scroll_area()
                 .id_salt("proof_to_action_main_scroll")
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
@@ -1916,7 +1921,7 @@ impl GhMirrorGui {
                                 .rounding(app_focus_rounding()),
                         );
                     }
-                    egui::ScrollArea::vertical()
+                    rounded_vertical_scroll_area()
                         .max_height(120.0)
                         .show(ui, |ui| {
                             for (i, name) in self.mirrors.iter().enumerate() {
@@ -3363,6 +3368,8 @@ mod tests {
         let panel_rounding = concat!(".rounding(", "app_panel_rounding())");
         let progress_ctor = concat!("egui::ProgressBar", "::new(");
         let focus_rounding = concat!(".rounding(", "app_focus_rounding())");
+        let scroll_ctor = concat!("egui::ScrollArea", "::vertical()");
+        let hidden_scrollbar = concat!("ScrollBarVisibility", "::AlwaysHidden");
 
         assert_eq!(
             source.matches(frame_ctor).count(),
@@ -3403,6 +3410,15 @@ mod tests {
                 .count(),
             1,
             "Rounded separators must be the only explicit filled hairline surface"
+        );
+        assert_eq!(
+            source.matches(scroll_ctor).count(),
+            1,
+            "Fallback scrolling must stay centralized so scrollbar quadrilaterals cannot bypass the visual contract"
+        );
+        assert!(
+            source.contains(hidden_scrollbar),
+            "Fallback scrolling must preserve wheel/drag behavior without adding visible square scrollbar surfaces"
         );
         assert!(
             !source.contains(concat!("ui", ".button(")),
