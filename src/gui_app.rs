@@ -644,6 +644,7 @@ fn configure_comfortable_app_style(ctx: &egui::Context) {
         style.visuals.window_fill = app_surface_color();
         style.visuals.extreme_bg_color = egui::Color32::from_rgb(255, 255, 255);
         style.visuals.faint_bg_color = app_surface_alt_color();
+        style.visuals.collapsing_header_frame = true;
         style.visuals.window_rounding = app_panel_rounding();
         style.visuals.menu_rounding = app_control_rounding();
         style.visuals.window_shadow = app_surface_shadow();
@@ -3274,6 +3275,10 @@ mod tests {
             assert_eq!(rounding.nw, rounding.sw);
             assert_eq!(rounding.nw, rounding.se);
         }
+        assert!(
+            style.visuals.collapsing_header_frame,
+            "Collapsible controls must paint a rounded header frame instead of a naked square-edge row"
+        );
     }
 
     #[test]
