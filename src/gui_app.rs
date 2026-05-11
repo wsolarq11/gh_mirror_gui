@@ -44,6 +44,13 @@ type UpdateCandidateCheckMessage = UpdateCandidateCheckReport;
 type UpdateCandidateStageMessage = UpdateCandidateStageReport;
 type DownloadResultMessage = Result<DownloadCompletion, String>;
 
+const GOLDEN_MAJOR: f32 = 0.618_034;
+const TOP_CANVAS_MAX_WIDTH: f32 = 1180.0;
+const COMMAND_CANVAS_MAX_WIDTH: f32 = 1120.0;
+const BODY_CANVAS_MAX_WIDTH: f32 = 1240.0;
+const COMMAND_COLUMN_GAP: f32 = 16.0;
+const BODY_COLUMN_GAP: f32 = 18.0;
+
 fn backend_notice_color(level: backend_contract::BackendStatusNoticeLevel) -> egui::Color32 {
     match level {
         backend_contract::BackendStatusNoticeLevel::Good => egui::Color32::from_rgb(0, 180, 0),
@@ -529,40 +536,74 @@ impl GhMirrorGui {
         Some(proxy)
     }
 
-    fn render_command_panel(&mut self, ui: &mut egui::Ui) {
-        ui.group(|ui| {
-            ui.set_min_width(ui.available_width());
-            let layout_mode = layout_mode_for_width(ui.available_width());
-            let wide_layout = matches!(layout_mode, LayoutMode::Medium | LayoutMode::Wide);
+    fn render_centered_canvas<R>(
+        ui: &mut egui::Ui,
+        max_width: f32,
+        add_contents: impl FnOnce(&mut egui::Ui) -> R,
+    ) -> R {
+        let available_width = ui.available_width();
+        let canvas_width = available_width.min(max_width).max(0.0);
+        let side_margin = ((available_width - canvas_width) * 0.5).max(0.0);
 
-            if wide_layout {
-                let total_width = ui.available_width();
-                let gap = ui.spacing().item_spacing.x;
-                let left_width = (total_width * 0.618).clamp(420.0, total_width - 220.0);
-                let right_width = (total_width - left_width - gap).max(220.0);
-
-                ui.horizontal_top(|ui| {
-                    ui.allocate_ui_with_layout(
-                        egui::vec2(left_width, 0.0),
-                        egui::Layout::top_down(egui::Align::Min),
-                        |ui| {
-                            self.render_command_primary_stack(ui, layout_mode);
-                        },
-                    );
-                    ui.add_space(gap);
-                    ui.allocate_ui_with_layout(
-                        egui::vec2(right_width, 0.0),
-                        egui::Layout::top_down(egui::Align::Min),
-                        |ui| {
-                            self.render_command_hint_card(ui);
-                        },
-                    );
-                });
-            } else {
-                self.render_command_primary_stack(ui, layout_mode);
-                ui.separator();
-                self.render_command_hint_card(ui);
+        ui.horizontal_top(|ui| {
+            if side_margin > 0.0 {
+                ui.add_space(side_margin);
             }
+
+            ui.allocate_ui_with_layout(
+                egui::vec2(canvas_width, 0.0),
+                egui::Layout::top_down(egui::Align::Min),
+                add_contents,
+            )
+            .inner
+        })
+        .inner
+    }
+
+    fn gallery_panel<R>(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui) -> R) -> R {
+        egui::Frame::group(ui.style())
+            .inner_margin(egui::Margin::symmetric(10.0, 8.0))
+            .show(ui, add_contents)
+            .inner
+    }
+
+    fn render_command_panel(&mut self, ui: &mut egui::Ui) {
+        Self::render_centered_canvas(ui, COMMAND_CANVAS_MAX_WIDTH, |ui| {
+            Self::gallery_panel(ui, |ui| {
+                ui.set_min_width(ui.available_width());
+                let layout_mode = layout_mode_for_width(ui.available_width());
+                let wide_layout = matches!(layout_mode, LayoutMode::Medium | LayoutMode::Wide);
+
+                if wide_layout {
+                    let total_width = ui.available_width();
+                    let gap = COMMAND_COLUMN_GAP;
+                    let usable_width = (total_width - gap).max(0.0);
+                    let left_width = usable_width * GOLDEN_MAJOR;
+                    let right_width = (usable_width - left_width).max(0.0);
+
+                    ui.horizontal_top(|ui| {
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(left_width, 0.0),
+                            egui::Layout::top_down(egui::Align::Min),
+                            |ui| {
+                                self.render_command_primary_stack(ui, layout_mode);
+                            },
+                        );
+                        ui.add_space(gap);
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(right_width, 0.0),
+                            egui::Layout::top_down(egui::Align::Min),
+                            |ui| {
+                                self.render_command_hint_card(ui);
+                            },
+                        );
+                    });
+                } else {
+                    self.render_command_primary_stack(ui, layout_mode);
+                    ui.separator();
+                    self.render_command_hint_card(ui);
+                }
+            });
         });
     }
 
@@ -676,7 +717,7 @@ impl GhMirrorGui {
     }
 
     fn render_command_hint_card(&mut self, ui: &mut egui::Ui) {
-        ui.group(|ui| {
+        Self::gallery_panel(ui, |ui| {
             ui.set_min_width(ui.available_width());
             let url_is_empty = self.url.trim().is_empty();
             ui.label(
@@ -727,40 +768,43 @@ impl GhMirrorGui {
     }
 
     fn render_body(&mut self, ui: &mut egui::Ui) {
-        egui::ScrollArea::vertical()
-            .id_salt("proof_to_action_main_scroll")
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                ui.add_space(2.0);
-                let layout_mode = layout_mode_for_width(ui.available_width());
-                if layout_mode.is_compact() {
-                    self.render_body_primary_column(ui);
-                    self.render_body_secondary_column(ui);
-                } else {
-                    let total_width = ui.available_width();
-                    let gap = ui.spacing().item_spacing.x * 1.25;
-                    let left_width = (total_width * 0.618).clamp(460.0, total_width - 320.0);
-                    let right_width = (total_width - left_width - gap).max(300.0);
+        Self::render_centered_canvas(ui, BODY_CANVAS_MAX_WIDTH, |ui| {
+            egui::ScrollArea::vertical()
+                .id_salt("proof_to_action_main_scroll")
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    ui.add_space(2.0);
+                    let layout_mode = layout_mode_for_width(ui.available_width());
+                    if layout_mode.is_compact() {
+                        self.render_body_primary_column(ui);
+                        self.render_body_secondary_column(ui);
+                    } else {
+                        let total_width = ui.available_width();
+                        let gap = BODY_COLUMN_GAP;
+                        let usable_width = (total_width - gap).max(0.0);
+                        let left_width = usable_width * GOLDEN_MAJOR;
+                        let right_width = (usable_width - left_width).max(0.0);
 
-                    ui.horizontal_top(|ui| {
-                        ui.allocate_ui_with_layout(
-                            egui::vec2(left_width, 0.0),
-                            egui::Layout::top_down(egui::Align::Min),
-                            |ui| {
-                                self.render_body_primary_column(ui);
-                            },
-                        );
-                        ui.add_space(gap);
-                        ui.allocate_ui_with_layout(
-                            egui::vec2(right_width, 0.0),
-                            egui::Layout::top_down(egui::Align::Min),
-                            |ui| {
-                                self.render_body_secondary_column(ui);
-                            },
-                        );
-                    });
-                }
-            });
+                        ui.horizontal_top(|ui| {
+                            ui.allocate_ui_with_layout(
+                                egui::vec2(left_width, 0.0),
+                                egui::Layout::top_down(egui::Align::Min),
+                                |ui| {
+                                    self.render_body_primary_column(ui);
+                                },
+                            );
+                            ui.add_space(gap);
+                            ui.allocate_ui_with_layout(
+                                egui::vec2(right_width, 0.0),
+                                egui::Layout::top_down(egui::Align::Min),
+                                |ui| {
+                                    self.render_body_secondary_column(ui);
+                                },
+                            );
+                        });
+                    }
+                });
+        });
     }
 
     fn render_body_primary_column(&mut self, ui: &mut egui::Ui) {
@@ -779,7 +823,7 @@ impl GhMirrorGui {
             return;
         };
 
-        ui.group(|ui| {
+        Self::gallery_panel(ui, |ui| {
             ui.set_min_width(ui.available_width());
             let release_name = release
                 .name
@@ -884,7 +928,7 @@ impl GhMirrorGui {
     }
 
     fn render_transfer_settings_card(&mut self, ui: &mut egui::Ui) {
-        ui.group(|ui| {
+        Self::gallery_panel(ui, |ui| {
             ui.set_min_width(ui.available_width());
 
             // Route guardrail: this project is not a mirror-list aggregator.
@@ -964,7 +1008,9 @@ impl GhMirrorGui {
                 ui.label(self.t(TextKey::SaveToLabel));
                 ui.label(self.save_dir.to_string_lossy().to_string());
                 if ui.button(self.t(TextKey::BrowseButton)).clicked() {
-                    if let Some(dir) = FileDialog::new().set_directory(&self.save_dir).pick_folder()
+                    if let Some(dir) = FileDialog::new()
+                        .set_directory(&self.save_dir)
+                        .pick_folder()
                     {
                         self.save_dir = dir;
                     }
@@ -1011,7 +1057,8 @@ impl GhMirrorGui {
                         text.push_str(host);
                     }
                     ui.ctx().copy_text(text);
-                    self.status = "Copied official artifact host allowlist to clipboard".to_string();
+                    self.status =
+                        "Copied official artifact host allowlist to clipboard".to_string();
                 }
                 ui.small(format!("{} hosts", hosts.len()));
             });
@@ -1025,7 +1072,7 @@ impl GhMirrorGui {
     }
 
     fn render_trust_policy_card(&mut self, ui: &mut egui::Ui) {
-        ui.group(|ui| {
+        Self::gallery_panel(ui, |ui| {
             ui.set_min_width(ui.available_width());
             ui.label(egui::RichText::new(self.t(TextKey::TrustPolicyTitle)).strong());
             let keep_unknown_downloads_label = self.t(TextKey::KeepUnknownDownloads);
@@ -1063,9 +1110,7 @@ impl GhMirrorGui {
                     });
             });
             ui.separator();
-            ui.label(
-                egui::RichText::new(self.t(TextKey::VerificationSourceTrustTitle)).strong(),
-            );
+            ui.label(egui::RichText::new(self.t(TextKey::VerificationSourceTrustTitle)).strong());
             let mut require_trusted_source =
                 backend_contract::source_trust_requires_signed(&self.trust_policy);
             if ui
@@ -1181,7 +1226,7 @@ impl GhMirrorGui {
     }
 
     fn render_update_card(&mut self, ui: &mut egui::Ui) {
-        ui.group(|ui| {
+        Self::gallery_panel(ui, |ui| {
             ui.set_min_width(ui.available_width());
             ui.label(egui::RichText::new(self.t(TextKey::Stage1Title)).strong());
             ui.small("Checks the public latest release and only reports candidate / no-update / refused.");
@@ -1280,7 +1325,7 @@ impl GhMirrorGui {
             return;
         };
 
-        ui.group(|ui| {
+        Self::gallery_panel(ui, |ui| {
             ui.set_min_width(ui.available_width());
             ui.horizontal_wrapped(|ui| {
                 if let Some(notice) = backend_contract::last_download_status_notice(&snapshot) {
@@ -1935,20 +1980,22 @@ impl eframe::App for GhMirrorGui {
         }
 
         egui::TopBottomPanel::top("proof_to_action_top_bar").show(ctx, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                ui.heading(format!("🚀 {}", self.t(TextKey::AppTitle)));
-                ui.small(self.t(TextKey::AppSubtitle));
-                ui.separator();
-                let switch_key = if self.locale == UiLocale::En {
-                    TextKey::SwitchToChinese
-                } else {
-                    TextKey::SwitchToEnglish
-                };
-                if ui.button(self.t(switch_key)).clicked() {
-                    self.toggle_locale();
-                }
-                ui.separator();
-                ui.label(egui::RichText::new(&self.status).color(status_color(&self.status)));
+            Self::render_centered_canvas(ui, TOP_CANVAS_MAX_WIDTH, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.heading(format!("🚀 {}", self.t(TextKey::AppTitle)));
+                    ui.small(self.t(TextKey::AppSubtitle));
+                    ui.separator();
+                    let switch_key = if self.locale == UiLocale::En {
+                        TextKey::SwitchToChinese
+                    } else {
+                        TextKey::SwitchToEnglish
+                    };
+                    if ui.button(self.t(switch_key)).clicked() {
+                        self.toggle_locale();
+                    }
+                    ui.separator();
+                    ui.label(egui::RichText::new(&self.status).color(status_color(&self.status)));
+                });
             });
         });
 
