@@ -517,6 +517,116 @@ impl GhMirrorGui {
         ))
     }
 
+    fn fill_default_proxy_if_blank(&mut self) -> Option<String> {
+        if !self.proxy.trim().is_empty() {
+            return None;
+        }
+
+        let proxy = default_proxy_from_environment_or_system()?;
+        self.proxy = proxy.clone();
+        Some(proxy)
+    }
+
+    fn render_command_panel(&mut self, ui: &mut egui::Ui) {
+        ui.group(|ui| {
+            ui.set_min_width(ui.available_width());
+
+            let layout_mode = layout_mode_for_width(ui.available_width());
+            ui.label(egui::RichText::new(self.t(TextKey::UrlLabel)).strong());
+            let url_response = ui.add_sized(
+                [ui.available_width(), 28.0],
+                egui::TextEdit::singleline(&mut self.url),
+            );
+            if url_response.changed() {
+                self.clear_release_lookup_result();
+            }
+            if url_response.lost_focus()
+                && ui.input(|i| i.key_pressed(egui::Key::Enter))
+                && matches!(
+                    backend_contract::resolve_download_intent(&self.url),
+                    backend_contract::IntentDTO::NeedsAssetPick { .. }
+                )
+            {
+                self.start_release_lookup();
+            }
+
+            let button_layout = match layout_mode {
+                LayoutMode::Compact => egui::Layout::top_down(egui::Align::Min),
+                LayoutMode::Medium | LayoutMode::Wide => {
+                    egui::Layout::left_to_right(egui::Align::Center)
+                }
+            };
+
+            ui.with_layout(button_layout, |ui| {
+                let paste_label = self.t(TextKey::PasteButton);
+                let clear_label = self.t(TextKey::ClearButton);
+                let find_assets_label = self.t(TextKey::FindReleaseAssetsButton);
+                if ui.button(paste_label).clicked() {
+                    if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                        if let Ok(text) = clipboard.get_text() {
+                            self.url = text;
+                            self.clear_release_lookup_result();
+                            if matches!(
+                                backend_contract::resolve_download_intent(&self.url),
+                                backend_contract::IntentDTO::NeedsAssetPick { .. }
+                            ) {
+                                self.start_release_lookup();
+                            }
+                        }
+                    }
+                }
+                if ui.button(clear_label).clicked() {
+                    self.url.clear();
+                    self.clear_release_lookup_result();
+                }
+                if ui.button(find_assets_label).clicked() {
+                    self.start_release_lookup();
+                }
+                if self.release_lookup_thread.is_some() {
+                    ui.label(format!(
+                        "⏳ {}",
+                        self.t(TextKey::StatusResolvingReleaseAssets)
+                    ));
+                } else if !self.release_status.is_empty() {
+                    ui.label(egui::RichText::new(&self.release_status).strong());
+                }
+            });
+
+            ui.separator();
+
+            ui.horizontal_wrapped(|ui| {
+                if ui.button(self.t(TextKey::DownloadButton)).clicked() {
+                    self.start_download();
+                }
+                if let Some(ctrl) = &self.control {
+                    if ctrl.is_paused() {
+                        if ui.button(self.t(TextKey::ResumeButton)).clicked() {
+                            ctrl.resume();
+                        }
+                    } else if ui.button(self.t(TextKey::PauseButton)).clicked() {
+                        ctrl.pause();
+                    }
+                    if ui.button(self.t(TextKey::CancelButton)).clicked() {
+                        ctrl.cancel();
+                        self.download_thread = None;
+                        self.control = None;
+                        self.status = self.t(TextKey::StatusCancelled).to_string();
+                    }
+                }
+            });
+
+            if let Some(progress) = self.download_progress_projection() {
+                let mut bar =
+                    egui::ProgressBar::new(progress.fraction).text(progress.primary_text.clone());
+                if progress.indeterminate {
+                    bar = bar.animate(true);
+                }
+                ui.add_sized([ui.available_width(), 22.0], bar);
+                ui.small(progress.detail_text);
+            }
+        });
+    }
+
     fn update_candidate_evidence_dir(&self) -> PathBuf {
         self.effective_history_path()
             .parent()
@@ -612,14 +722,18 @@ impl GhMirrorGui {
             return;
         };
 
+        let auto_proxy = self.fill_default_proxy_if_blank();
         let proxy = self.proxy.clone();
         let allow_invalid_certs = self.allow_invalid_certs;
         let (tx, rx) = mpsc::channel::<ReleaseLookupMessage>();
         let kind_label = backend_contract::release_query_selector_label(&query);
-        let status = format!(
+        let mut status = format!(
             "Resolving {}/{} {kind_label} assets...",
             query.owner, query.repo
         );
+        if let Some(proxy) = auto_proxy {
+            status.push_str(&format!(" (system proxy: {proxy})"));
+        }
         self.release_status = status.clone();
         self.status = status;
         self.release = None;
@@ -737,6 +851,7 @@ impl GhMirrorGui {
             }
         }
 
+        let auto_proxy = self.fill_default_proxy_if_blank();
         let save_path = match self.choose_save_path() {
             Some(p) => p,
             None => return,
@@ -802,6 +917,9 @@ impl GhMirrorGui {
             })
             .map(|summary| format!("Starting download... {summary}"))
             .unwrap_or_else(|| self.t(TextKey::StatusStartingDownloadUnknown).to_string());
+        if let Some(proxy) = auto_proxy {
+            self.status.push_str(&format!(" (system proxy: {proxy})"));
+        }
 
         self.download_thread = Some(thread::spawn(move || {
             let settings = BackendClientSettings::new(proxy, allow_invalid_certs);
@@ -1123,68 +1241,17 @@ impl eframe::App for GhMirrorGui {
             });
         });
 
+        egui::TopBottomPanel::top("proof_to_action_command_panel").show(ctx, |ui| {
+            self.render_command_panel(ui);
+        });
+
         // Draw UI body. Scroll is a fallback safety net after responsive layout projection.
         egui::CentralPanel::default().show(ctx, |ui| {
             egui::ScrollArea::vertical()
                 .id_salt("proof_to_action_main_scroll")
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
-            let layout_mode = layout_mode_for_width(ui.available_width());
-
-            // URL input
-            let url_layout = match layout_mode {
-                LayoutMode::Compact => egui::Layout::top_down(egui::Align::Min),
-                LayoutMode::Medium | LayoutMode::Wide => {
-                    egui::Layout::left_to_right(egui::Align::Center)
-                }
-            };
-            ui.with_layout(url_layout, |ui| {
-                ui.label(self.t(TextKey::UrlLabel));
-                let url_response = ui.text_edit_singleline(&mut self.url);
-                if url_response.changed() {
-                    self.clear_release_lookup_result();
-                }
-                if url_response.lost_focus()
-                    && ui.input(|i| i.key_pressed(egui::Key::Enter))
-                    && matches!(
-                        backend_contract::resolve_download_intent(&self.url),
-                        backend_contract::IntentDTO::NeedsAssetPick { .. }
-                    )
-                {
-                    self.start_release_lookup();
-                }
-                if ui.button(self.t(TextKey::PasteButton)).clicked() {
-                    if let Ok(mut clipboard) = arboard::Clipboard::new() {
-                        if let Ok(text) = clipboard.get_text() {
-                            self.url = text;
-                            self.clear_release_lookup_result();
-                            if matches!(
-                                backend_contract::resolve_download_intent(&self.url),
-                                backend_contract::IntentDTO::NeedsAssetPick { .. }
-                            ) {
-                                self.start_release_lookup();
-                            }
-                        }
-                    }
-                }
-                if ui.button(self.t(TextKey::ClearButton)).clicked() {
-                    self.url.clear();
-                    self.clear_release_lookup_result();
-                }
-            });
-
-            // GitHub release discovery and asset picker
-            ui.horizontal(|ui| {
-                if ui.button(self.t(TextKey::FindReleaseAssetsButton)).clicked() {
-                    self.start_release_lookup();
-                }
-                if self.release_lookup_thread.is_some() {
-                    ui.label(format!("⏳ {}", self.t(TextKey::StatusResolvingReleaseAssets)));
-                } else if !self.release_status.is_empty() {
-                    ui.label(egui::RichText::new(&self.release_status).strong());
-                }
-            });
-
+                    ui.add_space(4.0);
             if let Some(release) = self.release.clone() {
                 ui.group(|ui| {
                     let release_name = release
@@ -1648,34 +1715,6 @@ impl eframe::App for GhMirrorGui {
                 }
             });
 
-            // Action buttons
-            let action_layout = match layout_mode {
-                LayoutMode::Compact => egui::Layout::top_down(egui::Align::Min),
-                LayoutMode::Medium | LayoutMode::Wide => {
-                    egui::Layout::left_to_right(egui::Align::Center)
-                }
-            };
-            ui.with_layout(action_layout, |ui| {
-                if ui.button(self.t(TextKey::DownloadButton)).clicked() {
-                    self.start_download();
-                }
-                if let Some(ctrl) = &self.control {
-                    if ctrl.is_paused() {
-                        if ui.button(self.t(TextKey::ResumeButton)).clicked() {
-                            ctrl.resume();
-                        }
-                    } else if ui.button(self.t(TextKey::PauseButton)).clicked() {
-                        ctrl.pause();
-                    }
-                    if ui.button(self.t(TextKey::CancelButton)).clicked() {
-                        ctrl.cancel();
-                        self.download_thread = None;
-                        self.control = None;
-                        self.status = self.t(TextKey::StatusCancelled).to_string();
-                    }
-                }
-            });
-
             if let Some(snapshot) = self.last_trust_center_snapshot.clone() {
                 ui.horizontal(|ui| {
                     if let Some(notice) = backend_contract::last_download_status_notice(&snapshot) {
@@ -1716,17 +1755,6 @@ impl eframe::App for GhMirrorGui {
                     ui.small(backend_contract::file_disposition_summary(disposition));
                     render_trust_center_snapshot(ui, &snapshot);
                 }
-            }
-
-            // Progress bar and info — projected from backend truth
-            if let Some(progress) = self.download_progress_projection() {
-                let mut bar =
-                    egui::ProgressBar::new(progress.fraction).text(progress.primary_text.clone());
-                if progress.indeterminate {
-                    bar = bar.animate(true);
-                }
-                ui.add(bar);
-                ui.label(progress.detail_text);
             }
 
                 });

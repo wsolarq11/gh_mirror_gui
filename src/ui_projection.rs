@@ -92,6 +92,7 @@ pub enum TextKey {
     PauseButton,
     ResumeButton,
     CancelButton,
+    ProgressWaitingForBytes,
     ProgressUnknownSize,
     StatusReady,
     StatusEnterUrlFirst,
@@ -160,6 +161,7 @@ pub const ALL_TEXT_KEYS: &[TextKey] = &[
     TextKey::PauseButton,
     TextKey::ResumeButton,
     TextKey::CancelButton,
+    TextKey::ProgressWaitingForBytes,
     TextKey::ProgressUnknownSize,
     TextKey::StatusReady,
     TextKey::StatusEnterUrlFirst,
@@ -230,6 +232,7 @@ pub fn text(locale: UiLocale, key: TextKey) -> &'static str {
             TextKey::PauseButton => "⏸ Pause",
             TextKey::ResumeButton => "▶ Resume",
             TextKey::CancelButton => "❌ Cancel",
+            TextKey::ProgressWaitingForBytes => "Connecting... waiting for first bytes",
             TextKey::ProgressUnknownSize => "size unknown",
             TextKey::StatusReady => "Ready",
             TextKey::StatusEnterUrlFirst => "Please enter a URL first",
@@ -305,6 +308,7 @@ pub fn text(locale: UiLocale, key: TextKey) -> &'static str {
             TextKey::PauseButton => "⏸ 暂停",
             TextKey::ResumeButton => "▶ 继续",
             TextKey::CancelButton => "❌ 取消",
+            TextKey::ProgressWaitingForBytes => "正在连接…等待首批数据",
             TextKey::ProgressUnknownSize => "大小未知",
             TextKey::StatusReady => "就绪",
             TextKey::StatusEnterUrlFirst => "请先输入 URL",
@@ -350,6 +354,22 @@ pub fn project_download_progress(locale: UiLocale, input: ProgressInput) -> Prog
     let total_bytes = input.total_bytes.filter(|total| *total > 0);
     let speed_text = format_speed(input.speed_kib_per_second);
     let detail_text = format!("{} · {}", speed_text, format_elapsed(input.elapsed_seconds));
+
+    if input.downloaded_bytes == 0 {
+        let size_text = total_bytes
+            .map(|total| format!("0.0 / {} MiB", format_mib(total)))
+            .unwrap_or_else(|| text(locale, TextKey::ProgressUnknownSize).to_string());
+        return ProgressProjection {
+            indeterminate: true,
+            fraction: 0.0,
+            primary_text: format!(
+                "{} · {}",
+                text(locale, TextKey::ProgressWaitingForBytes),
+                size_text
+            ),
+            detail_text,
+        };
+    }
 
     if let Some(total) = total_bytes {
         let fraction = if total == 0 {
@@ -463,6 +483,25 @@ mod tests {
         assert_eq!(projection.fraction, 0.0);
         assert_eq!(projection.primary_text, "3.0 MiB · 大小未知");
         assert_eq!(projection.detail_text, "512.0 B/s · 01:13.2");
+    }
+
+    #[test]
+    fn progress_projection_waiting_for_first_bytes_avoids_fake_zero_percent() {
+        let projection = project_download_progress(
+            UiLocale::En,
+            ProgressInput {
+                downloaded_bytes: 0,
+                total_bytes: Some(24 * 1024 * 1024),
+                speed_kib_per_second: 0.0,
+                elapsed_seconds: 4.2,
+            },
+        );
+
+        assert!(projection.indeterminate);
+        assert_eq!(projection.fraction, 0.0);
+        assert!(projection.primary_text.contains("waiting for first bytes"));
+        assert!(!projection.primary_text.contains("0.0%"));
+        assert_eq!(projection.detail_text, "0.0 B/s · 00:04.2");
     }
 
     #[test]
