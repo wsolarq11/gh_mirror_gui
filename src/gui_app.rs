@@ -25,9 +25,15 @@ use eframe::egui;
 use eframe::Storage;
 use gh_mirror_gui::backend_contract;
 use gh_mirror_gui::backend_contract::{BackendClientSettings, DownloadCompletion};
+use gh_mirror_gui::ui_projection::{
+    layout_mode_for_width, project_download_progress, text as ui_text, LayoutMode, ProgressInput,
+    ProgressProjection, TextKey, UiLocale,
+};
 use notify_rust::Notification;
 use rfd::FileDialog;
 use std::path::PathBuf;
+#[cfg(windows)]
+use std::process::Command;
 use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::Duration;
@@ -46,11 +52,176 @@ fn backend_notice_color(level: backend_contract::BackendStatusNoticeLevel) -> eg
     }
 }
 
+fn release_lookup_non_picker_status(input: &str, intent: backend_contract::IntentDTO) -> String {
+    match intent {
+        backend_contract::IntentDTO::DirectDownload {
+            human_readable_label,
+            ..
+        } => {
+            let mut message = format!(
+                "ℹ Direct GitHub download detected ({human_readable_label}). Click Download to download this URL; Find release assets only works with repo/release pages."
+            );
+            if let Some(release_url) = release_picker_url_from_archive_input(input) {
+                message.push_str(&format!(
+                    " To pick release assets for this tag, use {release_url}."
+                ));
+            }
+            message
+        }
+        backend_contract::IntentDTO::Unsupported { reason, .. } => format!("❌ {reason}"),
+        backend_contract::IntentDTO::NeedsAssetPick { .. } => {
+            "Release asset picker input is ready".to_string()
+        }
+    }
+}
+
+fn release_picker_url_from_archive_input(input: &str) -> Option<String> {
+    let normalized = if input.starts_with("https://") || input.starts_with("http://") {
+        input.to_string()
+    } else if input.starts_with("github.com/") || input.starts_with("www.github.com/") {
+        format!("https://{input}")
+    } else {
+        return None;
+    };
+    let url = reqwest::Url::parse(&normalized).ok()?;
+    let host = url.host_str()?.trim_start_matches("www.");
+    if host != "github.com" {
+        return None;
+    }
+    let segments = url
+        .path_segments()?
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>();
+    let [owner, repo, archive, refs, tags, tag_parts @ ..] = segments.as_slice() else {
+        return None;
+    };
+    if *archive != "archive" || *refs != "refs" || *tags != "tags" || tag_parts.is_empty() {
+        return None;
+    }
+    let tag = tag_parts.join("/");
+    let tag = tag
+        .strip_suffix(".tar.gz")
+        .or_else(|| tag.strip_suffix(".tar.bz2"))
+        .or_else(|| tag.strip_suffix(".zip"))
+        .unwrap_or(&tag);
+    if tag.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "https://github.com/{owner}/{repo}/releases/tag/{tag}"
+    ))
+}
+
+fn default_proxy_from_environment_or_system() -> Option<String> {
+    for name in ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"] {
+        if let Ok(value) = std::env::var(name) {
+            if let Some(proxy) = normalize_proxy_url(&value, "http") {
+                return Some(proxy);
+            }
+        }
+    }
+    detect_windows_user_proxy_url()
+}
+
+#[cfg(windows)]
+fn detect_windows_user_proxy_url() -> Option<String> {
+    let key = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings";
+    let enabled_output = Command::new("reg")
+        .args(["query", key, "/v", "ProxyEnable"])
+        .output()
+        .ok()?;
+    if !enabled_output.status.success() {
+        return None;
+    }
+    let enabled_stdout = String::from_utf8_lossy(&enabled_output.stdout);
+    if !reg_dword_enabled(&reg_query_value(&enabled_stdout, "ProxyEnable")?) {
+        return None;
+    }
+
+    let server_output = Command::new("reg")
+        .args(["query", key, "/v", "ProxyServer"])
+        .output()
+        .ok()?;
+    if !server_output.status.success() {
+        return None;
+    }
+    let server_stdout = String::from_utf8_lossy(&server_output.stdout);
+    proxy_url_from_windows_proxy_server(&reg_query_value(&server_stdout, "ProxyServer")?)
+}
+
+#[cfg(not(windows))]
+fn detect_windows_user_proxy_url() -> Option<String> {
+    None
+}
+
+fn reg_query_value(stdout: &str, name: &str) -> Option<String> {
+    stdout.lines().find_map(|line| {
+        let trimmed = line.trim();
+        if !trimmed.starts_with(name) {
+            return None;
+        }
+        let parts = trimmed.split_whitespace().collect::<Vec<_>>();
+        if parts.len() < 3 {
+            return None;
+        }
+        Some(parts[2..].join(" "))
+    })
+}
+
+fn reg_dword_enabled(value: &str) -> bool {
+    let value = value.trim();
+    value.eq_ignore_ascii_case("0x1") || value == "1"
+}
+
+fn proxy_url_from_windows_proxy_server(value: &str) -> Option<String> {
+    let entries = value.split(';').filter_map(|entry| {
+        let entry = entry.trim();
+        if entry.is_empty() {
+            return None;
+        }
+        if let Some((kind, address)) = entry.split_once('=') {
+            Some((kind.trim().to_ascii_lowercase(), address.trim()))
+        } else {
+            Some(("http".to_string(), entry))
+        }
+    });
+
+    let mut fallback = None;
+    let mut http = None;
+    let mut https = None;
+    let mut socks = None;
+    for (kind, address) in entries {
+        match kind.as_str() {
+            "https" => https = normalize_proxy_url(address, "http"),
+            "http" => http = normalize_proxy_url(address, "http"),
+            "socks" | "socks5" => socks = normalize_proxy_url(address, "socks5"),
+            _ if fallback.is_none() => fallback = normalize_proxy_url(address, "http"),
+            _ => {}
+        }
+    }
+
+    https.or(http).or(socks).or(fallback)
+}
+
+fn normalize_proxy_url(value: &str, default_scheme: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+    if value.contains("://") {
+        Some(value.to_string())
+    } else {
+        Some(format!("{default_scheme}://{value}"))
+    }
+}
+
 #[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) struct SavedState {
     pub(crate) selected_mirror: usize,
     pub(crate) save_dir: String,
     pub(crate) proxy: String,
+    #[serde(default)]
+    pub(crate) locale: UiLocale,
     #[serde(default)]
     pub(crate) allow_invalid_certs: bool,
     #[serde(default = "default_unknown_keep_file")]
@@ -77,12 +248,17 @@ pub(crate) struct GhMirrorGui {
     url: String,
     save_dir: PathBuf,
     proxy: String,
+    locale: UiLocale,
     allow_invalid_certs: bool,
     trust_policy: TrustPolicyConfig,
     publisher_key_source: String,
     history_path: String,
     status: String,
     progress: f32,
+    downloaded_bytes: u64,
+    download_total_bytes: Option<u64>,
+    download_speed_kib_per_second: f64,
+    download_elapsed_seconds: f64,
     speed_text: String,
     elapsed_text: String,
     download_thread: Option<thread::JoinHandle<()>>,
@@ -140,6 +316,7 @@ impl GhMirrorGui {
             .and_then(|d| d.download_dir().map(|p| p.to_string_lossy().to_string()))
             .unwrap_or_else(|| ".".to_string());
         let mut proxy = String::new();
+        let mut locale = UiLocale::default();
         let mut allow_invalid_certs = false;
         let mut trust_policy = TrustPolicyConfig::default();
         let mut publisher_key_source = String::new();
@@ -152,6 +329,7 @@ impl GhMirrorGui {
                         save_dir = state.save_dir;
                     }
                     proxy = state.proxy;
+                    locale = state.locale;
                     allow_invalid_certs = state.allow_invalid_certs;
                     trust_policy = backend_contract::trust_policy_from_settings(
                         state.trust_unknown_keep_file,
@@ -169,6 +347,23 @@ impl GhMirrorGui {
         // Persisted states from older versions might point to a mirror index that no longer exists.
         // Prefer resetting to "Direct (no mirror)" instead of crashing (index out of range).
         selected_mirror = normalize_mirror_index(selected_mirror);
+        let detected_proxy = if proxy.trim().is_empty() {
+            default_proxy_from_environment_or_system()
+        } else {
+            None
+        };
+        if let Some(default_proxy) = detected_proxy.as_ref() {
+            proxy = default_proxy.clone();
+        }
+        let status = detected_proxy
+            .as_ref()
+            .map(|proxy| {
+                format!(
+                    "{} (system proxy detected: {proxy})",
+                    ui_text(locale, TextKey::StatusReady)
+                )
+            })
+            .unwrap_or_else(|| ui_text(locale, TextKey::StatusReady).to_string());
 
         let (
             speed_test_status,
@@ -179,7 +374,7 @@ impl GhMirrorGui {
             speed_test_completed,
         ) = if MIRRORS.len() <= 1 {
             (
-                "Direct (no mirror)".to_string(),
+                ui_text(locale, TextKey::StatusDirectNoMirror).to_string(),
                 None,
                 None,
                 None,
@@ -196,7 +391,7 @@ impl GhMirrorGui {
             });
 
             (
-                "Testing mirrors...".to_string(),
+                ui_text(locale, TextKey::StatusTestingMirrors).to_string(),
                 Some(handle),
                 Some(final_rx),
                 Some(progress_rx),
@@ -209,12 +404,17 @@ impl GhMirrorGui {
             url: String::new(),
             save_dir: PathBuf::from(&save_dir),
             proxy,
+            locale,
             allow_invalid_certs,
             trust_policy,
             publisher_key_source,
             history_path,
-            status: String::from("Ready"),
+            status,
             progress: 0.0,
+            downloaded_bytes: 0,
+            download_total_bytes: None,
+            download_speed_kib_per_second: 0.0,
+            download_elapsed_seconds: 0.0,
             speed_text: String::new(),
             elapsed_text: String::new(),
             download_thread: None,
@@ -266,7 +466,7 @@ impl GhMirrorGui {
         if MIRRORS.len() <= 1 {
             // No mirrors to test. Keep the UI stable and avoid unnecessary network calls.
             self.selected_mirror = 0;
-            self.speed_test_status = "Direct (no mirror)".to_string();
+            self.speed_test_status = self.t(TextKey::StatusDirectNoMirror).to_string();
             self.speed_test_thread = None;
             self.speed_test_rx = None;
             self.speed_test_progress_rx = None;
@@ -281,7 +481,7 @@ impl GhMirrorGui {
             let best = run_speed_test(&test_urls, SPEED_TEST_TIMEOUT_SECS, &progress_tx);
             let _ = final_tx.send(best);
         });
-        self.speed_test_status = String::from("Testing mirrors...");
+        self.speed_test_status = self.t(TextKey::StatusTestingMirrors).to_string();
         self.speed_test_thread = Some(handle);
         self.speed_test_rx = Some(final_rx);
         self.speed_test_progress_rx = Some(progress_rx);
@@ -291,6 +491,30 @@ impl GhMirrorGui {
 
     fn effective_history_path(&self) -> PathBuf {
         history_path_from_setting(&self.history_path)
+    }
+
+    fn t(&self, key: TextKey) -> &'static str {
+        ui_text(self.locale, key)
+    }
+
+    fn toggle_locale(&mut self) {
+        self.locale = self.locale.toggle();
+    }
+
+    fn download_progress_projection(&self) -> Option<ProgressProjection> {
+        if self.download_thread.is_none() && self.download_result_rx.is_none() {
+            return None;
+        }
+
+        Some(project_download_progress(
+            self.locale,
+            ProgressInput {
+                downloaded_bytes: self.downloaded_bytes,
+                total_bytes: self.download_total_bytes,
+                speed_kib_per_second: self.download_speed_kib_per_second,
+                elapsed_seconds: self.download_elapsed_seconds,
+            },
+        ))
     }
 
     fn update_candidate_evidence_dir(&self) -> PathBuf {
@@ -330,8 +554,7 @@ impl GhMirrorGui {
         let source_trust_policy = backend_contract::source_trust_policy_config(&self.trust_policy);
         let evidence_dir = self.update_candidate_evidence_dir();
         let (tx, rx) = mpsc::channel::<UpdateCandidateCheckMessage>();
-        self.update_candidate_status =
-            "Checking latest self-update candidate (no install)...".to_string();
+        self.update_candidate_status = self.t(TextKey::StatusCheckingCandidate).to_string();
         self.update_candidate_rx = Some(rx);
         self.update_candidate_thread = Some(thread::spawn(move || {
             let settings = BackendClientSettings::new(proxy, allow_invalid_certs);
@@ -357,8 +580,7 @@ impl GhMirrorGui {
         let evidence_dir = self.update_candidate_evidence_dir();
         let stage_root = self.update_candidate_stage_root();
         let (tx, rx) = mpsc::channel::<UpdateCandidateStageMessage>();
-        self.update_stage_status =
-            "Staging latest self-update candidate (no install)...".to_string();
+        self.update_stage_status = self.t(TextKey::StatusStagingCandidate).to_string();
         self.update_stage_rx = Some(rx);
         self.update_stage_thread = Some(thread::spawn(move || {
             let settings = BackendClientSettings::new(proxy, allow_invalid_certs);
@@ -381,13 +603,11 @@ impl GhMirrorGui {
         }
 
         let input = self.url.trim().to_string();
-        let backend_contract::IntentDTO::NeedsAssetPick { query, .. } =
-            backend_contract::resolve_download_intent(&input)
-        else {
+        let intent = backend_contract::resolve_download_intent(&input);
+        let backend_contract::IntentDTO::NeedsAssetPick { query, .. } = intent else {
             self.release = None;
             self.selected_release_asset = None;
-            self.release_status =
-                "❌ GitHub intent did not resolve to a release asset picker input".to_string();
+            self.release_status = release_lookup_non_picker_status(&input, intent);
             self.status = self.release_status.clone();
             return;
         };
@@ -441,7 +661,7 @@ impl GhMirrorGui {
 
     fn start_import_publisher_key_from_selected_release(&mut self) {
         if self.publisher_key_import_thread.is_some() {
-            self.status = "Publisher key import is already running...".to_string();
+            self.status = self.t(TextKey::StatusPublisherKeyImportRunning).to_string();
             return;
         }
 
@@ -459,15 +679,13 @@ impl GhMirrorGui {
                     (asset, source_label)
                 })
         }) else {
-            self.status =
-                "No publisher-key.ed25519.pub asset was found in this release".to_string();
+            self.status = self.t(TextKey::StatusNoPublisherKeyAsset).to_string();
             return;
         };
 
         let proxy = self.proxy.clone();
         let allow_invalid_certs = self.allow_invalid_certs;
         let asset_url = asset.browser_download_url.clone();
-        let asset_name = asset.name.clone();
         let (tx, rx) = mpsc::channel::<PublisherKeyImportMessage>();
         self.publisher_key_import_asset_url = Some(asset_url.clone());
         self.publisher_key_import_source_label = Some(source_label);
@@ -478,16 +696,16 @@ impl GhMirrorGui {
                 backend_contract::import_publisher_key_from_release_asset(&settings, &asset);
             let _ = tx.send((asset_url, result));
         }));
-        self.status = format!("Importing Ed25519 publisher key from {asset_name}...");
+        self.status = self.t(TextKey::StatusPublisherKeyImportRunning).to_string();
     }
 
     fn start_download(&mut self) {
         if self.url.trim().is_empty() {
-            self.status = String::from("Please enter a URL first");
+            self.status = self.t(TextKey::StatusEnterUrlFirst).to_string();
             return;
         }
         if self.download_thread.is_some() {
-            self.status = String::from("Download already in progress");
+            self.status = self.t(TextKey::StatusDownloadAlreadyInProgress).to_string();
             return;
         }
 
@@ -505,16 +723,16 @@ impl GhMirrorGui {
         }
         if self.input_requires_release_asset_choice() {
             if self.release_lookup_thread.is_some() {
-                self.status = String::from("Release asset lookup is still running...");
+                self.status = self.t(TextKey::StatusReleaseAssetLookupRunning).to_string();
                 return;
             }
             if self.release.is_none() {
                 self.start_release_lookup();
-                self.status = String::from("Resolving release assets before download...");
+                self.status = self.t(TextKey::StatusResolvingReleaseAssets).to_string();
                 return;
             }
             if !self.apply_selected_release_asset() {
-                self.status = String::from("Choose a release asset first");
+                self.status = self.t(TextKey::StatusChooseReleaseAssetFirst).to_string();
                 return;
             }
         }
@@ -569,6 +787,10 @@ impl GhMirrorGui {
         self.download_result_rx = Some(result_rx);
 
         self.progress = 0.0;
+        self.downloaded_bytes = 0;
+        self.download_total_bytes = None;
+        self.download_speed_kib_per_second = 0.0;
+        self.download_elapsed_seconds = 0.0;
         self.speed_text.clear();
         self.elapsed_text.clear();
         self.status = verification_release
@@ -579,7 +801,7 @@ impl GhMirrorGui {
                 })
             })
             .map(|summary| format!("Starting download... {summary}"))
-            .unwrap_or_else(|| String::from("Starting download... verification will be UNKNOWN"));
+            .unwrap_or_else(|| self.t(TextKey::StatusStartingDownloadUnknown).to_string());
 
         self.download_thread = Some(thread::spawn(move || {
             let settings = BackendClientSettings::new(proxy, allow_invalid_certs);
@@ -626,6 +848,7 @@ impl eframe::App for GhMirrorGui {
             selected_mirror: self.selected_mirror,
             save_dir: self.save_dir.to_string_lossy().to_string(),
             proxy: self.proxy.clone(),
+            locale: self.locale,
             allow_invalid_certs: self.allow_invalid_certs,
             trust_unknown_keep_file: self.trust_policy.unknown_keep_file,
             trust_unknown_allow_open: self.trust_policy.unknown_allow_open,
@@ -784,22 +1007,28 @@ impl eframe::App for GhMirrorGui {
         if let Some(rx) = progress_rx {
             let mut keep_progress_rx = true;
             while let Ok((downloaded, total, speed, elapsed)) = rx.try_recv() {
+                self.downloaded_bytes = downloaded;
+                self.download_total_bytes = (total > 0).then_some(total);
+                self.download_speed_kib_per_second = speed;
+                self.download_elapsed_seconds = elapsed;
+                let is_complete = downloaded >= total && total > 0;
                 if total > 0 {
                     self.progress = (downloaded as f32) / (total as f32);
                 }
                 if downloaded == 0 && total == 0 {
                     // Error state
-                    self.status = String::from("❌ Download failed");
+                    self.status = self.t(TextKey::StatusDownloadFailed).to_string();
                     self.download_thread = None;
                     self.control = None;
                     keep_progress_rx = false;
                 } else if downloaded >= total && total > 0 {
                     self.progress = 1.0;
-                    self.status = String::from("Download complete; verifying SHA256...");
+                    self.status = self.t(TextKey::StatusDownloadCompleteVerifying).to_string();
                     self.speed_text.clear();
                     self.elapsed_text.clear();
                     keep_progress_rx = false;
-                } else {
+                }
+                if !is_complete {
                     self.speed_text = format_speed(speed);
                     let total_min = elapsed / 60.0;
                     let total_sec = elapsed % 60.0;
@@ -846,7 +1075,7 @@ impl eframe::App for GhMirrorGui {
                     }
                 }
                 Ok(Err(e)) => {
-                    self.status = format!("❌ Download failed: {e}");
+                    self.status = format!("{}: {e}", self.t(TextKey::StatusDownloadFailed));
                     self.download_thread = None;
                     self.control = None;
                     self.progress_rx = None;
@@ -855,7 +1084,10 @@ impl eframe::App for GhMirrorGui {
                     self.download_result_rx = Some(rx);
                 }
                 Err(mpsc::TryRecvError::Disconnected) => {
-                    self.status = String::from("❌ Download failed: worker exited unexpectedly");
+                    self.status = format!(
+                        "{}: worker exited unexpectedly",
+                        self.t(TextKey::StatusDownloadFailed)
+                    );
                     self.download_thread = None;
                     self.control = None;
                     self.progress_rx = None;
@@ -863,24 +1095,51 @@ impl eframe::App for GhMirrorGui {
             }
         }
 
-        // Draw UI
-        egui::CentralPanel::default().show(ctx, |ui| {
-            // Drag-drop handling
-            if !ctx.input(|i| i.raw.dropped_files.is_empty()) {
-                let dropped = ctx.input(|i| i.raw.dropped_files.clone());
-                if let Some(file) = dropped.first() {
-                    if let Some(path_str) = &file.path {
-                        self.url = path_str.to_string_lossy().to_string();
-                    }
+        // Drag-drop handling is app-wide; rendering below stays a stable projection shell.
+        if !ctx.input(|i| i.raw.dropped_files.is_empty()) {
+            let dropped = ctx.input(|i| i.raw.dropped_files.clone());
+            if let Some(file) = dropped.first() {
+                if let Some(path_str) = &file.path {
+                    self.url = path_str.to_string_lossy().to_string();
                 }
             }
+        }
 
-            ui.heading("🚀 GitHub Mirror Downloader");
-            ui.separator();
+        egui::TopBottomPanel::top("proof_to_action_top_bar").show(ctx, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.heading(format!("🚀 {}", self.t(TextKey::AppTitle)));
+                ui.small(self.t(TextKey::AppSubtitle));
+                ui.separator();
+                let switch_key = if self.locale == UiLocale::En {
+                    TextKey::SwitchToChinese
+                } else {
+                    TextKey::SwitchToEnglish
+                };
+                if ui.button(self.t(switch_key)).clicked() {
+                    self.toggle_locale();
+                }
+                ui.separator();
+                ui.label(egui::RichText::new(&self.status).color(status_color(&self.status)));
+            });
+        });
+
+        // Draw UI body. Scroll is a fallback safety net after responsive layout projection.
+        egui::CentralPanel::default().show(ctx, |ui| {
+            egui::ScrollArea::vertical()
+                .id_salt("proof_to_action_main_scroll")
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+            let layout_mode = layout_mode_for_width(ui.available_width());
 
             // URL input
-            ui.horizontal(|ui| {
-                ui.label("URL:");
+            let url_layout = match layout_mode {
+                LayoutMode::Compact => egui::Layout::top_down(egui::Align::Min),
+                LayoutMode::Medium | LayoutMode::Wide => {
+                    egui::Layout::left_to_right(egui::Align::Center)
+                }
+            };
+            ui.with_layout(url_layout, |ui| {
+                ui.label(self.t(TextKey::UrlLabel));
                 let url_response = ui.text_edit_singleline(&mut self.url);
                 if url_response.changed() {
                     self.clear_release_lookup_result();
@@ -894,7 +1153,7 @@ impl eframe::App for GhMirrorGui {
                 {
                     self.start_release_lookup();
                 }
-                if ui.button("📋 Paste").clicked() {
+                if ui.button(self.t(TextKey::PasteButton)).clicked() {
                     if let Ok(mut clipboard) = arboard::Clipboard::new() {
                         if let Ok(text) = clipboard.get_text() {
                             self.url = text;
@@ -908,7 +1167,7 @@ impl eframe::App for GhMirrorGui {
                         }
                     }
                 }
-                if ui.button("🗑 Clear").clicked() {
+                if ui.button(self.t(TextKey::ClearButton)).clicked() {
                     self.url.clear();
                     self.clear_release_lookup_result();
                 }
@@ -916,11 +1175,11 @@ impl eframe::App for GhMirrorGui {
 
             // GitHub release discovery and asset picker
             ui.horizontal(|ui| {
-                if ui.button("🔎 Find release assets").clicked() {
+                if ui.button(self.t(TextKey::FindReleaseAssetsButton)).clicked() {
                     self.start_release_lookup();
                 }
                 if self.release_lookup_thread.is_some() {
-                    ui.label("⏳ Resolving release assets...");
+                    ui.label(format!("⏳ {}", self.t(TextKey::StatusResolvingReleaseAssets)));
                 } else if !self.release_status.is_empty() {
                     ui.label(egui::RichText::new(&self.release_status).strong());
                 }
@@ -935,7 +1194,8 @@ impl eframe::App for GhMirrorGui {
                         .map(|name| format!(" - {name}"))
                         .unwrap_or_default();
                     ui.label(format!(
-                        "Release: {}/{} @ {}{}",
+                        "{} {}/{} @ {}{}",
+                        self.t(TextKey::ReleaseLabel),
                         release.owner, release.repo, release.tag_name, release_name
                     ));
 
@@ -965,7 +1225,7 @@ impl eframe::App for GhMirrorGui {
                     }
 
                     if release.assets.is_empty() {
-                        ui.label("This release has no downloadable assets.");
+                        ui.label(self.t(TextKey::StatusNoAssetsFound));
                     } else {
                         if self
                             .selected_release_asset
@@ -979,7 +1239,7 @@ impl eframe::App for GhMirrorGui {
                             backend_contract::release_asset_picker_label(&release.assets[selected_idx]);
 
                         ui.horizontal(|ui| {
-                            ui.label("Asset:");
+                            ui.label(self.t(TextKey::AssetLabel));
                             egui::ComboBox::from_id_salt("release_asset_select")
                                 .selected_text(selected_text)
                                 .show_ui(ui, |ui| {
@@ -995,10 +1255,10 @@ impl eframe::App for GhMirrorGui {
                                         }
                                     }
                                 });
-                            if ui.button("Use selected asset").clicked() {
+                            if ui.button(self.t(TextKey::UseSelectedAssetButton)).clicked() {
                                 self.apply_selected_release_asset();
                             }
-                            if ui.button("Open release").clicked() {
+                            if ui.button(self.t(TextKey::OpenReleaseButton)).clicked() {
                                 let _ = open::that(&release.html_url);
                             }
                         });
@@ -1040,7 +1300,7 @@ impl eframe::App for GhMirrorGui {
                                 }
                             }
                         });
-                    if ui.button("🔄 Retest").clicked() {
+                    if ui.button(self.t(TextKey::RetestButton)).clicked() {
                         self.retest_mirrors();
                     }
                 });
@@ -1049,7 +1309,7 @@ impl eframe::App for GhMirrorGui {
                 if self.speed_test_thread.is_some() || self.speed_test_completed > 0 {
                     ui.separator();
                     if self.speed_test_thread.is_some() {
-                        ui.label("⏳ Testing mirrors...");
+                        ui.label(format!("⏳ {}", self.t(TextKey::StatusTestingMirrors)));
                     } else {
                         ui.label(egui::RichText::new(&self.speed_test_status).strong());
                     }
@@ -1103,9 +1363,9 @@ impl eframe::App for GhMirrorGui {
 
             // Save directory
             ui.horizontal(|ui| {
-                ui.label("Save to:");
+                ui.label(self.t(TextKey::SaveToLabel));
                 ui.label(self.save_dir.to_string_lossy().to_string());
-                if ui.button("📁 Browse...").clicked() {
+                if ui.button(self.t(TextKey::BrowseButton)).clicked() {
                     if let Some(dir) = FileDialog::new()
                         .set_directory(&self.save_dir)
                         .pick_folder()
@@ -1117,31 +1377,29 @@ impl eframe::App for GhMirrorGui {
 
             // Proxy
             ui.horizontal(|ui| {
-                ui.label("Proxy:");
+                ui.label(self.t(TextKey::ProxyLabel));
                 ui.text_edit_singleline(&mut self.proxy);
-                if ui.button("🗑 Clear").clicked() {
+                if ui.button(self.t(TextKey::ClearProxyButton)).clicked() {
                     self.proxy.clear();
                 }
             });
             ui.horizontal(|ui| {
-                ui.checkbox(
-                    &mut self.allow_invalid_certs,
-                    "Allow invalid TLS certificates (unsafe)",
-                );
+                let allow_invalid_certs_label = self.t(TextKey::AllowInvalidTlsCertificates);
+                ui.checkbox(&mut self.allow_invalid_certs, allow_invalid_certs_label);
                 if self.allow_invalid_certs {
                     ui.colored_label(
                         egui::Color32::from_rgb(255, 180, 0),
-                        "Only use this for trusted debugging proxies.",
+                        self.t(TextKey::UnsafeTlsHint),
                     );
                 }
             });
 
             ui.group(|ui| {
-                ui.label(egui::RichText::new("Network policy").strong());
+                ui.label(egui::RichText::new(self.t(TextKey::NetworkPolicyTitle)).strong());
                 ui.small("Outbound HTTP(S) requests are restricted to GitHub official artifact hosts (https only).");
                 let hosts = backend_contract::official_github_artifact_hosts();
                 ui.horizontal(|ui| {
-                    if ui.button("Copy allowlist").clicked() {
+                    if ui.button(self.t(TextKey::CopyAllowlistButton)).clicked() {
                         let mut text = String::new();
                         for (i, host) in hosts.iter().enumerate() {
                             if i > 0 {
@@ -1154,7 +1412,7 @@ impl eframe::App for GhMirrorGui {
                     }
                     ui.small(format!("{} hosts", hosts.len()));
                 });
-                ui.collapsing("Show allowlist", |ui| {
+                ui.collapsing(self.t(TextKey::ShowAllowlist), |ui| {
                     for host in hosts {
                         ui.monospace(*host);
                     }
@@ -1162,45 +1420,50 @@ impl eframe::App for GhMirrorGui {
             });
 
             ui.group(|ui| {
-                ui.label(egui::RichText::new("Trust policy").strong());
+                ui.label(egui::RichText::new(self.t(TextKey::TrustPolicyTitle)).strong());
+                let keep_unknown_downloads_label = self.t(TextKey::KeepUnknownDownloads);
                 ui.checkbox(
                     &mut self.trust_policy.unknown_keep_file,
-                    "Keep UNKNOWN downloads",
+                    keep_unknown_downloads_label,
                 );
                 if !self.trust_policy.unknown_keep_file {
                     self.trust_policy.unknown_allow_open = false;
                 }
+                let allow_open_unknown_downloads_label =
+                    self.t(TextKey::AllowOpenUnknownDownloads);
                 ui.add_enabled_ui(self.trust_policy.unknown_keep_file, |ui| {
                     ui.checkbox(
                         &mut self.trust_policy.unknown_allow_open,
-                        "Allow Open Folder for UNKNOWN downloads",
+                        allow_open_unknown_downloads_label,
                     );
                 });
                 ui.horizontal(|ui| {
-                    ui.label("MISMATCH file action:");
+                    ui.label(self.t(TextKey::MismatchFileActionLabel));
+                    let quarantine_option_label = self.t(TextKey::QuarantineOption);
+                    let delete_option_label = self.t(TextKey::DeleteOption);
                     egui::ComboBox::from_id_salt("mismatch_file_policy")
                         .selected_text(self.trust_policy.mismatch_file_policy.as_str())
                         .show_ui(ui, |ui| {
                             ui.selectable_value(
                                 &mut self.trust_policy.mismatch_file_policy,
                                 MismatchFilePolicy::Quarantine,
-                                "QUARANTINE",
+                                quarantine_option_label,
                             );
                             ui.selectable_value(
                                 &mut self.trust_policy.mismatch_file_policy,
                                 MismatchFilePolicy::Delete,
-                                "DELETE",
+                                delete_option_label,
                             );
                         });
                 });
                 ui.separator();
-                ui.label(egui::RichText::new("Verification source trust").strong());
+                ui.label(egui::RichText::new(self.t(TextKey::VerificationSourceTrustTitle)).strong());
                 let mut require_trusted_source =
                     backend_contract::source_trust_requires_signed(&self.trust_policy);
                 if ui
                     .checkbox(
                         &mut require_trusted_source,
-                        "Require signed checksum/provenance source",
+                        self.t(TextKey::RequireSignedChecksumSource),
                     )
                     .changed()
                 {
@@ -1210,7 +1473,7 @@ impl eframe::App for GhMirrorGui {
                     );
                 }
                 ui.horizontal(|ui| {
-                    ui.label("Pinned Ed25519 publisher key:");
+                    ui.label(self.t(TextKey::PinnedPublisherKeyLabel));
                     let mut trusted_publisher_key =
                         backend_contract::trusted_publisher_key_text(&self.trust_policy);
                     if ui.text_edit_singleline(&mut trusted_publisher_key).changed()
@@ -1223,7 +1486,7 @@ impl eframe::App for GhMirrorGui {
                     }
                 });
                 ui.horizontal(|ui| {
-                    if ui.button("Import public key").clicked() {
+                    if ui.button(self.t(TextKey::ImportPublicKey)).clicked() {
                         if let Some(path) = FileDialog::new()
                             .add_filter("Public key", &["pub", "txt"])
                             .pick_file()
@@ -1244,7 +1507,7 @@ impl eframe::App for GhMirrorGui {
                             }
                         }
                     }
-                    if ui.button("Normalize key").clicked() {
+                    if ui.button(self.t(TextKey::NormalizeKey)).clicked() {
                         match backend_contract::normalize_trusted_publisher_key(
                             &mut self.trust_policy,
                             &mut self.publisher_key_source,
@@ -1255,7 +1518,7 @@ impl eframe::App for GhMirrorGui {
                             }
                         }
                     }
-                    if ui.button("Clear key").clicked() {
+                    if ui.button(self.t(TextKey::ClearKey)).clicked() {
                         backend_contract::clear_trusted_publisher_key(
                             &mut self.trust_policy,
                             &mut self.publisher_key_source,
@@ -1282,9 +1545,9 @@ impl eframe::App for GhMirrorGui {
                     ui.small("No key pinned: hash verification still works, but source authenticity is not checked.");
                 }
                 ui.horizontal(|ui| {
-                    ui.label("History/evidence path:");
+                    ui.label(self.t(TextKey::HistoryPathLabel));
                     ui.text_edit_singleline(&mut self.history_path);
-                    if ui.button("Default").clicked() {
+                    if ui.button(self.t(TextKey::DefaultButton)).clicked() {
                         self.history_path.clear();
                     }
                 });
@@ -1296,21 +1559,21 @@ impl eframe::App for GhMirrorGui {
             });
 
             ui.group(|ui| {
-                ui.label(egui::RichText::new("Self-update Stage 1").strong());
+                ui.label(egui::RichText::new(self.t(TextKey::Stage1Title)).strong());
                 ui.small("Checks the public latest release and only reports candidate / no-update / refused.");
                 ui.horizontal(|ui| {
                     let running = self.update_candidate_thread.is_some();
                     if ui
                         .add_enabled(
                             !running,
-                            egui::Button::new("Check latest self-update candidate"),
+                            egui::Button::new(self.t(TextKey::CheckLatestCandidateButton)),
                         )
                         .clicked()
                     {
                         self.start_update_candidate_check();
                     }
                     if running {
-                        ui.label("⏳ Checking...");
+                        ui.label(format!("⏳ {}", self.t(TextKey::StatusCheckingCandidate)));
                     } else if !self.update_candidate_status.is_empty() {
                         ui.label(&self.update_candidate_status);
                     }
@@ -1321,29 +1584,32 @@ impl eframe::App for GhMirrorGui {
             });
 
             ui.group(|ui| {
-                ui.label(egui::RichText::new("Self-update Stage 2").strong());
+                ui.label(egui::RichText::new(self.t(TextKey::Stage2Title)).strong());
                 ui.small("Stages a verified candidate to a local folder (still no install).");
                 ui.horizontal(|ui| {
                     let running = self.update_stage_thread.is_some();
                     if ui
-                        .add_enabled(!running, egui::Button::new("Stage latest candidate (no install)"))
+                        .add_enabled(
+                            !running,
+                            egui::Button::new(self.t(TextKey::StageLatestCandidateButton)),
+                        )
                         .clicked()
                     {
                         self.start_update_candidate_stage();
                     }
                     if running {
-                        ui.label("⏳ Staging...");
+                        ui.label(format!("⏳ {}", self.t(TextKey::StatusStagingCandidate)));
                     } else if !self.update_stage_status.is_empty() {
                         ui.label(&self.update_stage_status);
                     }
                 });
-                if let Some(report) = &self.update_stage_report {
-                    render_update_candidate_stage(ui, report);
+                if let Some(report) = self.update_stage_report.clone() {
+                    render_update_candidate_stage(ui, &report);
                     ui.separator();
                     if let Some(record) = &self.update_apply_plan_evidence_record {
                         render_update_apply_plan_preview(ui, &record.plan, Some(record));
                     } else {
-                        match backend_contract::current_exe_update_apply_plan_for_stage2(report) {
+                        match backend_contract::current_exe_update_apply_plan_for_stage2(&report) {
                             Ok(plan) => {
                                 render_update_apply_plan_preview(ui, &plan, None);
                             }
@@ -1355,10 +1621,10 @@ impl eframe::App for GhMirrorGui {
                     ui.separator();
                     ui.horizontal(|ui| {
                         if ui
-                            .button("Prepare controlled helper bundle (no install)")
+                            .button(self.t(TextKey::PrepareHelperBundleButton))
                             .clicked()
                         {
-                            match backend_contract::record_update_apply_bundle_evidence_for_current_exe(report) {
+                            match backend_contract::record_update_apply_bundle_evidence_for_current_exe(&report) {
                                 Ok(record) => {
                                     self.update_apply_bundle_status =
                                         "Controlled helper bundle prepared; helper execution is not launched by the UI."
@@ -1383,25 +1649,29 @@ impl eframe::App for GhMirrorGui {
             });
 
             // Action buttons
-            ui.horizontal(|ui| {
-                if ui.button("⬇ Download").clicked() {
+            let action_layout = match layout_mode {
+                LayoutMode::Compact => egui::Layout::top_down(egui::Align::Min),
+                LayoutMode::Medium | LayoutMode::Wide => {
+                    egui::Layout::left_to_right(egui::Align::Center)
+                }
+            };
+            ui.with_layout(action_layout, |ui| {
+                if ui.button(self.t(TextKey::DownloadButton)).clicked() {
                     self.start_download();
                 }
                 if let Some(ctrl) = &self.control {
                     if ctrl.is_paused() {
-                        if ui.button("▶ Resume").clicked() {
+                        if ui.button(self.t(TextKey::ResumeButton)).clicked() {
                             ctrl.resume();
                         }
-                    } else {
-                        if ui.button("⏸ Pause").clicked() {
-                            ctrl.pause();
-                        }
+                    } else if ui.button(self.t(TextKey::PauseButton)).clicked() {
+                        ctrl.pause();
                     }
-                    if ui.button("❌ Cancel").clicked() {
+                    if ui.button(self.t(TextKey::CancelButton)).clicked() {
                         ctrl.cancel();
                         self.download_thread = None;
                         self.control = None;
-                        self.status = String::from("Cancelled");
+                        self.status = self.t(TextKey::StatusCancelled).to_string();
                     }
                 }
             });
@@ -1448,21 +1718,18 @@ impl eframe::App for GhMirrorGui {
                 }
             }
 
-            // Progress bar and info — always visible during download
-            if self.download_thread.is_some() || self.progress > 0.0 || !self.speed_text.is_empty()
-            {
-                let pct_text = format!("{:.1}%", self.progress * 100.0);
-                ui.add(egui::ProgressBar::new(self.progress).text(pct_text));
-                if !self.speed_text.is_empty() || !self.elapsed_text.is_empty() {
-                    ui.horizontal(|ui| {
-                        ui.label(&self.speed_text);
-                        ui.label(&self.elapsed_text);
-                    });
+            // Progress bar and info — projected from backend truth
+            if let Some(progress) = self.download_progress_projection() {
+                let mut bar =
+                    egui::ProgressBar::new(progress.fraction).text(progress.primary_text.clone());
+                if progress.indeterminate {
+                    bar = bar.animate(true);
                 }
+                ui.add(bar);
+                ui.label(progress.detail_text);
             }
 
-            // Status label
-            ui.label(egui::RichText::new(&self.status).color(status_color(&self.status)));
+                });
         });
     }
 }
@@ -1470,3 +1737,61 @@ impl eframe::App for GhMirrorGui {
 // ---------------------------------------------------------------------------
 // UI helpers
 // ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn archive_tag_url_gets_release_picker_suggestion() {
+        let release_url = release_picker_url_from_archive_input(
+            "https://github.com/mindfold-ai/Trellis/archive/refs/tags/v0.6.0-beta.8.zip",
+        );
+
+        assert_eq!(
+            release_url.as_deref(),
+            Some("https://github.com/mindfold-ai/Trellis/releases/tag/v0.6.0-beta.8")
+        );
+    }
+
+    #[test]
+    fn find_assets_message_explains_direct_archive_download() {
+        let input = "https://github.com/mindfold-ai/Trellis/archive/refs/tags/v0.6.0-beta.8.zip";
+        let status = release_lookup_non_picker_status(
+            input,
+            backend_contract::resolve_download_intent(input),
+        );
+
+        assert!(status.contains("Direct GitHub download detected"));
+        assert!(status.contains("Click Download to download this URL"));
+        assert!(
+            status.contains("https://github.com/mindfold-ai/Trellis/releases/tag/v0.6.0-beta.8")
+        );
+    }
+
+    #[test]
+    fn windows_proxy_server_value_defaults_to_http_proxy_url() {
+        assert_eq!(
+            proxy_url_from_windows_proxy_server("127.0.0.1:7897").as_deref(),
+            Some("http://127.0.0.1:7897")
+        );
+        assert_eq!(
+            proxy_url_from_windows_proxy_server(
+                "http=127.0.0.1:7897;https=127.0.0.1:7897;socks=127.0.0.1:7898"
+            )
+            .as_deref(),
+            Some("http://127.0.0.1:7897")
+        );
+        assert_eq!(
+            proxy_url_from_windows_proxy_server("socks=127.0.0.1:7898").as_deref(),
+            Some("socks5://127.0.0.1:7898")
+        );
+    }
+
+    #[test]
+    fn registry_proxy_enable_parser_accepts_hex_enabled() {
+        assert!(reg_dword_enabled("0x1"));
+        assert!(reg_dword_enabled("1"));
+        assert!(!reg_dword_enabled("0x0"));
+    }
+}

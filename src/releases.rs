@@ -156,13 +156,16 @@ pub(crate) fn resolve_release_assets_with_base(
         if !status.is_success() {
             let body = response.text().unwrap_or_default();
             let detail = compact_error_body(&body);
-            let error = format!(
+            let mut error = format!(
                 "GitHub release lookup failed for {} {}: HTTP {}{}",
                 query.repo_slug(),
                 query.selector_label(),
                 status.as_u16(),
                 detail
             );
+            if status.as_u16() == 404 {
+                error.push_str(&release_not_found_hint(query));
+            }
 
             if is_retryable_release_lookup_status(status) && attempt < RELEASE_LOOKUP_MAX_RETRIES {
                 last_retryable_error = Some(error);
@@ -206,6 +209,18 @@ pub(crate) fn resolve_release_assets_with_base(
 
 fn is_retryable_release_lookup_status(status: reqwest::StatusCode) -> bool {
     status.is_server_error() || status.as_u16() == 429
+}
+
+fn release_not_found_hint(query: &ReleaseQuery) -> String {
+    match &query.kind {
+        ReleaseQueryKind::Latest => {
+            " No published GitHub Release was found; a git tag/source archive is not the same as a GitHub Release asset list.".to_string()
+        }
+        ReleaseQueryKind::Tag(tag) => format!(
+            " No published GitHub Release exists for this tag; git tags/source archives can exist without Release assets. To download the generated source archive directly, use https://github.com/{}/{}/archive/refs/tags/{}.zip.",
+            query.owner, query.repo, tag
+        ),
+    }
 }
 
 fn github_release_api_url(api_base: &str, query: &ReleaseQuery) -> Result<Url, String> {
@@ -488,5 +503,24 @@ mod tests {
 
         assert!(err.contains("HTTP 404"));
         assert!(err.contains("owner/repo latest"));
+    }
+
+    #[test]
+    fn resolver_explains_tag_404_as_missing_github_release_not_missing_git_tag() {
+        let (api_base, server) = serve_api_once(r#"{"message":"Not Found"}"#, "404 Not Found");
+        let client = Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+        let query =
+            parse_release_query("https://github.com/owner/repo/releases/tag/v1.2.3").unwrap();
+
+        let err = resolve_release_assets_with_base(&client, &api_base, &query).unwrap_err();
+        let _ = server.join().unwrap();
+
+        assert!(err.contains("HTTP 404"));
+        assert!(err.contains("No published GitHub Release exists for this tag"));
+        assert!(err.contains("git tags/source archives can exist without Release assets"));
+        assert!(err.contains("https://github.com/owner/repo/archive/refs/tags/v1.2.3.zip"));
     }
 }

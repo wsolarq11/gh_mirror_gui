@@ -24,3 +24,4 @@ mod verification;
 mod verifier_adapter;
 
 pub mod backend_contract;
+pub mod ui_projection;

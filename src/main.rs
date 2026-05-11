@@ -42,6 +42,8 @@ use backend_contract::{
 };
 #[cfg(test)]
 use gh_mirror_gui::backend_contract;
+#[cfg(test)]
+use gh_mirror_gui::ui_projection::UiLocale;
 
 const RELEASE_PRIVATE_KEY_ENV: &str = "RELEASE_ED25519_PRIVATE_KEY_HEX";
 const LEGACY_RELEASE_PRIVATE_KEY_ENV: &str = "GH_MIRROR_GUI_ED25519_PRIVATE_KEY_HEX";
@@ -67,8 +69,8 @@ fn main() -> Result<(), eframe::Error> {
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([640.0, 480.0])
-            .with_min_inner_size([400.0, 300.0]),
+            .with_inner_size([960.0, 720.0])
+            .with_min_inner_size([480.0, 360.0]),
         ..Default::default()
     };
     eframe::run_native(
@@ -253,12 +255,13 @@ mod tests {
         assert!(state.source_trust_publisher_key.is_empty());
         assert!(state.source_trust_publisher_key_source.is_empty());
         assert!(state.history_path.is_empty());
+        assert_eq!(state.locale, UiLocale::En);
     }
 
     #[test]
     fn saved_state_persists_trust_policy_and_history_path() {
         let state: SavedState = serde_json::from_str(
-            r#"{"selected_mirror":0,"save_dir":"C:\\Downloads","proxy":"","allow_invalid_certs":false,"trust_unknown_keep_file":false,"trust_unknown_allow_open":false,"trust_mismatch_file_policy":"DELETE","source_trust_require_signed":true,"source_trust_publisher_key":"D75A980182B10AB7D54BFED3C964073A0EE172F3DAA62325AF021A68F707511A","source_trust_publisher_key_source":"GitHub Release wsolarq11/gh_mirror_gui@v0.1.2 asset publisher-key.ed25519.pub","history_path":"C:\\Evidence\\bench-history.jsonl"}"#,
+            r#"{"selected_mirror":0,"save_dir":"C:\\Downloads","proxy":"","locale":"zh","allow_invalid_certs":false,"trust_unknown_keep_file":false,"trust_unknown_allow_open":false,"trust_mismatch_file_policy":"DELETE","source_trust_require_signed":true,"source_trust_publisher_key":"D75A980182B10AB7D54BFED3C964073A0EE172F3DAA62325AF021A68F707511A","source_trust_publisher_key_source":"GitHub Release wsolarq11/gh_mirror_gui@v0.1.2 asset publisher-key.ed25519.pub","history_path":"C:\\Evidence\\bench-history.jsonl"}"#,
         )
         .unwrap();
 
@@ -275,6 +278,7 @@ mod tests {
             "GitHub Release wsolarq11/gh_mirror_gui@v0.1.2 asset publisher-key.ed25519.pub"
         );
         assert_eq!(state.history_path, r"C:\Evidence\bench-history.jsonl");
+        assert_eq!(state.locale, UiLocale::Zh);
     }
 
     #[test]

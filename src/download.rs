@@ -200,20 +200,40 @@ pub(crate) fn probe_download(client: &Client, url: &str) -> Result<DownloadProbe
     let mut total = 0;
     let mut etag = None;
     let mut last_modified = None;
+    let mut head_succeeded = false;
+    let mut head_accepts_ranges = false;
 
     if let Ok(resp) = client.head(url).send() {
         if resp.status().is_success() {
+            head_succeeded = true;
             total = content_length(&resp);
             etag = header_string(&resp, "etag");
             last_modified = header_string(&resp, "last-modified");
+            head_accepts_ranges = header_string(&resp, "accept-ranges")
+                .is_some_and(|value| value.eq_ignore_ascii_case("bytes"));
         }
     }
 
-    let range_resp = client
-        .get(url)
-        .header("Range", "bytes=0-0")
-        .send()
-        .map_err(|e| format!("Range probe request failed: {}", e))?;
+    if head_succeeded && total == 0 && !head_accepts_ranges {
+        return Ok(DownloadProbe {
+            total: 0,
+            range_supported: false,
+            etag,
+            last_modified,
+        });
+    }
+
+    let range_resp = match client.get(url).header("Range", "bytes=0-0").send() {
+        Ok(response) => response,
+        Err(_) => {
+            return Ok(DownloadProbe {
+                total,
+                range_supported: false,
+                etag,
+                last_modified,
+            });
+        }
+    };
     let status = range_resp.status();
 
     if status.as_u16() == 206 {
@@ -238,12 +258,6 @@ pub(crate) fn probe_download(client: &Client, url: &str) -> Result<DownloadProbe
 
     if total == 0 && status.is_success() {
         total = content_length(&range_resp);
-    }
-
-    if total == 0 {
-        return Err(format!(
-            "Unable to determine download size; probe returned {status}"
-        ));
     }
 
     Ok(DownloadProbe {
@@ -808,6 +822,9 @@ pub(crate) fn download_single(
         if total > 0 && downloaded >= total {
             break;
         }
+        if total == 0 {
+            break;
+        }
     }
 
     fs::rename(&tmp_path, save_path).map_err(|e| format!("Failed to rename temp file: {}", e))?;
@@ -1015,6 +1032,47 @@ mod tests {
         (format!("http://{addr}/file.bin"), handle)
     }
 
+    fn serve_unknown_size_probe(body: Vec<u8>) -> (String, std::thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = std::thread::spawn(move || {
+            for _ in 0..1 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut buf = [0u8; 2048];
+                let n = stream.read(&mut buf).unwrap();
+                let req = String::from_utf8_lossy(&buf[..n]);
+                let method = req
+                    .lines()
+                    .next()
+                    .and_then(|line| line.split_whitespace().next())
+                    .unwrap_or("GET");
+                let header =
+                    "HTTP/1.1 200 OK\r\nETag: \"unknown-size\"\r\nConnection: close\r\n\r\n";
+                stream.write_all(header.as_bytes()).unwrap();
+                if method != "HEAD" {
+                    let _ = stream.write_all(&body);
+                }
+            }
+        });
+
+        (format!("http://{addr}/file.bin"), handle)
+    }
+
+    fn serve_unknown_size_once(body: Vec<u8>) -> (String, std::thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 2048];
+            let _ = stream.read(&mut buf).unwrap();
+            let header = "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n";
+            stream.write_all(header.as_bytes()).unwrap();
+            stream.write_all(&body).unwrap();
+        });
+
+        (format!("http://{addr}/file.bin"), handle)
+    }
+
     fn serve_drop_then_once(body: Vec<u8>) -> (String, std::thread::JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
@@ -1063,6 +1121,23 @@ mod tests {
             probe.last_modified,
             Some("Mon, 01 Jan 2024 00:00:00 GMT".to_string())
         );
+    }
+
+    #[test]
+    fn probe_download_allows_successful_unknown_size_without_range() {
+        let body = b"unknown size payload".to_vec();
+        let (url, server) = serve_unknown_size_probe(body);
+        let client = Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+
+        let probe = probe_download(&client, &url).unwrap();
+
+        server.join().unwrap();
+        assert_eq!(probe.total, 0);
+        assert!(!probe.range_supported);
+        assert_eq!(probe.etag, Some("\"unknown-size\"".to_string()));
     }
 
     #[test]
@@ -1151,6 +1226,28 @@ mod tests {
         server.join().unwrap();
         assert_eq!(fs::read(&save_path).unwrap(), body);
         assert!(!PathBuf::from(&part_path).exists());
+        let _ = fs::remove_file(save_path);
+    }
+
+    #[test]
+    fn download_single_finishes_unknown_size_without_redownloading() {
+        let body = b"single pass unknown size payload".to_vec();
+        let (url, server) = serve_unknown_size_once(body.clone());
+        let save_path = unique_test_path("unknown-size.bin");
+        let client = Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+        let ctrl = DownloadControl::new();
+        let (tx, rx) = std::sync::mpsc::channel();
+
+        download_single(&client, &url, save_path.to_str().unwrap(), 0, &ctrl, &tx).unwrap();
+
+        server.join().unwrap();
+        assert_eq!(fs::read(&save_path).unwrap(), body);
+        assert!(rx
+            .try_iter()
+            .any(|(downloaded, total, _, _)| downloaded == body.len() as u64 && total == 0));
         let _ = fs::remove_file(save_path);
     }
 
