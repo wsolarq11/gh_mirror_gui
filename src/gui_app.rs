@@ -45,13 +45,13 @@ type UpdateCandidateStageMessage = UpdateCandidateStageReport;
 type DownloadResultMessage = Result<DownloadCompletion, String>;
 
 const GOLDEN_MAJOR: f32 = 0.618_034;
-const COMMAND_COLUMN_GAP: f32 = 12.0;
-const BODY_COLUMN_GAP: f32 = 12.0;
-const BODY_TWO_COLUMN_MIN_WIDTH: f32 = 980.0;
-const BODY_THREE_COLUMN_MIN_WIDTH: f32 = 1360.0;
-const BODY_THREE_COLUMN_PRIMARY_RATIO: f32 = 0.40;
-const BODY_THREE_COLUMN_POLICY_RATIO: f32 = 0.34;
-const CARD_STACK_GAP: f32 = 4.0;
+const COMMAND_COLUMN_GAP: f32 = 8.0;
+const BODY_COLUMN_GAP: f32 = 8.0;
+const BODY_TWO_COLUMN_MIN_WIDTH: f32 = 880.0;
+const BODY_THREE_COLUMN_MIN_WIDTH: f32 = 1120.0;
+const BODY_THREE_COLUMN_PRIMARY_RATIO: f32 = 0.44;
+const BODY_THREE_COLUMN_POLICY_RATIO: f32 = 0.30;
+const CARD_STACK_GAP: f32 = 2.0;
 
 pub(crate) fn configure_egui_context(ctx: &egui::Context) {
     configure_system_fonts(ctx);
@@ -105,7 +105,7 @@ fn configure_comfortable_app_style(ctx: &egui::Context) {
     ctx.style_mut(|style| {
         style.text_styles.insert(
             egui::TextStyle::Heading,
-            egui::FontId::new(20.0, egui::FontFamily::Proportional),
+            egui::FontId::new(18.0, egui::FontFamily::Proportional),
         );
         style.text_styles.insert(
             egui::TextStyle::Body,
@@ -123,10 +123,10 @@ fn configure_comfortable_app_style(ctx: &egui::Context) {
             egui::TextStyle::Monospace,
             egui::FontId::new(13.0, egui::FontFamily::Monospace),
         );
-        style.spacing.item_spacing = egui::vec2(8.0, 5.0);
-        style.spacing.button_padding = egui::vec2(8.0, 4.0);
-        style.spacing.indent = 14.0;
-        style.spacing.window_margin = egui::Margin::symmetric(10.0, 10.0);
+        style.spacing.item_spacing = egui::vec2(6.0, 4.0);
+        style.spacing.button_padding = egui::vec2(6.0, 3.0);
+        style.spacing.indent = 12.0;
+        style.spacing.window_margin = egui::Margin::symmetric(8.0, 8.0);
     });
 }
 
@@ -617,7 +617,7 @@ impl GhMirrorGui {
 
     fn gallery_panel<R>(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui) -> R) -> R {
         egui::Frame::group(ui.style())
-            .inner_margin(egui::Margin::symmetric(10.0, 8.0))
+            .inner_margin(egui::Margin::symmetric(8.0, 6.0))
             .show(ui, add_contents)
             .inner
     }
@@ -770,52 +770,57 @@ impl GhMirrorGui {
     }
 
     fn render_command_hint_content(&mut self, ui: &mut egui::Ui) {
-        ui.set_min_width(ui.available_width());
         let url_is_empty = self.url.trim().is_empty();
-        ui.label(
-            egui::RichText::new(if url_is_empty {
-                self.t(TextKey::StatusEnterUrlFirst)
+        ui.vertical(|ui| {
+            ui.set_min_width(ui.available_width());
+            ui.label(
+                egui::RichText::new(if url_is_empty {
+                    self.t(TextKey::StatusEnterUrlFirst)
+                } else {
+                    self.t(TextKey::StatusReady)
+                })
+                .strong(),
+            );
+
+            if url_is_empty {
+                ui.small(self.t(TextKey::ReleasePickerHint));
+            } else if !self.release_status.is_empty() {
+                ui.small(&self.release_status);
             } else {
-                self.t(TextKey::StatusReady)
-            })
-            .strong(),
-        );
-
-        if url_is_empty {
-            ui.small(self.t(TextKey::ReleasePickerHint));
-        } else if !self.release_status.is_empty() {
-            ui.small(&self.release_status);
-        } else {
-            ui.small(self.t(TextKey::ReleasePickerHint));
-        }
-
-        if !self.status.is_empty() && self.status != self.release_status {
-            ui.label(&self.status);
-        }
-
-        ui.separator();
-        ui.small(format!(
-            "{} {}",
-            self.t(TextKey::SaveToLabel),
-            self.save_dir.display()
-        ));
-        ui.small(format!(
-            "{} {}",
-            self.t(TextKey::ProxyLabel),
-            if self.proxy.trim().is_empty() {
-                "auto-detect on action start"
-            } else {
-                &self.proxy
+                ui.small(self.t(TextKey::ReleasePickerHint));
             }
-        ));
-        ui.small(format!(
-            "TLS: {}",
-            if self.allow_invalid_certs {
-                "unsafe debugging mode"
-            } else {
-                "strict verification"
+
+            if !self.status.is_empty() && self.status != self.release_status {
+                ui.label(&self.status);
             }
-        ));
+
+            ui.add_space(2.0);
+            egui::Grid::new("command_summary_grid")
+                .num_columns(2)
+                .spacing(egui::vec2(10.0, 3.0))
+                .striped(false)
+                .show(ui, |ui| {
+                    ui.label(self.t(TextKey::SaveToLabel));
+                    ui.monospace(self.save_dir.display().to_string());
+                    ui.end_row();
+
+                    ui.label(self.t(TextKey::ProxyLabel));
+                    ui.label(if self.proxy.trim().is_empty() {
+                        "auto-detect on action start"
+                    } else {
+                        &self.proxy
+                    });
+                    ui.end_row();
+
+                    ui.label("TLS");
+                    ui.label(if self.allow_invalid_certs {
+                        "unsafe debugging mode"
+                    } else {
+                        "strict verification"
+                    });
+                    ui.end_row();
+                });
+        });
     }
 
     fn render_body(&mut self, ui: &mut egui::Ui) {
@@ -823,7 +828,7 @@ impl GhMirrorGui {
             .id_salt("proof_to_action_main_scroll")
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                ui.add_space(2.0);
+                ui.add_space(1.0);
                 let total_width = ui.available_width();
                 if total_width < BODY_TWO_COLUMN_MIN_WIDTH {
                     self.render_body_primary_column(ui);

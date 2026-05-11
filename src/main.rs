@@ -69,8 +69,8 @@ fn main() -> Result<(), eframe::Error> {
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1180.0, 760.0])
-            .with_min_inner_size([640.0, 460.0]),
+            .with_inner_size([1366.0, 860.0])
+            .with_min_inner_size([720.0, 520.0]),
         ..Default::default()
     };
     eframe::run_native(
