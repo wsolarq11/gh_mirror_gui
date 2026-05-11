@@ -53,6 +53,11 @@ const BODY_FILL_MIN_HEIGHT: f32 = 430.0;
 const RESIZE_HYSTERESIS: f32 = 32.0;
 const BODY_SCROLL_ENTER_MAX_HEIGHT: f32 = BODY_FILL_MIN_HEIGHT - RESIZE_HYSTERESIS;
 const BODY_SCROLL_EXIT_MIN_HEIGHT: f32 = BODY_FILL_MIN_HEIGHT + RESIZE_HYSTERESIS;
+const COMMAND_MEDIUM_MIN_WIDTH: f32 = 820.0;
+const COMMAND_WIDE_MIN_WIDTH: f32 = 1180.0;
+const RESIZE_CHANGE_EPSILON: f32 = 0.5;
+const RESIZE_STABILIZE_WINDOW_MS: u64 = 180;
+const RESIZE_REPAINT_FRAME_MS: u64 = 16;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ViewportDensity {
@@ -177,6 +182,25 @@ impl ViewportDensity {
             Self::Spacious => 20.0,
         }
     }
+
+    const fn top_bar_height(self) -> f32 {
+        match self {
+            Self::Dense => 30.0,
+            Self::Regular => 32.0,
+            Self::Spacious => 34.0,
+        }
+    }
+
+    const fn command_panel_height(self, layout_mode: LayoutMode) -> f32 {
+        match (self, layout_mode) {
+            (Self::Dense, LayoutMode::Compact) => 174.0,
+            (Self::Regular, LayoutMode::Compact) => 184.0,
+            (Self::Spacious, LayoutMode::Compact) => 192.0,
+            (Self::Dense, LayoutMode::Medium | LayoutMode::Wide) => 110.0,
+            (Self::Regular, LayoutMode::Medium | LayoutMode::Wide) => 118.0,
+            (Self::Spacious, LayoutMode::Medium | LayoutMode::Wide) => 126.0,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -240,6 +264,43 @@ fn body_layout_for_resized_viewport(
             }
         }
     }
+}
+
+fn layout_mode_for_resized_width(current: LayoutMode, width: f32) -> LayoutMode {
+    if !width.is_finite() {
+        return current;
+    }
+
+    match current {
+        LayoutMode::Compact => {
+            if width >= COMMAND_MEDIUM_MIN_WIDTH + RESIZE_HYSTERESIS {
+                layout_mode_for_width(width)
+            } else {
+                LayoutMode::Compact
+            }
+        }
+        LayoutMode::Medium => {
+            if width < COMMAND_MEDIUM_MIN_WIDTH - RESIZE_HYSTERESIS {
+                LayoutMode::Compact
+            } else if width >= COMMAND_WIDE_MIN_WIDTH + RESIZE_HYSTERESIS {
+                LayoutMode::Wide
+            } else {
+                LayoutMode::Medium
+            }
+        }
+        LayoutMode::Wide => {
+            if width < COMMAND_WIDE_MIN_WIDTH - RESIZE_HYSTERESIS {
+                layout_mode_for_width(width)
+            } else {
+                LayoutMode::Wide
+            }
+        }
+    }
+}
+
+fn viewport_size_changed_enough(previous: egui::Vec2, next: egui::Vec2) -> bool {
+    (previous.x - next.x).abs() > RESIZE_CHANGE_EPSILON
+        || (previous.y - next.y).abs() > RESIZE_CHANGE_EPSILON
 }
 
 fn golden_two_column_widths(total_width: f32, gap: f32) -> (f32, f32) {
@@ -636,8 +697,10 @@ pub(crate) struct GhMirrorGui {
     last_viewport_size: egui::Vec2,
     viewport_density: ViewportDensity,
     applied_density: Option<ViewportDensity>,
+    command_layout_mode: LayoutMode,
     body_layout: BodyLayout,
     body_scroll_fallback: bool,
+    resize_stabilize_until: Option<Instant>,
     save_dir: PathBuf,
     proxy: String,
     locale: UiLocale,
@@ -798,8 +861,10 @@ impl GhMirrorGui {
             last_viewport_size: egui::vec2(1366.0, 860.0),
             viewport_density: ViewportDensity::for_size(egui::vec2(1366.0, 860.0)),
             applied_density: None,
+            command_layout_mode: layout_mode_for_width(1366.0),
             body_layout: BodyLayout::GoldenThree,
             body_scroll_fallback: false,
+            resize_stabilize_until: None,
             save_dir: PathBuf::from(&save_dir),
             proxy,
             locale,
@@ -901,9 +966,16 @@ impl GhMirrorGui {
     }
 
     fn update_viewport_density(&mut self, viewport_size: egui::Vec2) {
+        let previous_viewport_size = self.last_viewport_size;
         self.last_viewport_size = viewport_size;
+        if viewport_size_changed_enough(previous_viewport_size, viewport_size) {
+            self.resize_stabilize_until =
+                Some(Instant::now() + Duration::from_millis(RESIZE_STABILIZE_WINDOW_MS));
+        }
         self.viewport_density =
             ViewportDensity::for_resized_size(self.viewport_density, viewport_size);
+        self.command_layout_mode =
+            layout_mode_for_resized_width(self.command_layout_mode, viewport_size.x);
     }
 
     fn apply_adaptive_style(&mut self, ctx: &egui::Context) {
@@ -975,7 +1047,7 @@ impl GhMirrorGui {
         let density = self.current_density();
         Self::gallery_panel(ui, density, |ui| {
             ui.set_min_width(ui.available_width());
-            let layout_mode = layout_mode_for_width(ui.available_width());
+            let layout_mode = self.command_layout_mode;
             let wide_layout = matches!(layout_mode, LayoutMode::Medium | LayoutMode::Wide);
 
             if wide_layout {
@@ -2683,6 +2755,14 @@ impl eframe::App for GhMirrorGui {
             ctx.request_repaint_after(Duration::from_millis(100));
         }
 
+        if let Some(until) = self.resize_stabilize_until {
+            if Instant::now() < until {
+                ctx.request_repaint_after(Duration::from_millis(RESIZE_REPAINT_FRAME_MS));
+            } else {
+                self.resize_stabilize_until = None;
+            }
+        }
+
         // Drag-drop handling is app-wide; rendering below stays a stable projection shell.
         if !ctx.input(|i| i.raw.dropped_files.is_empty()) {
             let dropped = ctx.input(|i| i.raw.dropped_files.clone());
@@ -2693,27 +2773,32 @@ impl eframe::App for GhMirrorGui {
             }
         }
 
-        egui::TopBottomPanel::top("proof_to_action_top_bar").show(ctx, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                ui.heading(format!("🚀 {}", self.t(TextKey::AppTitle)));
-                ui.small(self.t(TextKey::AppSubtitle));
-                ui.separator();
-                let switch_key = if self.locale == UiLocale::En {
-                    TextKey::SwitchToChinese
-                } else {
-                    TextKey::SwitchToEnglish
-                };
-                if ui.button(self.t(switch_key)).clicked() {
-                    self.toggle_locale();
-                }
-                ui.separator();
-                ui.label(egui::RichText::new(&self.status).color(status_color(&self.status)));
+        let density = self.current_density();
+        egui::TopBottomPanel::top("proof_to_action_top_bar")
+            .exact_height(density.top_bar_height())
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.heading(format!("🚀 {}", self.t(TextKey::AppTitle)));
+                    ui.small(self.t(TextKey::AppSubtitle));
+                    ui.separator();
+                    let switch_key = if self.locale == UiLocale::En {
+                        TextKey::SwitchToChinese
+                    } else {
+                        TextKey::SwitchToEnglish
+                    };
+                    if ui.button(self.t(switch_key)).clicked() {
+                        self.toggle_locale();
+                    }
+                    ui.separator();
+                    ui.label(egui::RichText::new(&self.status).color(status_color(&self.status)));
+                });
             });
-        });
 
-        egui::TopBottomPanel::top("proof_to_action_command_panel").show(ctx, |ui| {
-            self.render_command_panel(ui);
-        });
+        egui::TopBottomPanel::top("proof_to_action_command_panel")
+            .exact_height(density.command_panel_height(self.command_layout_mode))
+            .show(ctx, |ui| {
+                self.render_command_panel(ui);
+            });
 
         // Draw UI body. Scroll is a fallback safety net after responsive layout projection.
         egui::CentralPanel::default().show(ctx, |ui| {
@@ -2828,6 +2913,43 @@ mod tests {
     }
 
     #[test]
+    fn command_layout_uses_hysteresis_to_reduce_resize_thrashing() {
+        assert_eq!(
+            layout_mode_for_resized_width(LayoutMode::Compact, 819.0),
+            LayoutMode::Compact
+        );
+        assert_eq!(
+            layout_mode_for_resized_width(LayoutMode::Compact, 853.0),
+            LayoutMode::Medium
+        );
+        assert_eq!(
+            layout_mode_for_resized_width(LayoutMode::Medium, 1160.0),
+            LayoutMode::Medium
+        );
+        assert_eq!(
+            layout_mode_for_resized_width(LayoutMode::Medium, 1213.0),
+            LayoutMode::Wide
+        );
+        assert_eq!(
+            layout_mode_for_resized_width(LayoutMode::Wide, 1160.0),
+            LayoutMode::Wide
+        );
+        assert_eq!(
+            layout_mode_for_resized_width(LayoutMode::Wide, 1140.0),
+            LayoutMode::Medium
+        );
+    }
+
+    #[test]
+    fn fixed_chrome_heights_prevent_resize_wrap_height_feedback() {
+        assert!(ViewportDensity::Regular.top_bar_height() > 0.0);
+        assert!(
+            ViewportDensity::Regular.command_panel_height(LayoutMode::Compact)
+                > ViewportDensity::Regular.command_panel_height(LayoutMode::Wide)
+        );
+    }
+
+    #[test]
     fn viewport_density_uses_hysteresis_to_reduce_resize_thrashing() {
         assert_eq!(
             ViewportDensity::for_resized_size(ViewportDensity::Dense, egui::vec2(934.0, 655.0)),
@@ -2845,6 +2967,18 @@ mod tests {
             ViewportDensity::for_resized_size(ViewportDensity::Spacious, egui::vec2(1460.0, 860.0)),
             ViewportDensity::Regular
         );
+    }
+
+    #[test]
+    fn viewport_size_change_threshold_filters_tiny_resize_jitter() {
+        assert!(!viewport_size_changed_enough(
+            egui::vec2(1000.0, 700.0),
+            egui::vec2(1000.3, 700.2)
+        ));
+        assert!(viewport_size_changed_enough(
+            egui::vec2(1000.0, 700.0),
+            egui::vec2(1001.0, 700.0)
+        ));
     }
 
     #[test]
