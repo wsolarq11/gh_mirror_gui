@@ -69,14 +69,17 @@ fn main() -> Result<(), eframe::Error> {
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([960.0, 720.0])
-            .with_min_inner_size([480.0, 360.0]),
+            .with_inner_size([1180.0, 760.0])
+            .with_min_inner_size([640.0, 460.0]),
         ..Default::default()
     };
     eframe::run_native(
         "GitHub Mirror Downloader",
         options,
-        Box::new(|cc| Ok(Box::new(GhMirrorGui::new(cc.storage)))),
+        Box::new(|cc| {
+            gui_app::configure_egui_context(&cc.egui_ctx);
+            Ok(Box::new(GhMirrorGui::new(cc.storage)))
+        }),
     )
 }
 
