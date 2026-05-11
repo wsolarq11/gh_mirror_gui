@@ -186,24 +186,24 @@ pub const ALL_TEXT_KEYS: &[TextKey] = &[
 pub fn text(locale: UiLocale, key: TextKey) -> &'static str {
     match locale {
         UiLocale::En => match key {
-            TextKey::AppTitle => "GitHub Mirror Downloader",
-            TextKey::AppSubtitle => "Proof-to-Action UI Kernel",
+            TextKey::AppTitle => "Trusted Release Downloader",
+            TextKey::AppSubtitle => "Evidence-first Windows downloader",
             TextKey::SwitchToChinese => "中文",
             TextKey::SwitchToEnglish => "English",
             TextKey::UrlLabel => "URL:",
-            TextKey::PasteButton => "📋 Paste",
-            TextKey::ClearButton => "🗑 Clear",
-            TextKey::FindReleaseAssetsButton => "🔎 Find release assets",
+            TextKey::PasteButton => "Paste",
+            TextKey::ClearButton => "Clear",
+            TextKey::FindReleaseAssetsButton => "Find assets",
             TextKey::ReleasePickerHint => "Find release assets only works with repo/release pages.",
             TextKey::ReleaseLabel => "Release:",
             TextKey::AssetLabel => "Asset:",
             TextKey::UseSelectedAssetButton => "Use selected asset",
             TextKey::OpenReleaseButton => "Open release",
-            TextKey::RetestButton => "🔄 Retest",
+            TextKey::RetestButton => "Retest",
             TextKey::SaveToLabel => "Save to:",
-            TextKey::BrowseButton => "📁 Browse...",
+            TextKey::BrowseButton => "Browse...",
             TextKey::ProxyLabel => "Proxy:",
-            TextKey::ClearProxyButton => "🗑 Clear",
+            TextKey::ClearProxyButton => "Clear",
             TextKey::AllowInvalidTlsCertificates => "Allow invalid TLS certificates (unsafe)",
             TextKey::UnsafeTlsHint => "Only use this for trusted debugging proxies.",
             TextKey::NetworkPolicyTitle => "Network policy",
@@ -228,10 +228,10 @@ pub fn text(locale: UiLocale, key: TextKey) -> &'static str {
             TextKey::Stage2Title => "Self-update Stage 2",
             TextKey::StageLatestCandidateButton => "Stage latest candidate (no install)",
             TextKey::PrepareHelperBundleButton => "Prepare controlled helper bundle (no install)",
-            TextKey::DownloadButton => "⬇ Download",
-            TextKey::PauseButton => "⏸ Pause",
-            TextKey::ResumeButton => "▶ Resume",
-            TextKey::CancelButton => "❌ Cancel",
+            TextKey::DownloadButton => "Download",
+            TextKey::PauseButton => "Pause",
+            TextKey::ResumeButton => "Resume",
+            TextKey::CancelButton => "Cancel",
             TextKey::ProgressWaitingForBytes => "Connecting... waiting for first bytes",
             TextKey::ProgressUnknownSize => "size unknown",
             TextKey::StatusReady => "Ready",
@@ -245,7 +245,7 @@ pub fn text(locale: UiLocale, key: TextKey) -> &'static str {
                 "Connecting... waiting for first bytes; verification will be UNKNOWN"
             }
             TextKey::StatusDownloadCompleteVerifying => "Download complete; verifying SHA256...",
-            TextKey::StatusDownloadFailed => "❌ Download failed",
+            TextKey::StatusDownloadFailed => "Download failed",
             TextKey::StatusCancelled => "Cancelled",
             TextKey::StatusChooseReleaseAssetFirst => "Choose a release asset first",
             TextKey::StatusReleaseAssetsReady => "Release asset selection ready",
@@ -262,24 +262,24 @@ pub fn text(locale: UiLocale, key: TextKey) -> &'static str {
             TextKey::StatusNoAssetsFound => "This release has no downloadable assets.",
         },
         UiLocale::Zh => match key {
-            TextKey::AppTitle => "GitHub 镜像下载器",
-            TextKey::AppSubtitle => "证据到动作 UI 内核",
+            TextKey::AppTitle => "可信 Release 下载器",
+            TextKey::AppSubtitle => "证据优先的 Windows 下载器",
             TextKey::SwitchToChinese => "中文",
             TextKey::SwitchToEnglish => "English",
             TextKey::UrlLabel => "URL：",
-            TextKey::PasteButton => "📋 粘贴",
-            TextKey::ClearButton => "🗑 清空",
-            TextKey::FindReleaseAssetsButton => "🔎 查找 release 资源",
+            TextKey::PasteButton => "粘贴",
+            TextKey::ClearButton => "清空",
+            TextKey::FindReleaseAssetsButton => "查找资源",
             TextKey::ReleasePickerHint => "查找 release 资源只适用于仓库 / release 页面。",
             TextKey::ReleaseLabel => "Release：",
             TextKey::AssetLabel => "资源：",
             TextKey::UseSelectedAssetButton => "使用选中资源",
             TextKey::OpenReleaseButton => "打开 release",
-            TextKey::RetestButton => "🔄 重测",
+            TextKey::RetestButton => "重测",
             TextKey::SaveToLabel => "保存到：",
-            TextKey::BrowseButton => "📁 浏览…",
+            TextKey::BrowseButton => "浏览…",
             TextKey::ProxyLabel => "代理：",
-            TextKey::ClearProxyButton => "🗑 清空",
+            TextKey::ClearProxyButton => "清空",
             TextKey::AllowInvalidTlsCertificates => "允许无效 TLS 证书（不安全）",
             TextKey::UnsafeTlsHint => "仅在可信调试代理下使用。",
             TextKey::NetworkPolicyTitle => "网络策略",
@@ -304,10 +304,10 @@ pub fn text(locale: UiLocale, key: TextKey) -> &'static str {
             TextKey::Stage2Title => "自更新阶段 2",
             TextKey::StageLatestCandidateButton => "暂存最新候选（不安装）",
             TextKey::PrepareHelperBundleButton => "准备受控 helper bundle（不安装）",
-            TextKey::DownloadButton => "⬇ 下载",
-            TextKey::PauseButton => "⏸ 暂停",
-            TextKey::ResumeButton => "▶ 继续",
-            TextKey::CancelButton => "❌ 取消",
+            TextKey::DownloadButton => "下载",
+            TextKey::PauseButton => "暂停",
+            TextKey::ResumeButton => "继续",
+            TextKey::CancelButton => "取消",
             TextKey::ProgressWaitingForBytes => "正在连接…等待首批数据",
             TextKey::ProgressUnknownSize => "大小未知",
             TextKey::StatusReady => "就绪",
@@ -319,7 +319,7 @@ pub fn text(locale: UiLocale, key: TextKey) -> &'static str {
             TextKey::StatusReleaseAssetLookupRunning => "release 资源查找仍在运行…",
             TextKey::StatusStartingDownloadUnknown => "正在连接…等待首批数据；验证将是 UNKNOWN",
             TextKey::StatusDownloadCompleteVerifying => "下载完成；正在验证 SHA256…",
-            TextKey::StatusDownloadFailed => "❌ 下载失败",
+            TextKey::StatusDownloadFailed => "下载失败",
             TextKey::StatusCancelled => "已取消",
             TextKey::StatusChooseReleaseAssetFirst => "请先选择一个 release 资源",
             TextKey::StatusReleaseAssetsReady => "release 资源选择已就绪",
@@ -450,6 +450,17 @@ mod tests {
             assert!(!text(UiLocale::En, key).trim().is_empty(), "{key:?} en");
             assert!(!text(UiLocale::Zh, key).trim().is_empty(), "{key:?} zh");
         }
+    }
+
+    #[test]
+    fn app_title_matches_trust_route_not_mirror_aggregator_copy() {
+        let en_title = text(UiLocale::En, TextKey::AppTitle);
+        let zh_title = text(UiLocale::Zh, TextKey::AppTitle);
+
+        assert!(en_title.contains("Trusted"));
+        assert!(zh_title.contains("可信"));
+        assert!(!en_title.to_ascii_lowercase().contains("mirror"));
+        assert!(!zh_title.contains("镜像"));
     }
 
     #[test]

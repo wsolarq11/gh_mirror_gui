@@ -74,7 +74,7 @@ fn main() -> Result<(), eframe::Error> {
         ..Default::default()
     };
     eframe::run_native(
-        "GitHub Mirror Downloader",
+        "Trusted Release Downloader",
         options,
         Box::new(|cc| {
             gui_app::configure_egui_context(&cc.egui_ctx);

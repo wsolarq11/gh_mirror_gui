@@ -61,23 +61,60 @@ const RESIZE_REPAINT_FRAME_MS: u64 = 16;
 const UI_PRESENTATION_HEARTBEAT_MS: u64 = 16;
 
 fn app_background_color() -> egui::Color32 {
-    egui::Color32::from_rgb(246, 247, 250)
+    egui::Color32::from_rgb(241, 244, 249)
 }
 
 fn app_chrome_color() -> egui::Color32 {
-    egui::Color32::from_rgb(255, 255, 255)
+    egui::Color32::from_rgb(252, 253, 255)
 }
 
 fn app_surface_color() -> egui::Color32 {
     egui::Color32::from_rgb(255, 255, 255)
 }
 
+fn app_surface_alt_color() -> egui::Color32 {
+    egui::Color32::from_rgb(247, 249, 253)
+}
+
 fn app_surface_stroke() -> egui::Stroke {
-    egui::Stroke::new(1.0, egui::Color32::from_rgb(224, 228, 235))
+    egui::Stroke::new(1.0, egui::Color32::from_rgb(220, 226, 236))
 }
 
 fn app_text_color() -> egui::Color32 {
     egui::Color32::from_rgb(25, 31, 43)
+}
+
+fn app_muted_text_color() -> egui::Color32 {
+    egui::Color32::from_rgb(93, 103, 120)
+}
+
+fn app_accent_color() -> egui::Color32 {
+    egui::Color32::from_rgb(43, 100, 231)
+}
+
+fn app_accent_soft_color() -> egui::Color32 {
+    egui::Color32::from_rgb(235, 242, 255)
+}
+
+fn app_accent_stroke() -> egui::Stroke {
+    egui::Stroke::new(1.0, egui::Color32::from_rgb(167, 193, 247))
+}
+
+fn app_panel_rounding() -> egui::Rounding {
+    egui::Rounding::same(12.0)
+}
+
+fn app_control_rounding() -> egui::Rounding {
+    egui::Rounding::same(8.0)
+}
+
+fn app_surface_shadow() -> egui::Shadow {
+    egui::Shadow {
+        offset: egui::vec2(0.0, 6.0),
+        blur: 18.0,
+        spread: -8.0,
+        color: egui::Color32::from_black_alpha(22),
+    }
 }
 
 fn app_clear_color() -> [f32; 4] {
@@ -91,13 +128,48 @@ fn ui_presentation_heartbeat_duration() -> Duration {
 fn chrome_panel_frame() -> egui::Frame {
     egui::Frame::none()
         .fill(app_chrome_color())
-        .inner_margin(egui::Margin::symmetric(6.0, 2.0))
+        .inner_margin(egui::Margin::symmetric(10.0, 3.0))
 }
 
 fn body_panel_frame() -> egui::Frame {
     egui::Frame::none()
         .fill(app_background_color())
-        .inner_margin(egui::Margin::symmetric(6.0, 6.0))
+        .inner_margin(egui::Margin::symmetric(8.0, 6.0))
+}
+
+fn add_primary_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
+    ui.add(
+        egui::Button::new(
+            egui::RichText::new(label.to_owned())
+                .strong()
+                .color(egui::Color32::WHITE),
+        )
+        .fill(app_accent_color())
+        .stroke(egui::Stroke::new(1.0, app_accent_color()))
+        .rounding(app_control_rounding()),
+    )
+}
+
+fn add_tonal_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
+    ui.add(
+        egui::Button::new(
+            egui::RichText::new(label.to_owned())
+                .strong()
+                .color(app_accent_color()),
+        )
+        .fill(app_accent_soft_color())
+        .stroke(app_accent_stroke())
+        .rounding(app_control_rounding()),
+    )
+}
+
+fn add_subtle_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
+    ui.add(
+        egui::Button::new(egui::RichText::new(label.to_owned()).color(app_text_color()))
+            .fill(app_surface_alt_color())
+            .stroke(app_surface_stroke())
+            .rounding(app_control_rounding()),
+    )
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -162,25 +234,25 @@ impl ViewportDensity {
 
     fn panel_margin(self) -> egui::Margin {
         match self {
-            Self::Dense => egui::Margin::symmetric(4.0, 3.0),
-            Self::Regular => egui::Margin::symmetric(6.0, 5.0),
-            Self::Spacious => egui::Margin::symmetric(7.0, 6.0),
+            Self::Dense => egui::Margin::symmetric(5.0, 3.0),
+            Self::Regular => egui::Margin::symmetric(7.0, 5.0),
+            Self::Spacious => egui::Margin::symmetric(8.0, 6.0),
         }
     }
 
     fn item_spacing(self) -> egui::Vec2 {
         match self {
-            Self::Dense => egui::vec2(4.0, 2.0),
+            Self::Dense => egui::vec2(4.0, 3.0),
             Self::Regular => egui::vec2(6.0, 4.0),
-            Self::Spacious => egui::vec2(7.0, 5.0),
+            Self::Spacious => egui::vec2(8.0, 5.0),
         }
     }
 
     fn button_padding(self) -> egui::Vec2 {
         match self {
-            Self::Dense => egui::vec2(5.0, 2.0),
-            Self::Regular => egui::vec2(6.0, 3.0),
-            Self::Spacious => egui::vec2(7.0, 4.0),
+            Self::Dense => egui::vec2(6.0, 3.0),
+            Self::Regular => egui::vec2(8.0, 4.0),
+            Self::Spacious => egui::vec2(9.0, 4.0),
         }
     }
 
@@ -511,25 +583,39 @@ fn configure_comfortable_app_style(ctx: &egui::Context) {
         style.visuals.panel_fill = app_background_color();
         style.visuals.window_fill = app_surface_color();
         style.visuals.extreme_bg_color = egui::Color32::from_rgb(255, 255, 255);
-        style.visuals.faint_bg_color = egui::Color32::from_rgb(239, 242, 247);
+        style.visuals.faint_bg_color = app_surface_alt_color();
+        style.visuals.window_rounding = app_panel_rounding();
+        style.visuals.menu_rounding = app_control_rounding();
+        style.visuals.window_shadow = app_surface_shadow();
+        style.visuals.popup_shadow = app_surface_shadow();
         style.visuals.widgets.noninteractive.bg_fill = app_surface_color();
         style.visuals.widgets.noninteractive.weak_bg_fill = app_surface_color();
         style.visuals.widgets.noninteractive.bg_stroke = app_surface_stroke();
+        style.visuals.widgets.noninteractive.rounding = app_panel_rounding();
         style.visuals.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0, app_text_color());
         style.visuals.widgets.inactive.bg_fill = egui::Color32::from_rgb(242, 245, 249);
-        style.visuals.widgets.inactive.weak_bg_fill = egui::Color32::from_rgb(247, 249, 252);
+        style.visuals.widgets.inactive.weak_bg_fill = app_surface_alt_color();
+        style.visuals.widgets.inactive.bg_stroke =
+            egui::Stroke::new(1.0, egui::Color32::from_rgb(211, 219, 231));
+        style.visuals.widgets.inactive.rounding = app_control_rounding();
         style.visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, app_text_color());
-        style.visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(235, 241, 250);
-        style.visuals.widgets.hovered.weak_bg_fill = egui::Color32::from_rgb(241, 246, 253);
+        style.visuals.widgets.hovered.bg_fill = app_accent_soft_color();
+        style.visuals.widgets.hovered.weak_bg_fill = egui::Color32::from_rgb(241, 246, 255);
+        style.visuals.widgets.hovered.bg_stroke = app_accent_stroke();
+        style.visuals.widgets.hovered.rounding = app_control_rounding();
         style.visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.5, app_text_color());
-        style.visuals.widgets.active.bg_fill = egui::Color32::from_rgb(222, 233, 249);
+        style.visuals.widgets.active.bg_fill = egui::Color32::from_rgb(219, 232, 255);
+        style.visuals.widgets.active.bg_stroke =
+            egui::Stroke::new(1.0, egui::Color32::from_rgb(130, 169, 242));
+        style.visuals.widgets.active.rounding = app_control_rounding();
         style.visuals.widgets.active.fg_stroke = egui::Stroke::new(2.0, app_text_color());
         style.visuals.widgets.open.bg_fill = app_surface_color();
+        style.visuals.widgets.open.bg_stroke = app_accent_stroke();
+        style.visuals.widgets.open.rounding = app_control_rounding();
         style.visuals.widgets.open.fg_stroke = egui::Stroke::new(1.0, app_text_color());
-        style.visuals.hyperlink_color = egui::Color32::from_rgb(30, 100, 210);
+        style.visuals.hyperlink_color = app_accent_color();
         style.visuals.selection.bg_fill = egui::Color32::from_rgb(210, 229, 255);
-        style.visuals.selection.stroke =
-            egui::Stroke::new(1.0, egui::Color32::from_rgb(35, 102, 210));
+        style.visuals.selection.stroke = egui::Stroke::new(1.0, app_accent_color());
         style.text_styles.insert(
             egui::TextStyle::Heading,
             egui::FontId::new(18.0, egui::FontFamily::Proportional),
@@ -551,9 +637,9 @@ fn configure_comfortable_app_style(ctx: &egui::Context) {
             egui::FontId::new(13.0, egui::FontFamily::Monospace),
         );
         style.spacing.item_spacing = egui::vec2(6.0, 4.0);
-        style.spacing.button_padding = egui::vec2(6.0, 3.0);
+        style.spacing.button_padding = egui::vec2(8.0, 4.0);
         style.spacing.indent = 12.0;
-        style.spacing.window_margin = egui::Margin::symmetric(8.0, 8.0);
+        style.spacing.window_margin = egui::Margin::symmetric(8.0, 6.0);
     });
 }
 
@@ -1112,9 +1198,11 @@ impl GhMirrorGui {
         density: ViewportDensity,
         add_contents: impl FnOnce(&mut egui::Ui) -> R,
     ) -> R {
-        egui::Frame::group(ui.style())
+        egui::Frame::none()
             .fill(app_surface_color())
             .stroke(app_surface_stroke())
+            .rounding(app_panel_rounding())
+            .shadow(app_surface_shadow())
             .inner_margin(density.panel_margin())
             .show(ui, add_contents)
             .inner
@@ -1195,7 +1283,7 @@ impl GhMirrorGui {
             let paste_label = self.t(TextKey::PasteButton);
             let clear_label = self.t(TextKey::ClearButton);
             let find_assets_label = self.t(TextKey::FindReleaseAssetsButton);
-            if ui.button(paste_label).clicked() {
+            if add_subtle_button(ui, paste_label).clicked() {
                 if let Ok(mut clipboard) = arboard::Clipboard::new() {
                     if let Ok(text) = clipboard.get_text() {
                         self.url = text;
@@ -1209,11 +1297,11 @@ impl GhMirrorGui {
                     }
                 }
             }
-            if ui.button(clear_label).clicked() {
+            if add_subtle_button(ui, clear_label).clicked() {
                 self.url.clear();
                 self.clear_release_lookup_result();
             }
-            if ui.button(find_assets_label).clicked() {
+            if add_tonal_button(ui, find_assets_label).clicked() {
                 self.start_release_lookup();
             }
             if self.release_lookup_thread.is_some() {
@@ -1229,18 +1317,18 @@ impl GhMirrorGui {
         ui.separator();
 
         ui.horizontal_wrapped(|ui| {
-            if ui.button(self.t(TextKey::DownloadButton)).clicked() {
+            if add_primary_button(ui, self.t(TextKey::DownloadButton)).clicked() {
                 self.start_download();
             }
             if let Some(ctrl) = &self.control {
                 if ctrl.is_paused() {
-                    if ui.button(self.t(TextKey::ResumeButton)).clicked() {
+                    if add_subtle_button(ui, self.t(TextKey::ResumeButton)).clicked() {
                         ctrl.resume();
                     }
-                } else if ui.button(self.t(TextKey::PauseButton)).clicked() {
+                } else if add_subtle_button(ui, self.t(TextKey::PauseButton)).clicked() {
                     ctrl.pause();
                 }
-                if ui.button(self.t(TextKey::CancelButton)).clicked() {
+                if add_subtle_button(ui, self.t(TextKey::CancelButton)).clicked() {
                     ctrl.cancel();
                     self.download_thread = None;
                     self.control = None;
@@ -2869,20 +2957,38 @@ impl eframe::App for GhMirrorGui {
             .show_separator_line(false)
             .frame(chrome_panel_frame())
             .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.heading(format!("🚀 {}", self.t(TextKey::AppTitle)));
-                    ui.small(self.t(TextKey::AppSubtitle));
-                    ui.separator();
+                let status_text = self.status.clone();
+                let status_tone = status_color(&status_text);
+                ui.horizontal_centered(|ui| {
+                    ui.label(
+                        egui::RichText::new(self.t(TextKey::AppTitle))
+                            .size(16.0)
+                            .strong()
+                            .color(app_text_color()),
+                    );
+                    ui.add_space(8.0);
+                    ui.label(
+                        egui::RichText::new(self.t(TextKey::AppSubtitle))
+                            .small()
+                            .color(app_muted_text_color()),
+                    );
                     let switch_key = if self.locale == UiLocale::En {
                         TextKey::SwitchToChinese
                     } else {
                         TextKey::SwitchToEnglish
                     };
-                    if ui.button(self.t(switch_key)).clicked() {
-                        self.toggle_locale();
-                    }
-                    ui.separator();
-                    ui.label(egui::RichText::new(&self.status).color(status_color(&self.status)));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if add_subtle_button(ui, self.t(switch_key)).clicked() {
+                            self.toggle_locale();
+                        }
+                        ui.add_space(8.0);
+                        ui.label(
+                            egui::RichText::new(status_text)
+                                .small()
+                                .strong()
+                                .color(status_tone),
+                        );
+                    });
                 });
             });
 
@@ -3056,6 +3162,16 @@ mod tests {
         assert!(clear[1] > 0.9);
         assert!(clear[2] > 0.9);
         assert_eq!(clear[3], 1.0);
+    }
+
+    #[test]
+    fn app_palette_keeps_soft_light_hierarchy() {
+        assert!(app_background_color().r() < app_surface_color().r());
+        assert!(app_chrome_color().r() >= app_background_color().r());
+        assert!(app_muted_text_color().r() > app_text_color().r());
+        assert_ne!(app_accent_color(), app_text_color());
+        assert!(app_surface_shadow().color.a() > 0);
+        assert!(app_panel_rounding().nw > app_control_rounding().nw);
     }
 
     #[test]
