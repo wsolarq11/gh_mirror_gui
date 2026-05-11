@@ -188,24 +188,66 @@ fn body_fill_height(total_height: f32) -> Option<f32> {
     }
 }
 
+fn body_scroll_fallback_for_viewport(total_width: f32, body_height: f32) -> bool {
+    body_fill_height(body_height).is_none()
+        || matches!(
+            body_layout_for_viewport(total_width, body_height),
+            BodyLayout::Single
+        )
+}
+
+fn weighted_stack_heights(total_height: f32, gap: f32, weights: &[f32]) -> Vec<f32> {
+    if weights.is_empty() {
+        return Vec::new();
+    }
+
+    let usable_height = (total_height - gap * weights.len().saturating_sub(1) as f32).max(0.0);
+    let total_weight = weights
+        .iter()
+        .copied()
+        .filter(|weight| *weight > 0.0)
+        .sum::<f32>();
+    if total_weight <= f32::EPSILON {
+        return vec![0.0; weights.len()];
+    }
+
+    weights
+        .iter()
+        .map(|weight| usable_height * weight.max(0.0) / total_weight)
+        .collect()
+}
+
 fn golden_stack_heights(total_height: f32, gap: f32, count: usize) -> Vec<f32> {
     if count == 0 {
         return Vec::new();
     }
 
-    let usable_height = (total_height - gap * count.saturating_sub(1) as f32).max(0.0);
     let mut weights = Vec::with_capacity(count);
     let mut weight = 1.0;
     for _ in 0..count {
         weights.push(weight);
         weight *= GOLDEN_MAJOR;
     }
-    let total_weight = weights.iter().sum::<f32>();
 
+    weighted_stack_heights(total_height, gap, &weights)
+}
+
+fn primary_column_height_weights(has_release_picker: bool, has_last_download: bool) -> Vec<f32> {
+    let mut weights =
+        Vec::with_capacity(2 + usize::from(has_release_picker) + usize::from(has_last_download));
+    weights.push(GOLDEN_MINOR);
+    if has_release_picker {
+        weights.push(1.0);
+    }
+    weights.push(if has_release_picker {
+        GOLDEN_MAJOR
+    } else {
+        1.0
+    });
+    if has_last_download {
+        weights.push(GOLDEN_MAJOR);
+    }
     weights
-        .into_iter()
-        .map(|weight| usable_height * weight / total_weight)
-        .collect()
 }
 
 fn height_at(heights: &[f32], index: &mut usize) -> Option<f32> {
@@ -1021,82 +1063,103 @@ impl GhMirrorGui {
     fn render_body(&mut self, ui: &mut egui::Ui) {
         let density = self.current_density();
         let body_height = ui.available_height();
-        let fill_height = body_fill_height(body_height);
-        egui::ScrollArea::vertical()
-            .id_salt("proof_to_action_main_scroll")
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                ui.add_space(density.card_gap());
-                let total_width = ui.available_width();
-                match body_layout_for_viewport(total_width, body_height) {
-                    BodyLayout::Single => {
-                        self.render_body_primary_column(ui, None);
-                        self.render_body_secondary_column(ui, None);
-                    }
-                    BodyLayout::GoldenThree => {
-                        let gap = density.body_gap();
-                        let (primary_width, policy_width, update_width) =
-                            golden_three_column_widths(total_width, gap);
+        let total_width = ui.available_width();
+        if body_scroll_fallback_for_viewport(total_width, body_height) {
+            egui::ScrollArea::vertical()
+                .id_salt("proof_to_action_main_scroll")
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    ui.add_space(density.card_gap());
+                    let total_width = ui.available_width();
+                    let layout = body_layout_for_viewport(total_width, body_height);
+                    self.render_body_layout(ui, layout, total_width, body_height, None);
+                });
+        } else {
+            ui.add_space(density.card_gap());
+            let layout = body_layout_for_viewport(total_width, body_height);
+            let fill_height = body_fill_height((body_height - density.card_gap()).max(0.0));
+            self.render_body_layout(ui, layout, total_width, body_height, fill_height);
+        }
+    }
 
-                        ui.horizontal_top(|ui| {
-                            ui.allocate_ui_with_layout(
-                                egui::vec2(primary_width, 0.0),
-                                egui::Layout::top_down(egui::Align::Min),
-                                |ui| {
-                                    self.render_body_primary_column(ui, fill_height);
-                                },
-                            );
-                            ui.add_space(gap);
-                            ui.allocate_ui_with_layout(
-                                egui::vec2(policy_width, 0.0),
-                                egui::Layout::top_down(egui::Align::Min),
-                                |ui| {
-                                    self.render_body_policy_column(ui, fill_height);
-                                },
-                            );
-                            ui.add_space(gap);
-                            ui.allocate_ui_with_layout(
-                                egui::vec2(update_width, 0.0),
-                                egui::Layout::top_down(egui::Align::Min),
-                                |ui| {
-                                    self.render_body_update_column(ui, fill_height);
-                                },
-                            );
-                        });
-                    }
-                    BodyLayout::GoldenTwo => {
-                        let gap = density.body_gap();
-                        let (left_width, right_width) = golden_two_column_widths(total_width, gap);
+    fn render_body_layout(
+        &mut self,
+        ui: &mut egui::Ui,
+        layout: BodyLayout,
+        total_width: f32,
+        body_height: f32,
+        fill_height: Option<f32>,
+    ) {
+        let density = self.current_density();
+        match layout {
+            BodyLayout::Single => {
+                self.render_body_primary_column(ui, None);
+                self.render_body_secondary_column(ui, None);
+            }
+            BodyLayout::GoldenThree => {
+                let gap = density.body_gap();
+                let (primary_width, policy_width, update_width) =
+                    golden_three_column_widths(total_width, gap);
 
-                        ui.horizontal_top(|ui| {
-                            ui.allocate_ui_with_layout(
-                                egui::vec2(left_width, 0.0),
-                                egui::Layout::top_down(egui::Align::Min),
-                                |ui| {
-                                    self.render_body_primary_column(ui, fill_height);
-                                },
-                            );
-                            ui.add_space(gap);
-                            ui.allocate_ui_with_layout(
-                                egui::vec2(right_width, 0.0),
-                                egui::Layout::top_down(egui::Align::Min),
-                                |ui| {
-                                    self.render_body_secondary_column(ui, fill_height);
-                                },
-                            );
-                        });
-                    }
-                }
-            });
+                ui.horizontal_top(|ui| {
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(primary_width, body_height),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| {
+                            self.render_body_primary_column(ui, fill_height);
+                        },
+                    );
+                    ui.add_space(gap);
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(policy_width, body_height),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| {
+                            self.render_body_policy_column(ui, fill_height);
+                        },
+                    );
+                    ui.add_space(gap);
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(update_width, body_height),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| {
+                            self.render_body_update_column(ui, fill_height);
+                        },
+                    );
+                });
+            }
+            BodyLayout::GoldenTwo => {
+                let gap = density.body_gap();
+                let (left_width, right_width) = golden_two_column_widths(total_width, gap);
+
+                ui.horizontal_top(|ui| {
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(left_width, body_height),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| {
+                            self.render_body_primary_column(ui, fill_height);
+                        },
+                    );
+                    ui.add_space(gap);
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(right_width, body_height),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| {
+                            self.render_body_secondary_column(ui, fill_height);
+                        },
+                    );
+                });
+            }
+        }
     }
 
     fn render_body_primary_column(&mut self, ui: &mut egui::Ui, target_height: Option<f32>) {
         let density = self.current_density();
-        let card_count = 2
-            + usize::from(self.release.is_some())
-            + usize::from(self.last_trust_center_snapshot.is_some());
+        let weights = primary_column_height_weights(
+            self.release.is_some(),
+            self.last_trust_center_snapshot.is_some(),
+        );
         let heights = target_height
-            .map(|height| golden_stack_heights(height, density.card_gap(), card_count))
+            .map(|height| weighted_stack_heights(height, density.card_gap(), &weights))
             .unwrap_or_default();
         let mut height_index = 0;
 
@@ -1486,7 +1549,7 @@ impl GhMirrorGui {
 
             ui.separator();
             egui::CollapsingHeader::new(self.t(TextKey::NetworkPolicyTitle))
-                .default_open(density.advanced_default_open())
+                .default_open(min_height.is_some() || density.advanced_default_open())
                 .show(ui, |ui| {
                     ui.small(
                         "Outbound HTTP(S) requests are restricted to GitHub official artifact hosts (https only).",
@@ -1597,8 +1660,10 @@ impl GhMirrorGui {
                     ui.small(self.tr("hash evidence only", "仅哈希证据"));
                 }
             });
-            let open_advanced =
-                density.advanced_default_open() || require_trusted_source || has_pinned_key;
+            let open_advanced = min_height.is_some()
+                || density.advanced_default_open()
+                || require_trusted_source
+                || has_pinned_key;
             egui::CollapsingHeader::new(self.t(TextKey::VerificationSourceTrustTitle))
                 .default_open(open_advanced)
                 .show(ui, |ui| {
@@ -1744,6 +1809,7 @@ impl GhMirrorGui {
 
             ui.separator();
             let stage2_open = density.advanced_default_open()
+                || min_height.is_some()
                 || self.update_stage_thread.is_some()
                 || self.update_stage_report.is_some()
                 || self.update_apply_bundle_evidence_record.is_some()
@@ -2573,9 +2639,34 @@ mod tests {
     }
 
     #[test]
+    fn weighted_stack_heights_fill_height_by_control_weight() {
+        let gap = 4.0;
+        let heights = weighted_stack_heights(640.0, gap, &[GOLDEN_MINOR, 1.0]);
+
+        assert_eq!(heights.len(), 2);
+        assert!((heights.iter().sum::<f32>() + gap - 640.0).abs() < 0.01);
+        assert!(heights[1] > heights[0]);
+    }
+
+    #[test]
     fn body_fill_height_only_activates_for_large_viewports() {
         assert_eq!(body_fill_height(360.0), None);
         assert_eq!(body_fill_height(430.0), Some(430.0));
+    }
+
+    #[test]
+    fn body_scroll_is_only_fallback_for_compact_or_short_viewports() {
+        assert!(body_scroll_fallback_for_viewport(760.0, 700.0));
+        assert!(body_scroll_fallback_for_viewport(1200.0, 360.0));
+        assert!(!body_scroll_fallback_for_viewport(1200.0, 700.0));
+    }
+
+    #[test]
+    fn empty_primary_column_gives_control_card_more_height_than_summary() {
+        let weights = primary_column_height_weights(false, false);
+
+        assert_eq!(weights.len(), 2);
+        assert!(weights[1] > weights[0]);
     }
 
     #[test]
