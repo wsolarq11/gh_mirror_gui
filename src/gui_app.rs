@@ -49,6 +49,7 @@ const GOLDEN_MINOR: f32 = 1.0 - GOLDEN_MAJOR;
 const BODY_TWO_COLUMN_MIN_WIDTH: f32 = 820.0;
 const BODY_THREE_COLUMN_MIN_WIDTH: f32 = 1120.0;
 const BODY_THREE_COLUMN_SHORT_MIN_WIDTH: f32 = 1040.0;
+const BODY_FILL_MIN_HEIGHT: f32 = 430.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ViewportDensity {
@@ -177,6 +178,40 @@ fn golden_three_column_widths(total_width: f32, gap: f32) -> (f32, f32, f32) {
     let update_width = (usable_width - primary_width - policy_width).max(0.0);
 
     (primary_width, policy_width, update_width)
+}
+
+fn body_fill_height(total_height: f32) -> Option<f32> {
+    if total_height.is_finite() && total_height >= BODY_FILL_MIN_HEIGHT {
+        Some(total_height)
+    } else {
+        None
+    }
+}
+
+fn golden_stack_heights(total_height: f32, gap: f32, count: usize) -> Vec<f32> {
+    if count == 0 {
+        return Vec::new();
+    }
+
+    let usable_height = (total_height - gap * count.saturating_sub(1) as f32).max(0.0);
+    let mut weights = Vec::with_capacity(count);
+    let mut weight = 1.0;
+    for _ in 0..count {
+        weights.push(weight);
+        weight *= GOLDEN_MAJOR;
+    }
+    let total_weight = weights.iter().sum::<f32>();
+
+    weights
+        .into_iter()
+        .map(|weight| usable_height * weight / total_weight)
+        .collect()
+}
+
+fn height_at(heights: &[f32], index: &mut usize) -> Option<f32> {
+    let value = heights.get(*index).copied();
+    *index += 1;
+    value
 }
 
 pub(crate) fn configure_egui_context(ctx: &egui::Context) {
@@ -986,6 +1021,7 @@ impl GhMirrorGui {
     fn render_body(&mut self, ui: &mut egui::Ui) {
         let density = self.current_density();
         let body_height = ui.available_height();
+        let fill_height = body_fill_height(body_height);
         egui::ScrollArea::vertical()
             .id_salt("proof_to_action_main_scroll")
             .auto_shrink([false, false])
@@ -994,8 +1030,8 @@ impl GhMirrorGui {
                 let total_width = ui.available_width();
                 match body_layout_for_viewport(total_width, body_height) {
                     BodyLayout::Single => {
-                        self.render_body_primary_column(ui);
-                        self.render_body_secondary_column(ui);
+                        self.render_body_primary_column(ui, None);
+                        self.render_body_secondary_column(ui, None);
                     }
                     BodyLayout::GoldenThree => {
                         let gap = density.body_gap();
@@ -1007,7 +1043,7 @@ impl GhMirrorGui {
                                 egui::vec2(primary_width, 0.0),
                                 egui::Layout::top_down(egui::Align::Min),
                                 |ui| {
-                                    self.render_body_primary_column(ui);
+                                    self.render_body_primary_column(ui, fill_height);
                                 },
                             );
                             ui.add_space(gap);
@@ -1015,7 +1051,7 @@ impl GhMirrorGui {
                                 egui::vec2(policy_width, 0.0),
                                 egui::Layout::top_down(egui::Align::Min),
                                 |ui| {
-                                    self.render_body_policy_column(ui);
+                                    self.render_body_policy_column(ui, fill_height);
                                 },
                             );
                             ui.add_space(gap);
@@ -1023,7 +1059,7 @@ impl GhMirrorGui {
                                 egui::vec2(update_width, 0.0),
                                 egui::Layout::top_down(egui::Align::Min),
                                 |ui| {
-                                    self.render_body_update_column(ui);
+                                    self.render_body_update_column(ui, fill_height);
                                 },
                             );
                         });
@@ -1037,7 +1073,7 @@ impl GhMirrorGui {
                                 egui::vec2(left_width, 0.0),
                                 egui::Layout::top_down(egui::Align::Min),
                                 |ui| {
-                                    self.render_body_primary_column(ui);
+                                    self.render_body_primary_column(ui, fill_height);
                                 },
                             );
                             ui.add_space(gap);
@@ -1045,7 +1081,7 @@ impl GhMirrorGui {
                                 egui::vec2(right_width, 0.0),
                                 egui::Layout::top_down(egui::Align::Min),
                                 |ui| {
-                                    self.render_body_secondary_column(ui);
+                                    self.render_body_secondary_column(ui, fill_height);
                                 },
                             );
                         });
@@ -1054,30 +1090,58 @@ impl GhMirrorGui {
             });
     }
 
-    fn render_body_primary_column(&mut self, ui: &mut egui::Ui) {
-        self.render_workspace_summary_card(ui);
-        self.render_release_picker_card(ui);
-        self.render_transfer_settings_card(ui);
-        self.render_last_download_card(ui);
+    fn render_body_primary_column(&mut self, ui: &mut egui::Ui, target_height: Option<f32>) {
+        let density = self.current_density();
+        let card_count = 2
+            + usize::from(self.release.is_some())
+            + usize::from(self.last_trust_center_snapshot.is_some());
+        let heights = target_height
+            .map(|height| golden_stack_heights(height, density.card_gap(), card_count))
+            .unwrap_or_default();
+        let mut height_index = 0;
+
+        self.render_workspace_summary_card(ui, height_at(&heights, &mut height_index));
+        let release_height = self
+            .release
+            .is_some()
+            .then(|| height_at(&heights, &mut height_index))
+            .flatten();
+        self.render_release_picker_card(ui, release_height);
+        self.render_transfer_settings_card(ui, height_at(&heights, &mut height_index));
+        let last_download_height = self
+            .last_trust_center_snapshot
+            .is_some()
+            .then(|| height_at(&heights, &mut height_index))
+            .flatten();
+        self.render_last_download_card(ui, last_download_height);
     }
 
-    fn render_body_secondary_column(&mut self, ui: &mut egui::Ui) {
-        self.render_body_policy_column(ui);
-        self.render_body_update_column(ui);
+    fn render_body_secondary_column(&mut self, ui: &mut egui::Ui, target_height: Option<f32>) {
+        let density = self.current_density();
+        let heights = target_height
+            .map(|height| golden_stack_heights(height, density.card_gap(), 2))
+            .unwrap_or_default();
+        let mut height_index = 0;
+
+        self.render_body_policy_column(ui, height_at(&heights, &mut height_index));
+        self.render_body_update_column(ui, height_at(&heights, &mut height_index));
     }
 
-    fn render_body_policy_column(&mut self, ui: &mut egui::Ui) {
-        self.render_trust_policy_card(ui);
+    fn render_body_policy_column(&mut self, ui: &mut egui::Ui, target_height: Option<f32>) {
+        self.render_trust_policy_card(ui, target_height);
     }
 
-    fn render_body_update_column(&mut self, ui: &mut egui::Ui) {
-        self.render_update_card(ui);
+    fn render_body_update_column(&mut self, ui: &mut egui::Ui, target_height: Option<f32>) {
+        self.render_update_card(ui, target_height);
     }
 
-    fn render_workspace_summary_card(&mut self, ui: &mut egui::Ui) {
+    fn render_workspace_summary_card(&mut self, ui: &mut egui::Ui, min_height: Option<f32>) {
         let density = self.current_density();
         Self::gallery_panel(ui, density, |ui| {
             ui.set_min_width(ui.available_width());
+            if let Some(min_height) = min_height {
+                ui.set_min_height(min_height);
+            }
             ui.label(egui::RichText::new(self.tr("Workspace", "工作区")).strong());
 
             let intent_summary = if self.url.trim().is_empty() {
@@ -1148,6 +1212,14 @@ impl GhMirrorGui {
                 ui.separator();
                 self.render_decision_chain(ui);
             }
+            if min_height.is_some() {
+                ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
+                    ui.small(self.tr(
+                        "One workspace, one backend contract, one evidence trail.",
+                        "一个工作区，一个后端契约，一条证据链。",
+                    ));
+                });
+            }
         });
         self.add_card_gap(ui);
     }
@@ -1174,13 +1246,16 @@ impl GhMirrorGui {
         });
     }
 
-    fn render_release_picker_card(&mut self, ui: &mut egui::Ui) {
+    fn render_release_picker_card(&mut self, ui: &mut egui::Ui, min_height: Option<f32>) {
         let Some(release) = self.release.clone() else {
             return;
         };
 
         Self::gallery_panel(ui, self.current_density(), |ui| {
             ui.set_min_width(ui.available_width());
+            if let Some(min_height) = min_height {
+                ui.set_min_height(min_height);
+            }
             let release_name = release
                 .name
                 .as_ref()
@@ -1279,14 +1354,25 @@ impl GhMirrorGui {
                     ui.monospace(&asset.browser_download_url);
                 }
             }
+            if min_height.is_some() {
+                ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
+                    ui.small(self.tr(
+                        "Asset choice stays local until Download.",
+                        "资源选择保持本地，直到点击下载。",
+                    ));
+                });
+            }
         });
         self.add_card_gap(ui);
     }
 
-    fn render_transfer_settings_card(&mut self, ui: &mut egui::Ui) {
+    fn render_transfer_settings_card(&mut self, ui: &mut egui::Ui, min_height: Option<f32>) {
         let density = self.current_density();
         Self::gallery_panel(ui, density, |ui| {
             ui.set_min_width(ui.available_width());
+            if let Some(min_height) = min_height {
+                ui.set_min_height(min_height);
+            }
 
             // Route guardrail: this project is not a mirror-list aggregator.
             // Today we ship "Direct (no mirror)" only. Keep the mirror UX hidden unless
@@ -1427,14 +1513,25 @@ impl GhMirrorGui {
                         }
                     });
                 });
+            if min_height.is_some() {
+                ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
+                    ui.small(self.tr(
+                        "Transfer settings affect acquisition only; trust verdict stays backend-owned.",
+                        "传输设置只影响获取；信任裁决仍由后端负责。",
+                    ));
+                });
+            }
         });
         self.add_card_gap(ui);
     }
 
-    fn render_trust_policy_card(&mut self, ui: &mut egui::Ui) {
+    fn render_trust_policy_card(&mut self, ui: &mut egui::Ui, min_height: Option<f32>) {
         let density = self.current_density();
         Self::gallery_panel(ui, density, |ui| {
             ui.set_min_width(ui.available_width());
+            if let Some(min_height) = min_height {
+                ui.set_min_height(min_height);
+            }
             ui.label(egui::RichText::new(self.t(TextKey::TrustPolicyTitle)).strong());
             let keep_unknown_downloads_label = self.t(TextKey::KeepUnknownDownloads);
             ui.checkbox(
@@ -1603,14 +1700,25 @@ impl GhMirrorGui {
                         "Open Evidence uses the exact JSON evidence path recorded for the completed download.",
                     );
                 });
+            if min_height.is_some() {
+                ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
+                    ui.small(self.tr(
+                        "Policy is applied at decision time and recorded with evidence.",
+                        "策略在决策时应用，并随证据记录。",
+                    ));
+                });
+            }
         });
         self.add_card_gap(ui);
     }
 
-    fn render_update_card(&mut self, ui: &mut egui::Ui) {
+    fn render_update_card(&mut self, ui: &mut egui::Ui, min_height: Option<f32>) {
         let density = self.current_density();
         Self::gallery_panel(ui, density, |ui| {
             ui.set_min_width(ui.available_width());
+            if let Some(min_height) = min_height {
+                ui.set_min_height(min_height);
+            }
             ui.label(egui::RichText::new(self.t(TextKey::Stage1Title)).strong());
             ui.small("Checks the public latest release and only reports candidate / no-update / refused.");
             ui.horizontal_wrapped(|ui| {
@@ -1712,17 +1820,28 @@ impl GhMirrorGui {
                         }
                     }
                 });
+            if min_height.is_some() {
+                ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
+                    ui.small(self.tr(
+                        "Update flow is check/stage only here; no install is launched.",
+                        "此处自更新仅检查 / 暂存；不会启动安装。",
+                    ));
+                });
+            }
         });
         self.add_card_gap(ui);
     }
 
-    fn render_last_download_card(&mut self, ui: &mut egui::Ui) {
+    fn render_last_download_card(&mut self, ui: &mut egui::Ui, min_height: Option<f32>) {
         let Some(snapshot) = self.last_trust_center_snapshot.clone() else {
             return;
         };
 
         Self::gallery_panel(ui, self.current_density(), |ui| {
             ui.set_min_width(ui.available_width());
+            if let Some(min_height) = min_height {
+                ui.set_min_height(min_height);
+            }
             ui.horizontal_wrapped(|ui| {
                 if let Some(notice) = backend_contract::last_download_status_notice(&snapshot) {
                     ui.colored_label(backend_notice_color(notice.level), notice.message);
@@ -1759,6 +1878,14 @@ impl GhMirrorGui {
             if let Some(disposition) = &self.last_file_disposition {
                 ui.small(backend_contract::file_disposition_summary(disposition));
                 render_trust_center_snapshot(ui, &snapshot);
+            }
+            if min_height.is_some() {
+                ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
+                    ui.small(self.tr(
+                        "Last result is rendered from backend evidence, not UI opinion.",
+                        "上次结果来自后端证据渲染，不是 UI 自行判断。",
+                    ));
+                });
             }
         });
         self.add_card_gap(ui);
@@ -2432,6 +2559,23 @@ mod tests {
         assert!((primary + policy + update + gap * 2.0 - 1200.0).abs() < 0.01);
         assert!((policy / primary - GOLDEN_MAJOR).abs() < 0.001);
         assert!((update / policy - GOLDEN_MAJOR).abs() < 0.001);
+    }
+
+    #[test]
+    fn golden_stack_heights_fill_height_with_golden_decay() {
+        let gap = 6.0;
+        let heights = golden_stack_heights(900.0, gap, 3);
+
+        assert_eq!(heights.len(), 3);
+        assert!((heights.iter().sum::<f32>() + gap * 2.0 - 900.0).abs() < 0.01);
+        assert!((heights[1] / heights[0] - GOLDEN_MAJOR).abs() < 0.001);
+        assert!((heights[2] / heights[1] - GOLDEN_MAJOR).abs() < 0.001);
+    }
+
+    #[test]
+    fn body_fill_height_only_activates_for_large_viewports() {
+        assert_eq!(body_fill_height(360.0), None);
+        assert_eq!(body_fill_height(430.0), Some(430.0));
     }
 
     #[test]
