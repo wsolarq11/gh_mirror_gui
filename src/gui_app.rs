@@ -45,13 +45,33 @@ type UpdateCandidateStageMessage = UpdateCandidateStageReport;
 type DownloadResultMessage = Result<DownloadCompletion, String>;
 
 const GOLDEN_MAJOR: f32 = 0.618_034;
-const COMMAND_COLUMN_GAP: f32 = 8.0;
-const BODY_COLUMN_GAP: f32 = 8.0;
-const BODY_TWO_COLUMN_MIN_WIDTH: f32 = 880.0;
+const GOLDEN_MINOR: f32 = 1.0 - GOLDEN_MAJOR;
+const COMMAND_COLUMN_GAP: f32 = 6.0;
+const BODY_COLUMN_GAP: f32 = 6.0;
+const BODY_TWO_COLUMN_MIN_WIDTH: f32 = 820.0;
 const BODY_THREE_COLUMN_MIN_WIDTH: f32 = 1120.0;
-const BODY_THREE_COLUMN_PRIMARY_RATIO: f32 = 0.44;
-const BODY_THREE_COLUMN_POLICY_RATIO: f32 = 0.30;
-const CARD_STACK_GAP: f32 = 2.0;
+const CARD_STACK_GAP: f32 = 1.0;
+const COMMAND_INPUT_HEIGHT: f32 = 24.0;
+const PROGRESS_HEIGHT: f32 = 18.0;
+
+fn golden_two_column_widths(total_width: f32, gap: f32) -> (f32, f32) {
+    let usable_width = (total_width - gap).max(0.0);
+    let major_width = usable_width * GOLDEN_MAJOR;
+    (major_width, (usable_width - major_width).max(0.0))
+}
+
+fn golden_three_column_widths(total_width: f32, gap: f32) -> (f32, f32, f32) {
+    let usable_width = (total_width - gap * 2.0).max(0.0);
+    let primary_weight = 1.0;
+    let policy_weight = GOLDEN_MAJOR;
+    let update_weight = GOLDEN_MINOR;
+    let total_weight = primary_weight + policy_weight + update_weight;
+    let primary_width = usable_width * primary_weight / total_weight;
+    let policy_width = primary_width * GOLDEN_MAJOR;
+    let update_width = (usable_width - primary_width - policy_width).max(0.0);
+
+    (primary_width, policy_width, update_width)
+}
 
 pub(crate) fn configure_egui_context(ctx: &egui::Context) {
     configure_system_fonts(ctx);
@@ -585,6 +605,13 @@ impl GhMirrorGui {
         ui_text(self.locale, key)
     }
 
+    fn tr(&self, en: &'static str, zh: &'static str) -> &'static str {
+        match self.locale {
+            UiLocale::En => en,
+            UiLocale::Zh => zh,
+        }
+    }
+
     fn toggle_locale(&mut self) {
         self.locale = self.locale.toggle();
     }
@@ -617,7 +644,7 @@ impl GhMirrorGui {
 
     fn gallery_panel<R>(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui) -> R) -> R {
         egui::Frame::group(ui.style())
-            .inner_margin(egui::Margin::symmetric(8.0, 6.0))
+            .inner_margin(egui::Margin::symmetric(6.0, 5.0))
             .show(ui, add_contents)
             .inner
     }
@@ -631,9 +658,7 @@ impl GhMirrorGui {
             if wide_layout {
                 let total_width = ui.available_width();
                 let gap = COMMAND_COLUMN_GAP;
-                let usable_width = (total_width - gap).max(0.0);
-                let left_width = usable_width * GOLDEN_MAJOR;
-                let right_width = (usable_width - left_width).max(0.0);
+                let (left_width, right_width) = golden_two_column_widths(total_width, gap);
 
                 ui.horizontal_top(|ui| {
                     ui.allocate_ui_with_layout(
@@ -665,7 +690,7 @@ impl GhMirrorGui {
 
         ui.label(egui::RichText::new(self.t(TextKey::UrlLabel)).strong());
         let url_response = ui.add_sized(
-            [ui.available_width(), 28.0],
+            [ui.available_width(), COMMAND_INPUT_HEIGHT],
             egui::TextEdit::singleline(&mut self.url),
         );
         if url_response.changed() {
@@ -762,7 +787,7 @@ impl GhMirrorGui {
             });
         } else {
             ui.add_sized(
-                [ui.available_width(), 22.0],
+                [ui.available_width(), PROGRESS_HEIGHT],
                 egui::ProgressBar::new(progress.fraction).text(progress.primary_text.clone()),
             );
         }
@@ -835,10 +860,8 @@ impl GhMirrorGui {
                     self.render_body_secondary_column(ui);
                 } else if total_width >= BODY_THREE_COLUMN_MIN_WIDTH {
                     let gap = BODY_COLUMN_GAP;
-                    let usable_width = (total_width - (gap * 2.0)).max(0.0);
-                    let primary_width = usable_width * BODY_THREE_COLUMN_PRIMARY_RATIO;
-                    let policy_width = usable_width * BODY_THREE_COLUMN_POLICY_RATIO;
-                    let update_width = (usable_width - primary_width - policy_width).max(0.0);
+                    let (primary_width, policy_width, update_width) =
+                        golden_three_column_widths(total_width, gap);
 
                     ui.horizontal_top(|ui| {
                         ui.allocate_ui_with_layout(
@@ -867,9 +890,7 @@ impl GhMirrorGui {
                     });
                 } else {
                     let gap = BODY_COLUMN_GAP;
-                    let usable_width = (total_width - gap).max(0.0);
-                    let left_width = usable_width * GOLDEN_MAJOR;
-                    let right_width = (usable_width - left_width).max(0.0);
+                    let (left_width, right_width) = golden_two_column_widths(total_width, gap);
 
                     ui.horizontal_top(|ui| {
                         ui.allocate_ui_with_layout(
@@ -893,6 +914,7 @@ impl GhMirrorGui {
     }
 
     fn render_body_primary_column(&mut self, ui: &mut egui::Ui) {
+        self.render_workspace_summary_card(ui);
         self.render_release_picker_card(ui);
         self.render_transfer_settings_card(ui);
         self.render_last_download_card(ui);
@@ -909,6 +931,78 @@ impl GhMirrorGui {
 
     fn render_body_update_column(&mut self, ui: &mut egui::Ui) {
         self.render_update_card(ui);
+    }
+
+    fn render_workspace_summary_card(&mut self, ui: &mut egui::Ui) {
+        Self::gallery_panel(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            ui.label(egui::RichText::new(self.tr("Workspace", "工作区")).strong());
+
+            let intent_summary = if self.url.trim().is_empty() {
+                self.tr("Waiting for URL", "等待 URL").to_string()
+            } else {
+                match backend_contract::resolve_download_intent(&self.url) {
+                    backend_contract::IntentDTO::NeedsAssetPick { .. } => self
+                        .tr("Release asset picker", "Release 资源选择")
+                        .to_string(),
+                    backend_contract::IntentDTO::DirectDownload {
+                        human_readable_label,
+                        ..
+                    } => format!("{} · {human_readable_label}", self.tr("Direct", "直连")),
+                    backend_contract::IntentDTO::Unsupported { reason, .. } => {
+                        format!("{} · {reason}", self.tr("Unsupported", "不支持"))
+                    }
+                }
+            };
+
+            let download_summary = if let Some(progress) = self.download_progress_projection() {
+                progress.primary_text
+            } else if self.last_download_path.is_some() {
+                self.tr("Last download evidence is available", "已有上次下载证据")
+                    .to_string()
+            } else {
+                self.tr("Idle", "空闲").to_string()
+            };
+
+            let evidence_summary = self
+                .last_trust_center_snapshot
+                .as_ref()
+                .map(source_trust_status_summary)
+                .unwrap_or_else(|| {
+                    self.tr("No completed download yet", "尚无已完成下载")
+                        .to_string()
+                });
+
+            let policy_summary =
+                if backend_contract::source_trust_requires_signed(&self.trust_policy) {
+                    self.tr("Signed source required", "要求签名来源")
+                } else {
+                    self.tr("Hash/provenance evidence accepted", "接受哈希 / 来源证据")
+                };
+
+            egui::Grid::new("workspace_summary_grid")
+                .num_columns(2)
+                .spacing(egui::vec2(8.0, 3.0))
+                .striped(false)
+                .show(ui, |ui| {
+                    ui.label(self.tr("Intent", "意图"));
+                    ui.label(intent_summary);
+                    ui.end_row();
+
+                    ui.label(self.tr("Download", "下载"));
+                    ui.label(download_summary);
+                    ui.end_row();
+
+                    ui.label(self.tr("Evidence", "证据"));
+                    ui.label(evidence_summary);
+                    ui.end_row();
+
+                    ui.label(self.tr("Policy", "策略"));
+                    ui.label(policy_summary);
+                    ui.end_row();
+                });
+        });
+        ui.add_space(CARD_STACK_GAP);
     }
 
     fn render_release_picker_card(&mut self, ui: &mut egui::Ui) {
@@ -2108,6 +2202,25 @@ impl eframe::App for GhMirrorGui {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn golden_two_column_widths_fill_available_width() {
+        let gap = 6.0;
+        let (major, minor) = golden_two_column_widths(1000.0, gap);
+
+        assert!((major + minor + gap - 1000.0).abs() < 0.01);
+        assert!((major / (major + minor) - GOLDEN_MAJOR).abs() < 0.001);
+    }
+
+    #[test]
+    fn golden_three_column_widths_use_golden_sequence_and_fill_width() {
+        let gap = 6.0;
+        let (primary, policy, update) = golden_three_column_widths(1200.0, gap);
+
+        assert!((primary + policy + update + gap * 2.0 - 1200.0).abs() < 0.01);
+        assert!((policy / primary - GOLDEN_MAJOR).abs() < 0.001);
+        assert!((update / policy - GOLDEN_MAJOR).abs() < 0.001);
+    }
 
     #[test]
     fn archive_tag_url_gets_release_picker_suggestion() {
