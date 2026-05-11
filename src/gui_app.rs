@@ -58,25 +58,34 @@ const COMMAND_WIDE_MIN_WIDTH: f32 = 1180.0;
 const RESIZE_CHANGE_EPSILON: f32 = 0.5;
 const RESIZE_STABILIZE_WINDOW_MS: u64 = 180;
 const RESIZE_REPAINT_FRAME_MS: u64 = 16;
+const UI_PRESENTATION_HEARTBEAT_MS: u64 = 16;
 
 fn app_background_color() -> egui::Color32 {
-    egui::Color32::from_rgb(18, 20, 24)
+    egui::Color32::from_rgb(246, 247, 250)
 }
 
 fn app_chrome_color() -> egui::Color32 {
-    egui::Color32::from_rgb(20, 23, 28)
+    egui::Color32::from_rgb(255, 255, 255)
 }
 
 fn app_surface_color() -> egui::Color32 {
-    egui::Color32::from_rgb(26, 30, 37)
+    egui::Color32::from_rgb(255, 255, 255)
 }
 
 fn app_surface_stroke() -> egui::Stroke {
-    egui::Stroke::new(1.0, egui::Color32::from_rgb(50, 56, 67))
+    egui::Stroke::new(1.0, egui::Color32::from_rgb(224, 228, 235))
+}
+
+fn app_text_color() -> egui::Color32 {
+    egui::Color32::from_rgb(25, 31, 43)
 }
 
 fn app_clear_color() -> [f32; 4] {
     app_background_color().to_normalized_gamma_f32()
+}
+
+fn ui_presentation_heartbeat_duration() -> Duration {
+    Duration::from_millis(UI_PRESENTATION_HEARTBEAT_MS)
 }
 
 fn chrome_panel_frame() -> egui::Frame {
@@ -497,23 +506,30 @@ fn read_first_existing_font(candidates: &[&str]) -> Option<Vec<u8>> {
 
 fn configure_comfortable_app_style(ctx: &egui::Context) {
     ctx.style_mut(|style| {
+        style.visuals = egui::Visuals::light();
+        style.visuals.override_text_color = Some(app_text_color());
         style.visuals.panel_fill = app_background_color();
         style.visuals.window_fill = app_surface_color();
-        style.visuals.extreme_bg_color = egui::Color32::from_rgb(14, 16, 20);
-        style.visuals.faint_bg_color = egui::Color32::from_rgb(24, 27, 33);
+        style.visuals.extreme_bg_color = egui::Color32::from_rgb(255, 255, 255);
+        style.visuals.faint_bg_color = egui::Color32::from_rgb(239, 242, 247);
         style.visuals.widgets.noninteractive.bg_fill = app_surface_color();
         style.visuals.widgets.noninteractive.weak_bg_fill = app_surface_color();
         style.visuals.widgets.noninteractive.bg_stroke = app_surface_stroke();
-        style.visuals.widgets.inactive.bg_fill = egui::Color32::from_rgb(36, 41, 50);
-        style.visuals.widgets.inactive.weak_bg_fill = egui::Color32::from_rgb(32, 37, 45);
-        style.visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(44, 50, 60);
-        style.visuals.widgets.hovered.weak_bg_fill = egui::Color32::from_rgb(40, 46, 55);
-        style.visuals.widgets.active.bg_fill = egui::Color32::from_rgb(52, 59, 70);
+        style.visuals.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0, app_text_color());
+        style.visuals.widgets.inactive.bg_fill = egui::Color32::from_rgb(242, 245, 249);
+        style.visuals.widgets.inactive.weak_bg_fill = egui::Color32::from_rgb(247, 249, 252);
+        style.visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, app_text_color());
+        style.visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(235, 241, 250);
+        style.visuals.widgets.hovered.weak_bg_fill = egui::Color32::from_rgb(241, 246, 253);
+        style.visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.5, app_text_color());
+        style.visuals.widgets.active.bg_fill = egui::Color32::from_rgb(222, 233, 249);
+        style.visuals.widgets.active.fg_stroke = egui::Stroke::new(2.0, app_text_color());
         style.visuals.widgets.open.bg_fill = app_surface_color();
-        style.visuals.hyperlink_color = egui::Color32::from_rgb(105, 170, 255);
-        style.visuals.selection.bg_fill = egui::Color32::from_rgb(56, 112, 190);
+        style.visuals.widgets.open.fg_stroke = egui::Stroke::new(1.0, app_text_color());
+        style.visuals.hyperlink_color = egui::Color32::from_rgb(30, 100, 210);
+        style.visuals.selection.bg_fill = egui::Color32::from_rgb(210, 229, 255);
         style.visuals.selection.stroke =
-            egui::Stroke::new(1.0, egui::Color32::from_rgb(190, 218, 255));
+            egui::Stroke::new(1.0, egui::Color32::from_rgb(35, 102, 210));
         style.text_styles.insert(
             egui::TextStyle::Heading,
             egui::FontId::new(18.0, egui::FontFamily::Proportional),
@@ -1015,12 +1031,22 @@ impl GhMirrorGui {
     }
 
     fn update_viewport_density(&mut self, viewport_size: egui::Vec2) {
+        let now = Instant::now();
         let previous_viewport_size = self.last_viewport_size;
         self.last_viewport_size = viewport_size;
         if viewport_size_changed_enough(previous_viewport_size, viewport_size) {
             self.resize_stabilize_until =
-                Some(Instant::now() + Duration::from_millis(RESIZE_STABILIZE_WINDOW_MS));
+                Some(now + Duration::from_millis(RESIZE_STABILIZE_WINDOW_MS));
+            return;
         }
+
+        if let Some(until) = self.resize_stabilize_until {
+            if now < until {
+                return;
+            }
+            self.resize_stabilize_until = None;
+        }
+
         self.viewport_density =
             ViewportDensity::for_resized_size(self.viewport_density, viewport_size);
         self.command_layout_mode =
@@ -1304,13 +1330,16 @@ impl GhMirrorGui {
         let density = self.current_density();
         let body_height = ui.available_height();
         let total_width = ui.available_width();
-        let layout = body_layout_for_resized_viewport(self.body_layout, total_width, body_height);
-        self.body_layout = layout;
-        self.body_scroll_fallback = body_scroll_fallback_for_resized_viewport(
-            self.body_scroll_fallback,
-            layout,
-            body_height,
-        );
+        if self.resize_stabilize_until.is_none() {
+            let layout =
+                body_layout_for_resized_viewport(self.body_layout, total_width, body_height);
+            self.body_layout = layout;
+            self.body_scroll_fallback = body_scroll_fallback_for_resized_viewport(
+                self.body_scroll_fallback,
+                layout,
+                body_height,
+            );
+        }
 
         if self.body_scroll_fallback {
             egui::ScrollArea::vertical()
@@ -2569,6 +2598,10 @@ impl eframe::App for GhMirrorGui {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.update_viewport_density(ctx.screen_rect().size());
         self.apply_adaptive_style(ctx);
+        ctx.request_repaint_after(ui_presentation_heartbeat_duration());
+        if self.resize_stabilize_until.is_some() {
+            ctx.request_repaint();
+        }
 
         // Check for speed test completion
         if let Some(rx) = &self.speed_test_rx {
@@ -3019,10 +3052,25 @@ mod tests {
         assert_ne!(app_chrome_color(), egui::Color32::BLACK);
         assert_ne!(app_surface_color(), egui::Color32::BLACK);
         let clear = app_clear_color();
-        assert!(clear[0] > 0.05);
-        assert!(clear[1] > 0.05);
-        assert!(clear[2] > 0.05);
+        assert!(clear[0] > 0.9);
+        assert!(clear[1] > 0.9);
+        assert!(clear[2] > 0.9);
         assert_eq!(clear[3], 1.0);
+    }
+
+    #[test]
+    fn viewport_density_freezes_during_resize_drag_until_stable() {
+        let mut app = GhMirrorGui::new(None);
+        assert_eq!(app.viewport_density, ViewportDensity::Regular);
+
+        app.update_viewport_density(egui::vec2(1600.0, 940.0));
+        assert_eq!(app.viewport_density, ViewportDensity::Regular);
+        assert!(app.resize_stabilize_until.is_some());
+
+        app.resize_stabilize_until = Some(Instant::now() - Duration::from_millis(1));
+        app.update_viewport_density(egui::vec2(1600.0, 940.0));
+        assert_eq!(app.viewport_density, ViewportDensity::Spacious);
+        assert!(app.resize_stabilize_until.is_none());
     }
 
     #[test]
@@ -3055,6 +3103,13 @@ mod tests {
             egui::vec2(1000.0, 700.0),
             egui::vec2(1001.0, 700.0)
         ));
+    }
+
+    #[test]
+    fn presentation_heartbeat_is_bounded_below_interactive_frame_budget() {
+        let heartbeat_ms = ui_presentation_heartbeat_duration().as_millis();
+        assert!(heartbeat_ms >= u128::from(RESIZE_REPAINT_FRAME_MS));
+        assert!(heartbeat_ms <= 16);
     }
 
     #[test]
