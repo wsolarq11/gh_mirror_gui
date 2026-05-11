@@ -46,6 +46,10 @@ type DownloadResultMessage = Result<DownloadCompletion, String>;
 
 const GOLDEN_MAJOR: f32 = 0.618_034;
 const GOLDEN_MINOR: f32 = 1.0 - GOLDEN_MAJOR;
+const GOLDEN_SPACE_XS: f32 = 3.0;
+const GOLDEN_SPACE_SM: f32 = 5.0;
+const GOLDEN_SPACE_MD: f32 = 8.0;
+const GOLDEN_SPACE_LG: f32 = 13.0;
 const BODY_TWO_COLUMN_MIN_WIDTH: f32 = 820.0;
 const BODY_THREE_COLUMN_MIN_WIDTH: f32 = 1120.0;
 const BODY_THREE_COLUMN_SHORT_MIN_WIDTH: f32 = 1040.0;
@@ -101,15 +105,19 @@ fn app_accent_stroke() -> egui::Stroke {
 }
 
 fn app_panel_rounding() -> egui::Rounding {
-    complete_rounding(12.0)
+    complete_rounding(GOLDEN_SPACE_LG)
 }
 
 fn app_control_rounding() -> egui::Rounding {
-    complete_rounding(8.0)
+    complete_rounding(GOLDEN_SPACE_MD)
 }
 
 fn app_focus_rounding() -> egui::Rounding {
-    complete_rounding(10.0)
+    complete_rounding(GOLDEN_SPACE_LG)
+}
+
+fn app_separator_rounding() -> egui::Rounding {
+    complete_rounding(0.5)
 }
 
 fn complete_rounding(radius: f32) -> egui::Rounding {
@@ -142,18 +150,19 @@ fn chrome_panel_frame() -> egui::Frame {
     egui::Frame::none()
         .fill(app_chrome_color())
         .rounding(app_panel_rounding())
-        .inner_margin(egui::Margin::symmetric(10.0, 3.0))
+        .inner_margin(egui::Margin::symmetric(GOLDEN_SPACE_MD, GOLDEN_SPACE_SM))
 }
 
 fn body_panel_frame() -> egui::Frame {
     egui::Frame::none()
         .fill(app_background_color())
         .rounding(app_panel_rounding())
-        .inner_margin(egui::Margin::symmetric(8.0, 6.0))
+        .inner_margin(egui::Margin::symmetric(GOLDEN_SPACE_MD, GOLDEN_SPACE_SM))
 }
 
 fn rounded_singleline_text_edit(text: &mut String) -> egui::TextEdit<'_> {
-    egui::TextEdit::singleline(text).margin(egui::Margin::symmetric(8.0, 4.0))
+    egui::TextEdit::singleline(text)
+        .margin(egui::Margin::symmetric(GOLDEN_SPACE_SM, GOLDEN_SPACE_XS))
 }
 
 fn add_sized_singleline_text_edit(
@@ -179,6 +188,17 @@ fn add_rounded_checkbox(
     text: impl Into<egui::WidgetText>,
 ) -> egui::Response {
     ui.checkbox(checked, text)
+}
+
+fn add_rounded_separator(ui: &mut egui::Ui) {
+    ui.add_space(GOLDEN_SPACE_XS);
+    let width = ui.available_width().max(0.0);
+    let (rect, _response) = ui.allocate_exact_size(egui::vec2(width, 1.0), egui::Sense::hover());
+    if ui.is_rect_visible(rect) {
+        ui.painter()
+            .rect_filled(rect, app_separator_rounding(), app_surface_stroke().color);
+    }
+    ui.add_space(GOLDEN_SPACE_XS);
 }
 
 fn add_primary_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
@@ -294,41 +314,41 @@ impl ViewportDensity {
 
     fn panel_margin(self) -> egui::Margin {
         match self {
-            Self::Dense => egui::Margin::symmetric(5.0, 3.0),
-            Self::Regular => egui::Margin::symmetric(7.0, 5.0),
-            Self::Spacious => egui::Margin::symmetric(8.0, 6.0),
+            Self::Dense => egui::Margin::symmetric(GOLDEN_SPACE_SM, GOLDEN_SPACE_XS),
+            Self::Regular => egui::Margin::symmetric(GOLDEN_SPACE_MD, GOLDEN_SPACE_SM),
+            Self::Spacious => egui::Margin::symmetric(GOLDEN_SPACE_LG, GOLDEN_SPACE_MD),
         }
     }
 
     fn item_spacing(self) -> egui::Vec2 {
         match self {
-            Self::Dense => egui::vec2(4.0, 3.0),
-            Self::Regular => egui::vec2(6.0, 4.0),
-            Self::Spacious => egui::vec2(8.0, 5.0),
+            Self::Dense => egui::vec2(GOLDEN_SPACE_SM, GOLDEN_SPACE_XS),
+            Self::Regular => egui::vec2(GOLDEN_SPACE_MD, GOLDEN_SPACE_SM),
+            Self::Spacious => egui::vec2(GOLDEN_SPACE_LG, GOLDEN_SPACE_MD),
         }
     }
 
     fn button_padding(self) -> egui::Vec2 {
         match self {
-            Self::Dense => egui::vec2(6.0, 3.0),
-            Self::Regular => egui::vec2(8.0, 4.0),
-            Self::Spacious => egui::vec2(9.0, 4.0),
+            Self::Dense => egui::vec2(GOLDEN_SPACE_SM, GOLDEN_SPACE_XS),
+            Self::Regular => egui::vec2(GOLDEN_SPACE_MD, GOLDEN_SPACE_SM),
+            Self::Spacious => egui::vec2(GOLDEN_SPACE_MD, GOLDEN_SPACE_SM),
         }
     }
 
     const fn command_gap(self) -> f32 {
         match self {
-            Self::Dense => 4.0,
-            Self::Regular => 6.0,
-            Self::Spacious => 8.0,
+            Self::Dense => GOLDEN_SPACE_XS,
+            Self::Regular => GOLDEN_SPACE_SM,
+            Self::Spacious => GOLDEN_SPACE_MD,
         }
     }
 
     const fn body_gap(self) -> f32 {
         match self {
-            Self::Dense => 4.0,
-            Self::Regular => 6.0,
-            Self::Spacious => 8.0,
+            Self::Dense => GOLDEN_SPACE_XS,
+            Self::Regular => GOLDEN_SPACE_SM,
+            Self::Spacious => GOLDEN_SPACE_MD,
         }
     }
 
@@ -697,10 +717,10 @@ fn configure_comfortable_app_style(ctx: &egui::Context) {
             egui::TextStyle::Monospace,
             egui::FontId::new(13.0, egui::FontFamily::Monospace),
         );
-        style.spacing.item_spacing = egui::vec2(6.0, 4.0);
-        style.spacing.button_padding = egui::vec2(8.0, 4.0);
+        style.spacing.item_spacing = egui::vec2(GOLDEN_SPACE_MD, GOLDEN_SPACE_SM);
+        style.spacing.button_padding = egui::vec2(GOLDEN_SPACE_MD, GOLDEN_SPACE_SM);
         style.spacing.indent = 12.0;
-        style.spacing.window_margin = egui::Margin::symmetric(8.0, 6.0);
+        style.spacing.window_margin = egui::Margin::symmetric(GOLDEN_SPACE_MD, GOLDEN_SPACE_SM);
     });
 }
 
@@ -1302,7 +1322,7 @@ impl GhMirrorGui {
                 });
             } else {
                 self.render_command_primary_stack(ui, layout_mode, density);
-                ui.separator();
+                add_rounded_separator(ui);
                 self.render_command_hint_content(ui);
             }
         });
@@ -1377,7 +1397,7 @@ impl GhMirrorGui {
             }
         });
 
-        ui.separator();
+        add_rounded_separator(ui);
 
         ui.horizontal_wrapped(|ui| {
             if add_primary_button(ui, self.t(TextKey::DownloadButton)).clicked() {
@@ -1700,7 +1720,7 @@ impl GhMirrorGui {
                 });
 
             if !density.is_dense() {
-                ui.separator();
+                add_rounded_separator(ui);
                 self.render_decision_chain(ui);
             }
             if min_height.is_some() {
@@ -1881,7 +1901,7 @@ impl GhMirrorGui {
                 });
 
                 if self.speed_test_thread.is_some() || self.speed_test_completed > 0 {
-                    ui.separator();
+                    add_rounded_separator(ui);
                     if self.speed_test_thread.is_some() {
                         ui.label(format!("⏳ {}", self.t(TextKey::StatusTestingMirrors)));
                     } else {
@@ -1930,7 +1950,7 @@ impl GhMirrorGui {
                             }
                         });
                 }
-                ui.separator();
+                add_rounded_separator(ui);
             }
 
             ui.horizontal_wrapped(|ui| {
@@ -1971,7 +1991,7 @@ impl GhMirrorGui {
                 }
             });
 
-            ui.separator();
+            add_rounded_separator(ui);
             egui::CollapsingHeader::new(self.t(TextKey::NetworkPolicyTitle))
                 .default_open(min_height.is_some() || density.advanced_default_open())
                 .show(ui, |ui| {
@@ -2062,7 +2082,7 @@ impl GhMirrorGui {
                 backend_contract::source_trust_requires_signed(&self.trust_policy);
             let has_pinned_key =
                 backend_contract::trusted_publisher_key_fingerprint(&self.trust_policy).is_some();
-            ui.separator();
+            add_rounded_separator(ui);
             ui.horizontal_wrapped(|ui| {
                 if add_rounded_checkbox(
                     ui,
@@ -2236,7 +2256,7 @@ impl GhMirrorGui {
                 render_update_candidate_check(ui, report);
             }
 
-            ui.separator();
+            add_rounded_separator(ui);
             let stage2_open = density.advanced_default_open()
                 || min_height.is_some()
                 || self.update_stage_thread.is_some()
@@ -2267,7 +2287,7 @@ impl GhMirrorGui {
                     });
                     if let Some(report) = self.update_stage_report.clone() {
                         render_update_candidate_stage(ui, &report);
-                        ui.separator();
+                        add_rounded_separator(ui);
                         if let Some(record) = &self.update_apply_plan_evidence_record {
                             render_update_apply_plan_preview(ui, &record.plan, Some(record));
                         } else {
@@ -2284,7 +2304,7 @@ impl GhMirrorGui {
                                 }
                             }
                         }
-                        ui.separator();
+                        add_rounded_separator(ui);
                         ui.horizontal_wrapped(|ui| {
                             if add_subtle_button(ui, self.t(TextKey::PrepareHelperBundleButton))
                                 .clicked()
@@ -3247,12 +3267,67 @@ mod tests {
             app_panel_rounding(),
             app_focus_rounding(),
             app_control_rounding(),
+            app_separator_rounding(),
         ] {
             assert!(rounding.nw > 0.0);
             assert_eq!(rounding.nw, rounding.ne);
             assert_eq!(rounding.nw, rounding.sw);
             assert_eq!(rounding.nw, rounding.se);
         }
+    }
+
+    #[test]
+    fn shape_and_spacing_tokens_follow_golden_scale() {
+        let ratio = app_panel_rounding().nw / app_control_rounding().nw;
+        assert!((ratio - (GOLDEN_SPACE_LG / GOLDEN_SPACE_MD)).abs() < 0.001);
+        assert!((ratio - (1.0 / GOLDEN_MAJOR)).abs() < 0.01);
+        assert_eq!(app_focus_rounding().nw, app_panel_rounding().nw);
+
+        for density in [
+            ViewportDensity::Dense,
+            ViewportDensity::Regular,
+            ViewportDensity::Spacious,
+        ] {
+            let margin = density.panel_margin();
+            let spacing = density.item_spacing();
+            let button_padding = density.button_padding();
+            for (x, y) in [
+                (margin.left, margin.top),
+                (spacing.x, spacing.y),
+                (button_padding.x, button_padding.y),
+            ] {
+                let ratio = x / y;
+                assert!(
+                    (ratio - (1.0 / GOLDEN_MAJOR)).abs() < 0.06,
+                    "expected golden-ish x/y spacing ratio, got {ratio}"
+                );
+            }
+        }
+
+        assert!(
+            (ViewportDensity::Regular.command_gap() / ViewportDensity::Dense.command_gap()
+                - (1.0 / GOLDEN_MAJOR))
+                .abs()
+                < 0.06
+        );
+        assert!(
+            (ViewportDensity::Spacious.command_gap() / ViewportDensity::Regular.command_gap()
+                - (1.0 / GOLDEN_MAJOR))
+                .abs()
+                < 0.06
+        );
+        assert_eq!(
+            ViewportDensity::Dense.command_gap(),
+            ViewportDensity::Dense.body_gap()
+        );
+        assert_eq!(
+            ViewportDensity::Regular.command_gap(),
+            ViewportDensity::Regular.body_gap()
+        );
+        assert_eq!(
+            ViewportDensity::Spacious.command_gap(),
+            ViewportDensity::Spacious.body_gap()
+        );
     }
 
     #[test]
@@ -3317,6 +3392,17 @@ mod tests {
             source.matches(progress_ctor).count(),
             source.matches(focus_rounding).count(),
             "Every progress bar must explicitly apply complete focus rounding"
+        );
+        assert!(
+            !source.contains(concat!("ui", ".separator(")),
+            "Four-sided separator surfaces must go through add_rounded_separator"
+        );
+        assert_eq!(
+            source
+                .matches(concat!("rect_filled", "(rect, app_separator_rounding()"))
+                .count(),
+            1,
+            "Rounded separators must be the only explicit filled hairline surface"
         );
         assert!(
             !source.contains(concat!("ui", ".button(")),
