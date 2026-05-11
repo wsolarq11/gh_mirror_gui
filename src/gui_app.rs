@@ -45,9 +45,6 @@ type UpdateCandidateStageMessage = UpdateCandidateStageReport;
 type DownloadResultMessage = Result<DownloadCompletion, String>;
 
 const GOLDEN_MAJOR: f32 = 0.618_034;
-const TOP_CANVAS_MAX_WIDTH: f32 = 1180.0;
-const COMMAND_CANVAS_MAX_WIDTH: f32 = 1120.0;
-const BODY_CANVAS_MAX_WIDTH: f32 = 1240.0;
 const COMMAND_COLUMN_GAP: f32 = 16.0;
 const BODY_COLUMN_GAP: f32 = 18.0;
 
@@ -536,30 +533,6 @@ impl GhMirrorGui {
         Some(proxy)
     }
 
-    fn render_centered_canvas<R>(
-        ui: &mut egui::Ui,
-        max_width: f32,
-        add_contents: impl FnOnce(&mut egui::Ui) -> R,
-    ) -> R {
-        let available_width = ui.available_width();
-        let canvas_width = available_width.min(max_width).max(0.0);
-        let side_margin = ((available_width - canvas_width) * 0.5).max(0.0);
-
-        ui.horizontal_top(|ui| {
-            if side_margin > 0.0 {
-                ui.add_space(side_margin);
-            }
-
-            ui.allocate_ui_with_layout(
-                egui::vec2(canvas_width, 0.0),
-                egui::Layout::top_down(egui::Align::Min),
-                add_contents,
-            )
-            .inner
-        })
-        .inner
-    }
-
     fn gallery_panel<R>(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui) -> R) -> R {
         egui::Frame::group(ui.style())
             .inner_margin(egui::Margin::symmetric(10.0, 8.0))
@@ -568,42 +541,40 @@ impl GhMirrorGui {
     }
 
     fn render_command_panel(&mut self, ui: &mut egui::Ui) {
-        Self::render_centered_canvas(ui, COMMAND_CANVAS_MAX_WIDTH, |ui| {
-            Self::gallery_panel(ui, |ui| {
-                ui.set_min_width(ui.available_width());
-                let layout_mode = layout_mode_for_width(ui.available_width());
-                let wide_layout = matches!(layout_mode, LayoutMode::Medium | LayoutMode::Wide);
+        Self::gallery_panel(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            let layout_mode = layout_mode_for_width(ui.available_width());
+            let wide_layout = matches!(layout_mode, LayoutMode::Medium | LayoutMode::Wide);
 
-                if wide_layout {
-                    let total_width = ui.available_width();
-                    let gap = COMMAND_COLUMN_GAP;
-                    let usable_width = (total_width - gap).max(0.0);
-                    let left_width = usable_width * GOLDEN_MAJOR;
-                    let right_width = (usable_width - left_width).max(0.0);
+            if wide_layout {
+                let total_width = ui.available_width();
+                let gap = COMMAND_COLUMN_GAP;
+                let usable_width = (total_width - gap).max(0.0);
+                let left_width = usable_width * GOLDEN_MAJOR;
+                let right_width = (usable_width - left_width).max(0.0);
 
-                    ui.horizontal_top(|ui| {
-                        ui.allocate_ui_with_layout(
-                            egui::vec2(left_width, 0.0),
-                            egui::Layout::top_down(egui::Align::Min),
-                            |ui| {
-                                self.render_command_primary_stack(ui, layout_mode);
-                            },
-                        );
-                        ui.add_space(gap);
-                        ui.allocate_ui_with_layout(
-                            egui::vec2(right_width, 0.0),
-                            egui::Layout::top_down(egui::Align::Min),
-                            |ui| {
-                                self.render_command_hint_card(ui);
-                            },
-                        );
-                    });
-                } else {
-                    self.render_command_primary_stack(ui, layout_mode);
-                    ui.separator();
-                    self.render_command_hint_card(ui);
-                }
-            });
+                ui.horizontal_top(|ui| {
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(left_width, 0.0),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| {
+                            self.render_command_primary_stack(ui, layout_mode);
+                        },
+                    );
+                    ui.add_space(gap);
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(right_width, 0.0),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| {
+                            self.render_command_hint_card(ui);
+                        },
+                    );
+                });
+            } else {
+                self.render_command_primary_stack(ui, layout_mode);
+                ui.separator();
+                self.render_command_hint_card(ui);
+            }
         });
     }
 
@@ -768,43 +739,41 @@ impl GhMirrorGui {
     }
 
     fn render_body(&mut self, ui: &mut egui::Ui) {
-        Self::render_centered_canvas(ui, BODY_CANVAS_MAX_WIDTH, |ui| {
-            egui::ScrollArea::vertical()
-                .id_salt("proof_to_action_main_scroll")
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    ui.add_space(2.0);
-                    let layout_mode = layout_mode_for_width(ui.available_width());
-                    if layout_mode.is_compact() {
-                        self.render_body_primary_column(ui);
-                        self.render_body_secondary_column(ui);
-                    } else {
-                        let total_width = ui.available_width();
-                        let gap = BODY_COLUMN_GAP;
-                        let usable_width = (total_width - gap).max(0.0);
-                        let left_width = usable_width * GOLDEN_MAJOR;
-                        let right_width = (usable_width - left_width).max(0.0);
+        egui::ScrollArea::vertical()
+            .id_salt("proof_to_action_main_scroll")
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.add_space(2.0);
+                let layout_mode = layout_mode_for_width(ui.available_width());
+                if layout_mode.is_compact() {
+                    self.render_body_primary_column(ui);
+                    self.render_body_secondary_column(ui);
+                } else {
+                    let total_width = ui.available_width();
+                    let gap = BODY_COLUMN_GAP;
+                    let usable_width = (total_width - gap).max(0.0);
+                    let left_width = usable_width * GOLDEN_MAJOR;
+                    let right_width = (usable_width - left_width).max(0.0);
 
-                        ui.horizontal_top(|ui| {
-                            ui.allocate_ui_with_layout(
-                                egui::vec2(left_width, 0.0),
-                                egui::Layout::top_down(egui::Align::Min),
-                                |ui| {
-                                    self.render_body_primary_column(ui);
-                                },
-                            );
-                            ui.add_space(gap);
-                            ui.allocate_ui_with_layout(
-                                egui::vec2(right_width, 0.0),
-                                egui::Layout::top_down(egui::Align::Min),
-                                |ui| {
-                                    self.render_body_secondary_column(ui);
-                                },
-                            );
-                        });
-                    }
-                });
-        });
+                    ui.horizontal_top(|ui| {
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(left_width, 0.0),
+                            egui::Layout::top_down(egui::Align::Min),
+                            |ui| {
+                                self.render_body_primary_column(ui);
+                            },
+                        );
+                        ui.add_space(gap);
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(right_width, 0.0),
+                            egui::Layout::top_down(egui::Align::Min),
+                            |ui| {
+                                self.render_body_secondary_column(ui);
+                            },
+                        );
+                    });
+                }
+            });
     }
 
     fn render_body_primary_column(&mut self, ui: &mut egui::Ui) {
@@ -1980,22 +1949,20 @@ impl eframe::App for GhMirrorGui {
         }
 
         egui::TopBottomPanel::top("proof_to_action_top_bar").show(ctx, |ui| {
-            Self::render_centered_canvas(ui, TOP_CANVAS_MAX_WIDTH, |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    ui.heading(format!("🚀 {}", self.t(TextKey::AppTitle)));
-                    ui.small(self.t(TextKey::AppSubtitle));
-                    ui.separator();
-                    let switch_key = if self.locale == UiLocale::En {
-                        TextKey::SwitchToChinese
-                    } else {
-                        TextKey::SwitchToEnglish
-                    };
-                    if ui.button(self.t(switch_key)).clicked() {
-                        self.toggle_locale();
-                    }
-                    ui.separator();
-                    ui.label(egui::RichText::new(&self.status).color(status_color(&self.status)));
-                });
+            ui.horizontal_wrapped(|ui| {
+                ui.heading(format!("🚀 {}", self.t(TextKey::AppTitle)));
+                ui.small(self.t(TextKey::AppSubtitle));
+                ui.separator();
+                let switch_key = if self.locale == UiLocale::En {
+                    TextKey::SwitchToChinese
+                } else {
+                    TextKey::SwitchToEnglish
+                };
+                if ui.button(self.t(switch_key)).clicked() {
+                    self.toggle_locale();
+                }
+                ui.separator();
+                ui.label(egui::RichText::new(&self.status).color(status_color(&self.status)));
             });
         });
 
