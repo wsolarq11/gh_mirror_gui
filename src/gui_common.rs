@@ -16,12 +16,27 @@ pub(crate) fn render_backend_path_action(
         backend_contract::BackendPathActionKind::Directory => path.is_dir(),
     };
     if path_ready {
-        if ui.button(action.label).clicked() {
+        if ui
+            .add(egui::Button::new(action.label).rounding(complete_control_rounding()))
+            .clicked()
+        {
             let _ = open::that(path);
         }
     } else {
-        ui.add_enabled(false, egui::Button::new(action.label));
+        ui.add_enabled(
+            false,
+            egui::Button::new(action.label).rounding(complete_control_rounding()),
+        );
         ui.small(action.missing_message);
+    }
+}
+
+fn complete_control_rounding() -> egui::Rounding {
+    egui::Rounding {
+        nw: 8.0,
+        ne: 8.0,
+        sw: 8.0,
+        se: 8.0,
     }
 }
 
@@ -32,5 +47,20 @@ pub(crate) fn status_color(status: &str) -> egui::Color32 {
         egui::Color32::from_rgb(220, 160, 0)
     } else {
         egui::Color32::from_rgb(0, 180, 0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn backend_path_action_buttons_use_complete_four_corner_rounding() {
+        let rounding = complete_control_rounding();
+
+        assert!(rounding.nw > 0.0);
+        assert_eq!(rounding.nw, rounding.ne);
+        assert_eq!(rounding.nw, rounding.sw);
+        assert_eq!(rounding.nw, rounding.se);
     }
 }

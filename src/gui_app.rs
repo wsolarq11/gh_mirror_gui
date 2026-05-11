@@ -101,11 +101,24 @@ fn app_accent_stroke() -> egui::Stroke {
 }
 
 fn app_panel_rounding() -> egui::Rounding {
-    egui::Rounding::same(12.0)
+    complete_rounding(12.0)
 }
 
 fn app_control_rounding() -> egui::Rounding {
-    egui::Rounding::same(8.0)
+    complete_rounding(8.0)
+}
+
+fn app_focus_rounding() -> egui::Rounding {
+    complete_rounding(10.0)
+}
+
+fn complete_rounding(radius: f32) -> egui::Rounding {
+    egui::Rounding {
+        nw: radius,
+        ne: radius,
+        sw: radius,
+        se: radius,
+    }
 }
 
 fn app_surface_shadow() -> egui::Shadow {
@@ -164,11 +177,27 @@ fn add_tonal_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
 }
 
 fn add_subtle_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
-    ui.add(
-        egui::Button::new(egui::RichText::new(label.to_owned()).color(app_text_color()))
-            .fill(app_surface_alt_color())
-            .stroke(app_surface_stroke())
-            .rounding(app_control_rounding()),
+    ui.add(rounded_subtle_button(label))
+}
+
+fn rounded_subtle_button(label: &str) -> egui::Button<'_> {
+    egui::Button::new(egui::RichText::new(label.to_owned()).color(app_text_color()))
+        .fill(app_surface_alt_color())
+        .stroke(app_surface_stroke())
+        .rounding(app_control_rounding())
+}
+
+fn add_enabled_tonal_button(ui: &mut egui::Ui, enabled: bool, label: &str) -> egui::Response {
+    ui.add_enabled(
+        enabled,
+        egui::Button::new(
+            egui::RichText::new(label.to_owned())
+                .strong()
+                .color(app_accent_color()),
+        )
+        .fill(app_accent_soft_color())
+        .stroke(app_accent_stroke())
+        .rounding(app_control_rounding()),
     )
 }
 
@@ -1203,6 +1232,7 @@ impl GhMirrorGui {
             .stroke(app_surface_stroke())
             .rounding(app_panel_rounding())
             .shadow(app_surface_shadow())
+            .outer_margin(egui::Margin::same(1.0))
             .inner_margin(density.panel_margin())
             .show(ui, add_contents)
             .inner
@@ -1354,7 +1384,9 @@ impl GhMirrorGui {
         } else {
             ui.add_sized(
                 [ui.available_width(), density.progress_height()],
-                egui::ProgressBar::new(progress.fraction).text(progress.primary_text.clone()),
+                egui::ProgressBar::new(progress.fraction)
+                    .text(progress.primary_text.clone())
+                    .rounding(app_focus_rounding()),
             );
         }
         ui.small(progress.detail_text);
@@ -1705,11 +1737,7 @@ impl GhMirrorGui {
                 ui.horizontal_wrapped(|ui| {
                     ui.label(format!("Publisher key: {}", publisher_key_asset.name));
                     let importing = self.publisher_key_import_thread.is_some();
-                    if ui
-                        .add_enabled(
-                            !importing,
-                            egui::Button::new("Pin publisher key from release"),
-                        )
+                    if add_enabled_tonal_button(ui, !importing, "Pin publisher key from release")
                         .clicked()
                     {
                         self.start_import_publisher_key_from_selected_release();
@@ -1753,10 +1781,10 @@ impl GhMirrorGui {
                                 }
                             }
                         });
-                    if ui.button(self.t(TextKey::UseSelectedAssetButton)).clicked() {
+                    if add_tonal_button(ui, self.t(TextKey::UseSelectedAssetButton)).clicked() {
                         self.apply_selected_release_asset();
                     }
-                    if ui.button(self.t(TextKey::OpenReleaseButton)).clicked() {
+                    if add_subtle_button(ui, self.t(TextKey::OpenReleaseButton)).clicked() {
                         let _ = open::that(&release.html_url);
                     }
                 });
@@ -1815,7 +1843,7 @@ impl GhMirrorGui {
                                 }
                             }
                         });
-                    if ui.button(self.t(TextKey::RetestButton)).clicked() {
+                    if add_subtle_button(ui, self.t(TextKey::RetestButton)).clicked() {
                         self.retest_mirrors();
                     }
                 });
@@ -1830,11 +1858,11 @@ impl GhMirrorGui {
                     let tested = self.speed_test_completed.min(self.mirrors.len());
                     if tested > 0 {
                         let pct = (tested as f32) / (self.mirrors.len() as f32);
-                        ui.add(egui::ProgressBar::new(pct).text(format!(
-                            "{}/{}",
-                            tested,
-                            self.mirrors.len()
-                        )));
+                        ui.add(
+                            egui::ProgressBar::new(pct)
+                                .text(format!("{}/{}", tested, self.mirrors.len()))
+                                .rounding(app_focus_rounding()),
+                        );
                     }
                     egui::ScrollArea::vertical()
                         .max_height(120.0)
@@ -1876,7 +1904,7 @@ impl GhMirrorGui {
             ui.horizontal_wrapped(|ui| {
                 ui.label(self.t(TextKey::SaveToLabel));
                 ui.label(self.save_dir.to_string_lossy().to_string());
-                if ui.button(self.t(TextKey::BrowseButton)).clicked() {
+                if add_subtle_button(ui, self.t(TextKey::BrowseButton)).clicked() {
                     if let Some(dir) = FileDialog::new()
                         .set_directory(&self.save_dir)
                         .pick_folder()
@@ -1894,7 +1922,7 @@ impl GhMirrorGui {
                     [edit_width, density.input_height()],
                     egui::TextEdit::singleline(&mut self.proxy),
                 );
-                if ui.button(self.t(TextKey::ClearProxyButton)).clicked() {
+                if add_subtle_button(ui, self.t(TextKey::ClearProxyButton)).clicked() {
                     self.proxy.clear();
                 }
             });
@@ -1919,7 +1947,7 @@ impl GhMirrorGui {
                     );
                     let hosts = backend_contract::official_github_artifact_hosts();
                     ui.horizontal_wrapped(|ui| {
-                        if ui.button(self.t(TextKey::CopyAllowlistButton)).clicked() {
+                        if add_subtle_button(ui, self.t(TextKey::CopyAllowlistButton)).clicked() {
                             let mut text = String::new();
                             for (i, host) in hosts.iter().enumerate() {
                                 if i > 0 {
@@ -2050,7 +2078,7 @@ impl GhMirrorGui {
                         }
                     });
                     ui.horizontal_wrapped(|ui| {
-                        if ui.button(self.t(TextKey::ImportPublicKey)).clicked() {
+                        if add_subtle_button(ui, self.t(TextKey::ImportPublicKey)).clicked() {
                             if let Some(path) = FileDialog::new()
                                 .add_filter("Public key", &["pub", "txt"])
                                 .pick_file()
@@ -2071,7 +2099,7 @@ impl GhMirrorGui {
                                 }
                             }
                         }
-                        if ui.button(self.t(TextKey::NormalizeKey)).clicked() {
+                        if add_subtle_button(ui, self.t(TextKey::NormalizeKey)).clicked() {
                             match backend_contract::normalize_trusted_publisher_key(
                                 &mut self.trust_policy,
                                 &mut self.publisher_key_source,
@@ -2082,7 +2110,7 @@ impl GhMirrorGui {
                                 }
                             }
                         }
-                        if ui.button(self.t(TextKey::ClearKey)).clicked() {
+                        if add_subtle_button(ui, self.t(TextKey::ClearKey)).clicked() {
                             backend_contract::clear_trusted_publisher_key(
                                 &mut self.trust_policy,
                                 &mut self.publisher_key_source,
@@ -2116,7 +2144,7 @@ impl GhMirrorGui {
                             [edit_width, density.input_height()],
                             egui::TextEdit::singleline(&mut self.history_path),
                         );
-                        if ui.button(self.t(TextKey::DefaultButton)).clicked() {
+                        if add_subtle_button(ui, self.t(TextKey::DefaultButton)).clicked() {
                             self.history_path.clear();
                         }
                     });
@@ -2151,12 +2179,12 @@ impl GhMirrorGui {
             ui.small("Checks the public latest release and only reports candidate / no-update / refused.");
             ui.horizontal_wrapped(|ui| {
                 let running = self.update_candidate_thread.is_some();
-                if ui
-                    .add_enabled(
-                        !running,
-                        egui::Button::new(self.t(TextKey::CheckLatestCandidateButton)),
-                    )
-                    .clicked()
+                if add_enabled_tonal_button(
+                    ui,
+                    !running,
+                    self.t(TextKey::CheckLatestCandidateButton),
+                )
+                .clicked()
                 {
                     self.start_update_candidate_check();
                 }
@@ -2184,12 +2212,12 @@ impl GhMirrorGui {
                     ui.small("Stages a verified candidate to a local folder (still no install).");
                     ui.horizontal_wrapped(|ui| {
                         let running = self.update_stage_thread.is_some();
-                        if ui
-                            .add_enabled(
-                                !running,
-                                egui::Button::new(self.t(TextKey::StageLatestCandidateButton)),
-                            )
-                            .clicked()
+                        if add_enabled_tonal_button(
+                            ui,
+                            !running,
+                            self.t(TextKey::StageLatestCandidateButton),
+                        )
+                        .clicked()
                         {
                             self.start_update_candidate_stage();
                         }
@@ -2220,8 +2248,7 @@ impl GhMirrorGui {
                         }
                         ui.separator();
                         ui.horizontal_wrapped(|ui| {
-                            if ui
-                                .button(self.t(TextKey::PrepareHelperBundleButton))
+                            if add_subtle_button(ui, self.t(TextKey::PrepareHelperBundleButton))
                                 .clicked()
                             {
                                 match backend_contract::record_update_apply_bundle_evidence_for_current_exe(
@@ -2275,7 +2302,9 @@ impl GhMirrorGui {
                 if let Some(notice) = backend_contract::last_download_status_notice(&snapshot) {
                     ui.colored_label(backend_notice_color(notice.level), notice.message);
                     if let Some(retry_label) = notice.retry_label {
-                        if self.download_thread.is_none() && ui.button(retry_label).clicked() {
+                        if self.download_thread.is_none()
+                            && add_tonal_button(ui, retry_label).clicked()
+                        {
                             self.start_download();
                         }
                     }
@@ -3172,6 +3201,42 @@ mod tests {
         assert_ne!(app_accent_color(), app_text_color());
         assert!(app_surface_shadow().color.a() > 0);
         assert!(app_panel_rounding().nw > app_control_rounding().nw);
+    }
+
+    #[test]
+    fn app_rounding_presets_keep_all_four_corners_complete() {
+        for rounding in [
+            app_panel_rounding(),
+            app_focus_rounding(),
+            app_control_rounding(),
+        ] {
+            assert!(rounding.nw > 0.0);
+            assert_eq!(rounding.nw, rounding.ne);
+            assert_eq!(rounding.nw, rounding.sw);
+            assert_eq!(rounding.nw, rounding.se);
+        }
+    }
+
+    #[test]
+    fn comfortable_style_applies_complete_rounding_to_all_widget_states() {
+        let ctx = egui::Context::default();
+        configure_comfortable_app_style(&ctx);
+        let style = ctx.style();
+
+        for rounding in [
+            style.visuals.window_rounding,
+            style.visuals.menu_rounding,
+            style.visuals.widgets.noninteractive.rounding,
+            style.visuals.widgets.inactive.rounding,
+            style.visuals.widgets.hovered.rounding,
+            style.visuals.widgets.active.rounding,
+            style.visuals.widgets.open.rounding,
+        ] {
+            assert!(rounding.nw > 0.0);
+            assert_eq!(rounding.nw, rounding.ne);
+            assert_eq!(rounding.nw, rounding.sw);
+            assert_eq!(rounding.nw, rounding.se);
+        }
     }
 
     #[test]
