@@ -36,7 +36,7 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{mpsc, Arc};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 type ReleaseLookupMessage = (String, Result<ResolvedRelease, String>);
 type PublisherKeyImportMessage = (String, Result<ImportedPublisherKeyPin, String>);
@@ -259,6 +259,7 @@ pub(crate) struct GhMirrorGui {
     download_total_bytes: Option<u64>,
     download_speed_kib_per_second: f64,
     download_elapsed_seconds: f64,
+    download_started_at: Option<Instant>,
     speed_text: String,
     elapsed_text: String,
     download_thread: Option<thread::JoinHandle<()>>,
@@ -415,6 +416,7 @@ impl GhMirrorGui {
             download_total_bytes: None,
             download_speed_kib_per_second: 0.0,
             download_elapsed_seconds: 0.0,
+            download_started_at: None,
             speed_text: String::new(),
             elapsed_text: String::new(),
             download_thread: None,
@@ -645,20 +647,32 @@ impl GhMirrorGui {
                     ctrl.cancel();
                     self.download_thread = None;
                     self.control = None;
+                    self.download_started_at = None;
                     self.status = self.t(TextKey::StatusCancelled).to_string();
                 }
             }
         });
 
-        if let Some(progress) = self.download_progress_projection() {
-            let mut bar =
-                egui::ProgressBar::new(progress.fraction).text(progress.primary_text.clone());
-            if progress.indeterminate {
-                bar = bar.animate(true);
-            }
-            ui.add_sized([ui.available_width(), 22.0], bar);
-            ui.small(progress.detail_text);
+        self.render_download_progress(ui);
+    }
+
+    fn render_download_progress(&self, ui: &mut egui::Ui) {
+        let Some(progress) = self.download_progress_projection() else {
+            return;
+        };
+
+        if progress.indeterminate {
+            ui.horizontal_wrapped(|ui| {
+                ui.add(egui::Spinner::new());
+                ui.label(egui::RichText::new(progress.primary_text.clone()).strong());
+            });
+        } else {
+            ui.add_sized(
+                [ui.available_width(), 22.0],
+                egui::ProgressBar::new(progress.fraction).text(progress.primary_text.clone()),
+            );
         }
+        ui.small(progress.detail_text);
     }
 
     fn render_command_hint_card(&mut self, ui: &mut egui::Ui) {
@@ -710,6 +724,603 @@ impl GhMirrorGui {
                 }
             ));
         });
+    }
+
+    fn render_body(&mut self, ui: &mut egui::Ui) {
+        egui::ScrollArea::vertical()
+            .id_salt("proof_to_action_main_scroll")
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.add_space(2.0);
+                let layout_mode = layout_mode_for_width(ui.available_width());
+                if layout_mode.is_compact() {
+                    self.render_body_primary_column(ui);
+                    self.render_body_secondary_column(ui);
+                } else {
+                    let total_width = ui.available_width();
+                    let gap = ui.spacing().item_spacing.x * 1.25;
+                    let left_width = (total_width * 0.618).clamp(460.0, total_width - 320.0);
+                    let right_width = (total_width - left_width - gap).max(300.0);
+
+                    ui.horizontal_top(|ui| {
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(left_width, 0.0),
+                            egui::Layout::top_down(egui::Align::Min),
+                            |ui| {
+                                self.render_body_primary_column(ui);
+                            },
+                        );
+                        ui.add_space(gap);
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(right_width, 0.0),
+                            egui::Layout::top_down(egui::Align::Min),
+                            |ui| {
+                                self.render_body_secondary_column(ui);
+                            },
+                        );
+                    });
+                }
+            });
+    }
+
+    fn render_body_primary_column(&mut self, ui: &mut egui::Ui) {
+        self.render_release_picker_card(ui);
+        self.render_transfer_settings_card(ui);
+        self.render_last_download_card(ui);
+    }
+
+    fn render_body_secondary_column(&mut self, ui: &mut egui::Ui) {
+        self.render_trust_policy_card(ui);
+        self.render_update_card(ui);
+    }
+
+    fn render_release_picker_card(&mut self, ui: &mut egui::Ui) {
+        let Some(release) = self.release.clone() else {
+            return;
+        };
+
+        ui.group(|ui| {
+            ui.set_min_width(ui.available_width());
+            let release_name = release
+                .name
+                .as_ref()
+                .filter(|name| !name.trim().is_empty())
+                .map(|name| format!(" - {name}"))
+                .unwrap_or_default();
+            ui.label(format!(
+                "{} {}/{} @ {}{}",
+                self.t(TextKey::ReleaseLabel),
+                release.owner,
+                release.repo,
+                release.tag_name,
+                release_name
+            ));
+
+            if let Some(publisher_key_asset) = release
+                .assets
+                .iter()
+                .find(|asset| asset.name == RELEASE_PUBLIC_KEY_ASSET)
+            {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(format!("Publisher key: {}", publisher_key_asset.name));
+                    let importing = self.publisher_key_import_thread.is_some();
+                    if ui
+                        .add_enabled(
+                            !importing,
+                            egui::Button::new("Pin publisher key from release"),
+                        )
+                        .clicked()
+                    {
+                        self.start_import_publisher_key_from_selected_release();
+                    }
+                    if importing {
+                        ui.label("⏳ Importing...");
+                    }
+                });
+            } else {
+                ui.small("No publisher-key.ed25519.pub asset detected for one-click pinning.");
+            }
+
+            if release.assets.is_empty() {
+                ui.label(self.t(TextKey::StatusNoAssetsFound));
+            } else {
+                if self
+                    .selected_release_asset
+                    .map(|idx| idx >= release.assets.len())
+                    .unwrap_or(true)
+                {
+                    self.selected_release_asset = Some(0);
+                }
+                let selected_idx = self.selected_release_asset.unwrap_or(0);
+                let selected_text =
+                    backend_contract::release_asset_picker_label(&release.assets[selected_idx]);
+
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(self.t(TextKey::AssetLabel));
+                    egui::ComboBox::from_id_salt("release_asset_select")
+                        .selected_text(selected_text)
+                        .show_ui(ui, |ui| {
+                            for (idx, asset) in release.assets.iter().enumerate() {
+                                if ui
+                                    .selectable_label(
+                                        self.selected_release_asset == Some(idx),
+                                        backend_contract::release_asset_picker_label(asset),
+                                    )
+                                    .clicked()
+                                {
+                                    self.selected_release_asset = Some(idx);
+                                }
+                            }
+                        });
+                    if ui.button(self.t(TextKey::UseSelectedAssetButton)).clicked() {
+                        self.apply_selected_release_asset();
+                    }
+                    if ui.button(self.t(TextKey::OpenReleaseButton)).clicked() {
+                        let _ = open::that(&release.html_url);
+                    }
+                });
+
+                if let Some(asset) = release.assets.get(selected_idx) {
+                    let content_type = asset
+                        .content_type
+                        .as_deref()
+                        .unwrap_or("unknown content type");
+                    ui.label(format!(
+                        "{} · {}",
+                        backend_contract::release_asset_picker_label(asset),
+                        content_type
+                    ));
+                    ui.label(
+                        backend_contract::verification_source_summary_for_release_asset(
+                            &release,
+                            selected_idx,
+                        ),
+                    );
+                    ui.monospace(&asset.browser_download_url);
+                }
+            }
+        });
+        ui.add_space(6.0);
+    }
+
+    fn render_transfer_settings_card(&mut self, ui: &mut egui::Ui) {
+        ui.group(|ui| {
+            ui.set_min_width(ui.available_width());
+
+            // Route guardrail: this project is not a mirror-list aggregator.
+            // Today we ship "Direct (no mirror)" only. Keep the mirror UX hidden unless
+            // we intentionally introduce multiple entries again under the same guardrails.
+            if self.mirrors.len() > 1 {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("Mirror:");
+                    egui::ComboBox::from_id_salt("mirror_select")
+                        .selected_text(&self.mirrors[self.selected_mirror])
+                        .show_ui(ui, |ui| {
+                            for (i, name) in self.mirrors.iter().enumerate() {
+                                if ui.selectable_label(false, name).clicked() {
+                                    self.selected_mirror = i;
+                                }
+                            }
+                        });
+                    if ui.button(self.t(TextKey::RetestButton)).clicked() {
+                        self.retest_mirrors();
+                    }
+                });
+
+                if self.speed_test_thread.is_some() || self.speed_test_completed > 0 {
+                    ui.separator();
+                    if self.speed_test_thread.is_some() {
+                        ui.label(format!("⏳ {}", self.t(TextKey::StatusTestingMirrors)));
+                    } else {
+                        ui.label(egui::RichText::new(&self.speed_test_status).strong());
+                    }
+                    let tested = self.speed_test_completed.min(self.mirrors.len());
+                    if tested > 0 {
+                        let pct = (tested as f32) / (self.mirrors.len() as f32);
+                        ui.add(egui::ProgressBar::new(pct).text(format!(
+                            "{}/{}",
+                            tested,
+                            self.mirrors.len()
+                        )));
+                    }
+                    egui::ScrollArea::vertical()
+                        .max_height(120.0)
+                        .show(ui, |ui| {
+                            for (i, name) in self.mirrors.iter().enumerate() {
+                                match &self.speed_test_results[i] {
+                                    Some(dur) => {
+                                        let ms = dur.as_secs_f64() * 1000.0;
+                                        let color = latency_color(ms);
+                                        let mark = if self.selected_mirror == i
+                                            && self.speed_test_thread.is_none()
+                                        {
+                                            "⭐"
+                                        } else {
+                                            "  "
+                                        };
+                                        ui.label(
+                                            egui::RichText::new(format!(
+                                                "{} {} {:.0} ms",
+                                                mark, name, ms
+                                            ))
+                                            .color(color),
+                                        );
+                                    }
+                                    None => {
+                                        if i < self.speed_test_completed {
+                                            ui.label(format!("  {} ❌ timeout", name));
+                                        } else {
+                                            ui.label(format!("  {} ⏳", name));
+                                        }
+                                    }
+                                }
+                            }
+                        });
+                }
+                ui.separator();
+            }
+
+            ui.horizontal_wrapped(|ui| {
+                ui.label(self.t(TextKey::SaveToLabel));
+                ui.label(self.save_dir.to_string_lossy().to_string());
+                if ui.button(self.t(TextKey::BrowseButton)).clicked() {
+                    if let Some(dir) = FileDialog::new().set_directory(&self.save_dir).pick_folder()
+                    {
+                        self.save_dir = dir;
+                    }
+                }
+            });
+
+            ui.horizontal_wrapped(|ui| {
+                ui.label(self.t(TextKey::ProxyLabel));
+                let clear_width = 84.0;
+                let edit_width = (ui.available_width() - clear_width).max(180.0);
+                ui.add_sized(
+                    [edit_width, 22.0],
+                    egui::TextEdit::singleline(&mut self.proxy),
+                );
+                if ui.button(self.t(TextKey::ClearProxyButton)).clicked() {
+                    self.proxy.clear();
+                }
+            });
+
+            ui.horizontal_wrapped(|ui| {
+                let allow_invalid_certs_label = self.t(TextKey::AllowInvalidTlsCertificates);
+                ui.checkbox(&mut self.allow_invalid_certs, allow_invalid_certs_label);
+                if self.allow_invalid_certs {
+                    ui.colored_label(
+                        egui::Color32::from_rgb(255, 180, 0),
+                        self.t(TextKey::UnsafeTlsHint),
+                    );
+                }
+            });
+
+            ui.separator();
+            ui.label(egui::RichText::new(self.t(TextKey::NetworkPolicyTitle)).strong());
+            ui.small(
+                "Outbound HTTP(S) requests are restricted to GitHub official artifact hosts (https only).",
+            );
+            let hosts = backend_contract::official_github_artifact_hosts();
+            ui.horizontal_wrapped(|ui| {
+                if ui.button(self.t(TextKey::CopyAllowlistButton)).clicked() {
+                    let mut text = String::new();
+                    for (i, host) in hosts.iter().enumerate() {
+                        if i > 0 {
+                            text.push('\n');
+                        }
+                        text.push_str(host);
+                    }
+                    ui.ctx().copy_text(text);
+                    self.status = "Copied official artifact host allowlist to clipboard".to_string();
+                }
+                ui.small(format!("{} hosts", hosts.len()));
+            });
+            ui.collapsing(self.t(TextKey::ShowAllowlist), |ui| {
+                for host in hosts {
+                    ui.monospace(*host);
+                }
+            });
+        });
+        ui.add_space(6.0);
+    }
+
+    fn render_trust_policy_card(&mut self, ui: &mut egui::Ui) {
+        ui.group(|ui| {
+            ui.set_min_width(ui.available_width());
+            ui.label(egui::RichText::new(self.t(TextKey::TrustPolicyTitle)).strong());
+            let keep_unknown_downloads_label = self.t(TextKey::KeepUnknownDownloads);
+            ui.checkbox(
+                &mut self.trust_policy.unknown_keep_file,
+                keep_unknown_downloads_label,
+            );
+            if !self.trust_policy.unknown_keep_file {
+                self.trust_policy.unknown_allow_open = false;
+            }
+            let allow_open_unknown_downloads_label = self.t(TextKey::AllowOpenUnknownDownloads);
+            ui.add_enabled_ui(self.trust_policy.unknown_keep_file, |ui| {
+                ui.checkbox(
+                    &mut self.trust_policy.unknown_allow_open,
+                    allow_open_unknown_downloads_label,
+                );
+            });
+            ui.horizontal_wrapped(|ui| {
+                ui.label(self.t(TextKey::MismatchFileActionLabel));
+                let quarantine_option_label = self.t(TextKey::QuarantineOption);
+                let delete_option_label = self.t(TextKey::DeleteOption);
+                egui::ComboBox::from_id_salt("mismatch_file_policy")
+                    .selected_text(self.trust_policy.mismatch_file_policy.as_str())
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut self.trust_policy.mismatch_file_policy,
+                            MismatchFilePolicy::Quarantine,
+                            quarantine_option_label,
+                        );
+                        ui.selectable_value(
+                            &mut self.trust_policy.mismatch_file_policy,
+                            MismatchFilePolicy::Delete,
+                            delete_option_label,
+                        );
+                    });
+            });
+            ui.separator();
+            ui.label(
+                egui::RichText::new(self.t(TextKey::VerificationSourceTrustTitle)).strong(),
+            );
+            let mut require_trusted_source =
+                backend_contract::source_trust_requires_signed(&self.trust_policy);
+            if ui
+                .checkbox(
+                    &mut require_trusted_source,
+                    self.t(TextKey::RequireSignedChecksumSource),
+                )
+                .changed()
+            {
+                backend_contract::set_source_trust_requires_signed(
+                    &mut self.trust_policy,
+                    require_trusted_source,
+                );
+            }
+            ui.horizontal_wrapped(|ui| {
+                ui.label(self.t(TextKey::PinnedPublisherKeyLabel));
+                let mut trusted_publisher_key =
+                    backend_contract::trusted_publisher_key_text(&self.trust_policy);
+                let edit_width = ui.available_width().max(180.0);
+                if ui
+                    .add_sized(
+                        [edit_width, 22.0],
+                        egui::TextEdit::singleline(&mut trusted_publisher_key),
+                    )
+                    .changed()
+                {
+                    backend_contract::set_trusted_publisher_key_from_manual_input(
+                        &mut self.trust_policy,
+                        &mut self.publisher_key_source,
+                        trusted_publisher_key,
+                    );
+                }
+            });
+            ui.horizontal_wrapped(|ui| {
+                if ui.button(self.t(TextKey::ImportPublicKey)).clicked() {
+                    if let Some(path) = FileDialog::new()
+                        .add_filter("Public key", &["pub", "txt"])
+                        .pick_file()
+                    {
+                        match import_publisher_key_pin_from_path(&path) {
+                            Ok(pin) => {
+                                self.status = backend_contract::set_trusted_publisher_key_pin(
+                                    &mut self.trust_policy,
+                                    &mut self.publisher_key_source,
+                                    pin,
+                                    format!("local file {}", path.display()),
+                                );
+                            }
+                            Err(e) => {
+                                self.status = format!("❌ Public key import failed: {e}");
+                            }
+                        }
+                    }
+                }
+                if ui.button(self.t(TextKey::NormalizeKey)).clicked() {
+                    match backend_contract::normalize_trusted_publisher_key(
+                        &mut self.trust_policy,
+                        &mut self.publisher_key_source,
+                    ) {
+                        Ok(status) => self.status = status,
+                        Err(e) => {
+                            self.status = format!("❌ Publisher key is invalid: {e}");
+                        }
+                    }
+                }
+                if ui.button(self.t(TextKey::ClearKey)).clicked() {
+                    backend_contract::clear_trusted_publisher_key(
+                        &mut self.trust_policy,
+                        &mut self.publisher_key_source,
+                    );
+                }
+            });
+            if let Some(fingerprint) =
+                backend_contract::trusted_publisher_key_fingerprint(&self.trust_policy)
+            {
+                ui.small(format!("Pinned key SHA256 fingerprint: {fingerprint}"));
+                ui.small(format!(
+                    "Pinned key source: {}",
+                    backend_contract::publisher_key_source_label_for_policy(
+                        &self.trust_policy,
+                        &self.publisher_key_source
+                    )
+                ));
+            } else if backend_contract::source_trust_requires_signed(&self.trust_policy) {
+                ui.colored_label(
+                    egui::Color32::from_rgb(220, 70, 70),
+                    "Required policy needs a pinned Ed25519 public key and .sig source assets.",
+                );
+            } else {
+                ui.small("No key pinned: hash verification still works, but source authenticity is not checked.");
+            }
+            ui.horizontal_wrapped(|ui| {
+                ui.label(self.t(TextKey::HistoryPathLabel));
+                let default_width = 80.0;
+                let edit_width = (ui.available_width() - default_width).max(180.0);
+                ui.add_sized(
+                    [edit_width, 22.0],
+                    egui::TextEdit::singleline(&mut self.history_path),
+                );
+                if ui.button(self.t(TextKey::DefaultButton)).clicked() {
+                    self.history_path.clear();
+                }
+            });
+            ui.small(format!(
+                "Effective history: {}",
+                self.effective_history_path().display()
+            ));
+            ui.small(
+                "Open Evidence uses the exact JSON evidence path recorded for the completed download.",
+            );
+        });
+        ui.add_space(6.0);
+    }
+
+    fn render_update_card(&mut self, ui: &mut egui::Ui) {
+        ui.group(|ui| {
+            ui.set_min_width(ui.available_width());
+            ui.label(egui::RichText::new(self.t(TextKey::Stage1Title)).strong());
+            ui.small("Checks the public latest release and only reports candidate / no-update / refused.");
+            ui.horizontal_wrapped(|ui| {
+                let running = self.update_candidate_thread.is_some();
+                if ui
+                    .add_enabled(
+                        !running,
+                        egui::Button::new(self.t(TextKey::CheckLatestCandidateButton)),
+                    )
+                    .clicked()
+                {
+                    self.start_update_candidate_check();
+                }
+                if running {
+                    ui.label(format!("⏳ {}", self.t(TextKey::StatusCheckingCandidate)));
+                } else if !self.update_candidate_status.is_empty() {
+                    ui.label(&self.update_candidate_status);
+                }
+            });
+            if let Some(report) = &self.update_candidate_report {
+                render_update_candidate_check(ui, report);
+            }
+
+            ui.separator();
+            ui.label(egui::RichText::new(self.t(TextKey::Stage2Title)).strong());
+            ui.small("Stages a verified candidate to a local folder (still no install).");
+            ui.horizontal_wrapped(|ui| {
+                let running = self.update_stage_thread.is_some();
+                if ui
+                    .add_enabled(
+                        !running,
+                        egui::Button::new(self.t(TextKey::StageLatestCandidateButton)),
+                    )
+                    .clicked()
+                {
+                    self.start_update_candidate_stage();
+                }
+                if running {
+                    ui.label(format!("⏳ {}", self.t(TextKey::StatusStagingCandidate)));
+                } else if !self.update_stage_status.is_empty() {
+                    ui.label(&self.update_stage_status);
+                }
+            });
+            if let Some(report) = self.update_stage_report.clone() {
+                render_update_candidate_stage(ui, &report);
+                ui.separator();
+                if let Some(record) = &self.update_apply_plan_evidence_record {
+                    render_update_apply_plan_preview(ui, &record.plan, Some(record));
+                } else {
+                    match backend_contract::current_exe_update_apply_plan_for_stage2(&report) {
+                        Ok(plan) => {
+                            render_update_apply_plan_preview(ui, &plan, None);
+                        }
+                        Err(e) => {
+                            ui.small(format!("Update apply plan preview unavailable ({e})"));
+                        }
+                    }
+                }
+                ui.separator();
+                ui.horizontal_wrapped(|ui| {
+                    if ui
+                        .button(self.t(TextKey::PrepareHelperBundleButton))
+                        .clicked()
+                    {
+                        match backend_contract::record_update_apply_bundle_evidence_for_current_exe(
+                            &report,
+                        ) {
+                            Ok(record) => {
+                                self.update_apply_bundle_status =
+                                    "Controlled helper bundle prepared; helper execution is not launched by the UI."
+                                        .to_string();
+                                self.update_apply_bundle_evidence_record = Some(record);
+                            }
+                            Err(e) => {
+                                self.update_apply_bundle_status =
+                                    format!("Controlled helper bundle unavailable: {e}");
+                                self.update_apply_bundle_evidence_record = None;
+                            }
+                        }
+                    }
+                    if !self.update_apply_bundle_status.is_empty() {
+                        ui.label(&self.update_apply_bundle_status);
+                    }
+                });
+                if let Some(record) = &self.update_apply_bundle_evidence_record {
+                    render_update_apply_bundle_preview(ui, record);
+                }
+            }
+        });
+        ui.add_space(6.0);
+    }
+
+    fn render_last_download_card(&mut self, ui: &mut egui::Ui) {
+        let Some(snapshot) = self.last_trust_center_snapshot.clone() else {
+            return;
+        };
+
+        ui.group(|ui| {
+            ui.set_min_width(ui.available_width());
+            ui.horizontal_wrapped(|ui| {
+                if let Some(notice) = backend_contract::last_download_status_notice(&snapshot) {
+                    ui.colored_label(backend_notice_color(notice.level), notice.message);
+                    if let Some(retry_label) = notice.retry_label {
+                        if self.download_thread.is_none() && ui.button(retry_label).clicked() {
+                            self.start_download();
+                        }
+                    }
+                }
+
+                if let Some(action) = backend_contract::last_download_evidence_action(
+                    self.last_verification_evidence_path.as_deref(),
+                ) {
+                    render_backend_path_action(ui, action);
+                }
+                if let (Some(download_path), Some(disposition)) =
+                    (&self.last_download_path, &self.last_file_disposition)
+                {
+                    if let Some(action) = backend_contract::last_download_open_location_action(
+                        &snapshot,
+                        disposition,
+                        &self.trust_policy,
+                        download_path,
+                        &self.save_dir,
+                    ) {
+                        render_backend_path_action(ui, action);
+                    }
+                }
+            });
+            ui.small(format!(
+                "Source authenticity: {}",
+                source_trust_status_summary(&snapshot)
+            ));
+            if let Some(disposition) = &self.last_file_disposition {
+                ui.small(backend_contract::file_disposition_summary(disposition));
+                render_trust_center_snapshot(ui, &snapshot);
+            }
+        });
+        ui.add_space(6.0);
     }
 
     fn update_candidate_evidence_dir(&self) -> PathBuf {
@@ -991,6 +1602,7 @@ impl GhMirrorGui {
         self.download_total_bytes = None;
         self.download_speed_kib_per_second = 0.0;
         self.download_elapsed_seconds = 0.0;
+        self.download_started_at = Some(Instant::now());
         self.speed_text.clear();
         self.elapsed_text.clear();
         self.status = verification_release
@@ -1000,7 +1612,7 @@ impl GhMirrorGui {
                     backend_contract::verification_source_summary_for_release_asset(release, idx)
                 })
             })
-            .map(|summary| format!("Starting download... {summary}"))
+            .map(|summary| format!("{}; {summary}", self.t(TextKey::ProgressWaitingForBytes)))
             .unwrap_or_else(|| self.t(TextKey::StatusStartingDownloadUnknown).to_string());
         if let Some(proxy) = auto_proxy {
             self.status.push_str(&format!(" (system proxy: {proxy})"));
@@ -1223,12 +1835,14 @@ impl eframe::App for GhMirrorGui {
                     self.status = self.t(TextKey::StatusDownloadFailed).to_string();
                     self.download_thread = None;
                     self.control = None;
+                    self.download_started_at = None;
                     keep_progress_rx = false;
                 } else if downloaded >= total && total > 0 {
                     self.progress = 1.0;
                     self.status = self.t(TextKey::StatusDownloadCompleteVerifying).to_string();
                     self.speed_text.clear();
                     self.elapsed_text.clear();
+                    self.download_started_at = None;
                     keep_progress_rx = false;
                 }
                 if !is_complete {
@@ -1259,6 +1873,7 @@ impl eframe::App for GhMirrorGui {
                     self.download_thread = None;
                     self.control = None;
                     self.progress_rx = None;
+                    self.download_started_at = None;
                     if !self.download_complete_notified {
                         self.download_complete_notified = true;
                         let save_path_str = completion
@@ -1282,6 +1897,7 @@ impl eframe::App for GhMirrorGui {
                     self.download_thread = None;
                     self.control = None;
                     self.progress_rx = None;
+                    self.download_started_at = None;
                 }
                 Err(mpsc::TryRecvError::Empty) => {
                     self.download_result_rx = Some(rx);
@@ -1294,8 +1910,18 @@ impl eframe::App for GhMirrorGui {
                     self.download_thread = None;
                     self.control = None;
                     self.progress_rx = None;
+                    self.download_started_at = None;
                 }
             }
+        }
+
+        if self.download_thread.is_some() {
+            if let Some(started_at) = self.download_started_at {
+                self.download_elapsed_seconds = self
+                    .download_elapsed_seconds
+                    .max(started_at.elapsed().as_secs_f64());
+            }
+            ctx.request_repaint_after(Duration::from_millis(100));
         }
 
         // Drag-drop handling is app-wide; rendering below stays a stable projection shell.
@@ -1332,517 +1958,7 @@ impl eframe::App for GhMirrorGui {
 
         // Draw UI body. Scroll is a fallback safety net after responsive layout projection.
         egui::CentralPanel::default().show(ctx, |ui| {
-            egui::ScrollArea::vertical()
-                .id_salt("proof_to_action_main_scroll")
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    ui.add_space(2.0);
-            if let Some(release) = self.release.clone() {
-                ui.group(|ui| {
-                    let release_name = release
-                        .name
-                        .as_ref()
-                        .filter(|name| !name.trim().is_empty())
-                        .map(|name| format!(" - {name}"))
-                        .unwrap_or_default();
-                    ui.label(format!(
-                        "{} {}/{} @ {}{}",
-                        self.t(TextKey::ReleaseLabel),
-                        release.owner, release.repo, release.tag_name, release_name
-                    ));
-
-                    if let Some(publisher_key_asset) = release
-                        .assets
-                        .iter()
-                        .find(|asset| asset.name == RELEASE_PUBLIC_KEY_ASSET)
-                    {
-                        ui.horizontal(|ui| {
-                            ui.label(format!("Publisher key: {}", publisher_key_asset.name));
-                            let importing = self.publisher_key_import_thread.is_some();
-                            if ui
-                                .add_enabled(
-                                    !importing,
-                                    egui::Button::new("Pin publisher key from release"),
-                                )
-                                .clicked()
-                            {
-                                self.start_import_publisher_key_from_selected_release();
-                            }
-                            if importing {
-                                ui.label("⏳ Importing...");
-                            }
-                        });
-                    } else {
-                        ui.small("No publisher-key.ed25519.pub asset detected for one-click pinning.");
-                    }
-
-                    if release.assets.is_empty() {
-                        ui.label(self.t(TextKey::StatusNoAssetsFound));
-                    } else {
-                        if self
-                            .selected_release_asset
-                            .map(|idx| idx >= release.assets.len())
-                            .unwrap_or(true)
-                        {
-                            self.selected_release_asset = Some(0);
-                        }
-                        let selected_idx = self.selected_release_asset.unwrap_or(0);
-                        let selected_text =
-                            backend_contract::release_asset_picker_label(&release.assets[selected_idx]);
-
-                        ui.horizontal(|ui| {
-                            ui.label(self.t(TextKey::AssetLabel));
-                            egui::ComboBox::from_id_salt("release_asset_select")
-                                .selected_text(selected_text)
-                                .show_ui(ui, |ui| {
-                                    for (idx, asset) in release.assets.iter().enumerate() {
-                                        if ui
-                                            .selectable_label(
-                                                self.selected_release_asset == Some(idx),
-                                                backend_contract::release_asset_picker_label(asset),
-                                            )
-                                            .clicked()
-                                        {
-                                            self.selected_release_asset = Some(idx);
-                                        }
-                                    }
-                                });
-                            if ui.button(self.t(TextKey::UseSelectedAssetButton)).clicked() {
-                                self.apply_selected_release_asset();
-                            }
-                            if ui.button(self.t(TextKey::OpenReleaseButton)).clicked() {
-                                let _ = open::that(&release.html_url);
-                            }
-                        });
-
-                        if let Some(asset) = release.assets.get(selected_idx) {
-                            let content_type = asset
-                                .content_type
-                                .as_deref()
-                                .unwrap_or("unknown content type");
-                            ui.label(format!(
-                                "{} · {}",
-                                backend_contract::release_asset_picker_label(asset),
-                                content_type
-                            ));
-                            ui.label(backend_contract::verification_source_summary_for_release_asset(
-                                &release,
-                                selected_idx,
-                            ));
-                            ui.monospace(&asset.browser_download_url);
-                        }
-                    }
-                });
-            }
-
-            // Mirror selector + speed test
-            //
-            // Route guardrail: this project is not a mirror-list aggregator.
-            // Today we ship "Direct (no mirror)" only. Keep the mirror UX hidden unless
-            // we intentionally introduce multiple entries again under the same guardrails.
-            if self.mirrors.len() > 1 {
-                ui.horizontal(|ui| {
-                    ui.label("Mirror:");
-                    egui::ComboBox::from_id_salt("mirror_select")
-                        .selected_text(&self.mirrors[self.selected_mirror])
-                        .show_ui(ui, |ui| {
-                            for (i, name) in self.mirrors.iter().enumerate() {
-                                if ui.selectable_label(false, name).clicked() {
-                                    self.selected_mirror = i;
-                                }
-                            }
-                        });
-                    if ui.button(self.t(TextKey::RetestButton)).clicked() {
-                        self.retest_mirrors();
-                    }
-                });
-
-                // Speed test progress
-                if self.speed_test_thread.is_some() || self.speed_test_completed > 0 {
-                    ui.separator();
-                    if self.speed_test_thread.is_some() {
-                        ui.label(format!("⏳ {}", self.t(TextKey::StatusTestingMirrors)));
-                    } else {
-                        ui.label(egui::RichText::new(&self.speed_test_status).strong());
-                    }
-                    // Show per-mirror results with color
-                    let tested = self.speed_test_completed.min(self.mirrors.len());
-                    if tested > 0 {
-                        let pct = (tested as f32) / (self.mirrors.len() as f32);
-                        ui.add(egui::ProgressBar::new(pct).text(format!(
-                            "{}/{}",
-                            tested,
-                            self.mirrors.len()
-                        )));
-                    }
-                    egui::ScrollArea::vertical()
-                        .max_height(120.0)
-                        .show(ui, |ui| {
-                            for (i, name) in self.mirrors.iter().enumerate() {
-                                match &self.speed_test_results[i] {
-                                    Some(dur) => {
-                                        let ms = dur.as_secs_f64() * 1000.0;
-                                        let color = latency_color(ms);
-                                        let mark = if self.selected_mirror == i
-                                            && self.speed_test_thread.is_none()
-                                        {
-                                            "⭐"
-                                        } else {
-                                            "  "
-                                        };
-                                        ui.label(
-                                            egui::RichText::new(format!(
-                                                "{} {} {:.0} ms",
-                                                mark, name, ms
-                                            ))
-                                            .color(color),
-                                        );
-                                    }
-                                    None => {
-                                        if i < self.speed_test_completed {
-                                            ui.label(format!("  {} ❌ timeout", name));
-                                        } else {
-                                            ui.label(format!("  {} ⏳", name));
-                                        }
-                                    }
-                                }
-                            }
-                        });
-                }
-
-                ui.separator();
-            }
-
-            // Save directory
-            ui.horizontal(|ui| {
-                ui.label(self.t(TextKey::SaveToLabel));
-                ui.label(self.save_dir.to_string_lossy().to_string());
-                if ui.button(self.t(TextKey::BrowseButton)).clicked() {
-                    if let Some(dir) = FileDialog::new()
-                        .set_directory(&self.save_dir)
-                        .pick_folder()
-                    {
-                        self.save_dir = dir;
-                    }
-                }
-            });
-
-            // Proxy
-            ui.horizontal(|ui| {
-                ui.label(self.t(TextKey::ProxyLabel));
-                ui.text_edit_singleline(&mut self.proxy);
-                if ui.button(self.t(TextKey::ClearProxyButton)).clicked() {
-                    self.proxy.clear();
-                }
-            });
-            ui.horizontal(|ui| {
-                let allow_invalid_certs_label = self.t(TextKey::AllowInvalidTlsCertificates);
-                ui.checkbox(&mut self.allow_invalid_certs, allow_invalid_certs_label);
-                if self.allow_invalid_certs {
-                    ui.colored_label(
-                        egui::Color32::from_rgb(255, 180, 0),
-                        self.t(TextKey::UnsafeTlsHint),
-                    );
-                }
-            });
-
-            ui.group(|ui| {
-                ui.label(egui::RichText::new(self.t(TextKey::NetworkPolicyTitle)).strong());
-                ui.small("Outbound HTTP(S) requests are restricted to GitHub official artifact hosts (https only).");
-                let hosts = backend_contract::official_github_artifact_hosts();
-                ui.horizontal(|ui| {
-                    if ui.button(self.t(TextKey::CopyAllowlistButton)).clicked() {
-                        let mut text = String::new();
-                        for (i, host) in hosts.iter().enumerate() {
-                            if i > 0 {
-                                text.push('\n');
-                            }
-                            text.push_str(host);
-                        }
-                        ui.ctx().copy_text(text);
-                        self.status = "Copied official artifact host allowlist to clipboard".to_string();
-                    }
-                    ui.small(format!("{} hosts", hosts.len()));
-                });
-                ui.collapsing(self.t(TextKey::ShowAllowlist), |ui| {
-                    for host in hosts {
-                        ui.monospace(*host);
-                    }
-                });
-            });
-
-            ui.group(|ui| {
-                ui.label(egui::RichText::new(self.t(TextKey::TrustPolicyTitle)).strong());
-                let keep_unknown_downloads_label = self.t(TextKey::KeepUnknownDownloads);
-                ui.checkbox(
-                    &mut self.trust_policy.unknown_keep_file,
-                    keep_unknown_downloads_label,
-                );
-                if !self.trust_policy.unknown_keep_file {
-                    self.trust_policy.unknown_allow_open = false;
-                }
-                let allow_open_unknown_downloads_label =
-                    self.t(TextKey::AllowOpenUnknownDownloads);
-                ui.add_enabled_ui(self.trust_policy.unknown_keep_file, |ui| {
-                    ui.checkbox(
-                        &mut self.trust_policy.unknown_allow_open,
-                        allow_open_unknown_downloads_label,
-                    );
-                });
-                ui.horizontal(|ui| {
-                    ui.label(self.t(TextKey::MismatchFileActionLabel));
-                    let quarantine_option_label = self.t(TextKey::QuarantineOption);
-                    let delete_option_label = self.t(TextKey::DeleteOption);
-                    egui::ComboBox::from_id_salt("mismatch_file_policy")
-                        .selected_text(self.trust_policy.mismatch_file_policy.as_str())
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(
-                                &mut self.trust_policy.mismatch_file_policy,
-                                MismatchFilePolicy::Quarantine,
-                                quarantine_option_label,
-                            );
-                            ui.selectable_value(
-                                &mut self.trust_policy.mismatch_file_policy,
-                                MismatchFilePolicy::Delete,
-                                delete_option_label,
-                            );
-                        });
-                });
-                ui.separator();
-                ui.label(egui::RichText::new(self.t(TextKey::VerificationSourceTrustTitle)).strong());
-                let mut require_trusted_source =
-                    backend_contract::source_trust_requires_signed(&self.trust_policy);
-                if ui
-                    .checkbox(
-                        &mut require_trusted_source,
-                        self.t(TextKey::RequireSignedChecksumSource),
-                    )
-                    .changed()
-                {
-                    backend_contract::set_source_trust_requires_signed(
-                        &mut self.trust_policy,
-                        require_trusted_source,
-                    );
-                }
-                ui.horizontal(|ui| {
-                    ui.label(self.t(TextKey::PinnedPublisherKeyLabel));
-                    let mut trusted_publisher_key =
-                        backend_contract::trusted_publisher_key_text(&self.trust_policy);
-                    if ui.text_edit_singleline(&mut trusted_publisher_key).changed()
-                    {
-                        backend_contract::set_trusted_publisher_key_from_manual_input(
-                            &mut self.trust_policy,
-                            &mut self.publisher_key_source,
-                            trusted_publisher_key,
-                        );
-                    }
-                });
-                ui.horizontal(|ui| {
-                    if ui.button(self.t(TextKey::ImportPublicKey)).clicked() {
-                        if let Some(path) = FileDialog::new()
-                            .add_filter("Public key", &["pub", "txt"])
-                            .pick_file()
-                        {
-                            match import_publisher_key_pin_from_path(&path) {
-                                Ok(pin) => {
-                                    self.status = backend_contract::set_trusted_publisher_key_pin(
-                                        &mut self.trust_policy,
-                                        &mut self.publisher_key_source,
-                                        pin,
-                                        format!("local file {}", path.display()),
-                                    );
-                                }
-                                Err(e) => {
-                                    self.status =
-                                        format!("❌ Public key import failed: {e}");
-                                }
-                            }
-                        }
-                    }
-                    if ui.button(self.t(TextKey::NormalizeKey)).clicked() {
-                        match backend_contract::normalize_trusted_publisher_key(
-                            &mut self.trust_policy,
-                            &mut self.publisher_key_source,
-                        ) {
-                            Ok(status) => self.status = status,
-                            Err(e) => {
-                                self.status = format!("❌ Publisher key is invalid: {e}");
-                            }
-                        }
-                    }
-                    if ui.button(self.t(TextKey::ClearKey)).clicked() {
-                        backend_contract::clear_trusted_publisher_key(
-                            &mut self.trust_policy,
-                            &mut self.publisher_key_source,
-                        );
-                    }
-                });
-                if let Some(fingerprint) =
-                    backend_contract::trusted_publisher_key_fingerprint(&self.trust_policy)
-                {
-                    ui.small(format!("Pinned key SHA256 fingerprint: {fingerprint}"));
-                    ui.small(format!(
-                        "Pinned key source: {}",
-                        backend_contract::publisher_key_source_label_for_policy(
-                            &self.trust_policy,
-                            &self.publisher_key_source
-                        )
-                    ));
-                } else if backend_contract::source_trust_requires_signed(&self.trust_policy) {
-                    ui.colored_label(
-                        egui::Color32::from_rgb(220, 70, 70),
-                        "Required policy needs a pinned Ed25519 public key and .sig source assets.",
-                    );
-                } else {
-                    ui.small("No key pinned: hash verification still works, but source authenticity is not checked.");
-                }
-                ui.horizontal(|ui| {
-                    ui.label(self.t(TextKey::HistoryPathLabel));
-                    ui.text_edit_singleline(&mut self.history_path);
-                    if ui.button(self.t(TextKey::DefaultButton)).clicked() {
-                        self.history_path.clear();
-                    }
-                });
-                ui.small(format!(
-                    "Effective history: {}",
-                    self.effective_history_path().display()
-                ));
-                ui.small("Open Evidence uses the exact JSON evidence path recorded for the completed download.");
-            });
-
-            ui.group(|ui| {
-                ui.label(egui::RichText::new(self.t(TextKey::Stage1Title)).strong());
-                ui.small("Checks the public latest release and only reports candidate / no-update / refused.");
-                ui.horizontal(|ui| {
-                    let running = self.update_candidate_thread.is_some();
-                    if ui
-                        .add_enabled(
-                            !running,
-                            egui::Button::new(self.t(TextKey::CheckLatestCandidateButton)),
-                        )
-                        .clicked()
-                    {
-                        self.start_update_candidate_check();
-                    }
-                    if running {
-                        ui.label(format!("⏳ {}", self.t(TextKey::StatusCheckingCandidate)));
-                    } else if !self.update_candidate_status.is_empty() {
-                        ui.label(&self.update_candidate_status);
-                    }
-                });
-                if let Some(report) = &self.update_candidate_report {
-                    render_update_candidate_check(ui, report);
-                }
-            });
-
-            ui.group(|ui| {
-                ui.label(egui::RichText::new(self.t(TextKey::Stage2Title)).strong());
-                ui.small("Stages a verified candidate to a local folder (still no install).");
-                ui.horizontal(|ui| {
-                    let running = self.update_stage_thread.is_some();
-                    if ui
-                        .add_enabled(
-                            !running,
-                            egui::Button::new(self.t(TextKey::StageLatestCandidateButton)),
-                        )
-                        .clicked()
-                    {
-                        self.start_update_candidate_stage();
-                    }
-                    if running {
-                        ui.label(format!("⏳ {}", self.t(TextKey::StatusStagingCandidate)));
-                    } else if !self.update_stage_status.is_empty() {
-                        ui.label(&self.update_stage_status);
-                    }
-                });
-                if let Some(report) = self.update_stage_report.clone() {
-                    render_update_candidate_stage(ui, &report);
-                    ui.separator();
-                    if let Some(record) = &self.update_apply_plan_evidence_record {
-                        render_update_apply_plan_preview(ui, &record.plan, Some(record));
-                    } else {
-                        match backend_contract::current_exe_update_apply_plan_for_stage2(&report) {
-                            Ok(plan) => {
-                                render_update_apply_plan_preview(ui, &plan, None);
-                            }
-                            Err(e) => {
-                                ui.small(format!("Update apply plan preview unavailable ({e})"));
-                            }
-                        }
-                    }
-                    ui.separator();
-                    ui.horizontal(|ui| {
-                        if ui
-                            .button(self.t(TextKey::PrepareHelperBundleButton))
-                            .clicked()
-                        {
-                            match backend_contract::record_update_apply_bundle_evidence_for_current_exe(&report) {
-                                Ok(record) => {
-                                    self.update_apply_bundle_status =
-                                        "Controlled helper bundle prepared; helper execution is not launched by the UI."
-                                            .to_string();
-                                    self.update_apply_bundle_evidence_record = Some(record);
-                                }
-                                Err(e) => {
-                                    self.update_apply_bundle_status =
-                                        format!("Controlled helper bundle unavailable: {e}");
-                                    self.update_apply_bundle_evidence_record = None;
-                                }
-                            }
-                        }
-                        if !self.update_apply_bundle_status.is_empty() {
-                            ui.label(&self.update_apply_bundle_status);
-                        }
-                    });
-                    if let Some(record) = &self.update_apply_bundle_evidence_record {
-                        render_update_apply_bundle_preview(ui, record);
-                    }
-                }
-            });
-
-            if let Some(snapshot) = self.last_trust_center_snapshot.clone() {
-                ui.horizontal(|ui| {
-                    if let Some(notice) = backend_contract::last_download_status_notice(&snapshot) {
-                        ui.colored_label(backend_notice_color(notice.level), notice.message);
-                        if let Some(retry_label) = notice.retry_label {
-                            if self.download_thread.is_none()
-                                && ui.button(retry_label).clicked()
-                            {
-                                self.start_download();
-                            }
-                        }
-                    }
-
-                    if let Some(action) = backend_contract::last_download_evidence_action(
-                        self.last_verification_evidence_path.as_deref(),
-                    ) {
-                        render_backend_path_action(ui, action);
-                    }
-                    if let (Some(download_path), Some(disposition)) =
-                        (&self.last_download_path, &self.last_file_disposition)
-                    {
-                        if let Some(action) = backend_contract::last_download_open_location_action(
-                            &snapshot,
-                            disposition,
-                            &self.trust_policy,
-                            download_path,
-                            &self.save_dir,
-                        ) {
-                            render_backend_path_action(ui, action);
-                        }
-                    }
-                });
-                ui.small(format!(
-                    "Source authenticity: {}",
-                    source_trust_status_summary(&snapshot)
-                ));
-                if let Some(disposition) = &self.last_file_disposition {
-                    ui.small(backend_contract::file_disposition_summary(disposition));
-                    render_trust_center_snapshot(ui, &snapshot);
-                }
-            }
-
-                });
+            self.render_body(ui);
         });
     }
 }

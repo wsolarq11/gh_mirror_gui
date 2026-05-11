@@ -242,7 +242,7 @@ pub fn text(locale: UiLocale, key: TextKey) -> &'static str {
             TextKey::StatusDownloadAlreadyInProgress => "Download already in progress",
             TextKey::StatusReleaseAssetLookupRunning => "Release asset lookup is still running...",
             TextKey::StatusStartingDownloadUnknown => {
-                "Starting download... verification will be UNKNOWN"
+                "Connecting... waiting for first bytes; verification will be UNKNOWN"
             }
             TextKey::StatusDownloadCompleteVerifying => "Download complete; verifying SHA256...",
             TextKey::StatusDownloadFailed => "❌ Download failed",
@@ -317,7 +317,7 @@ pub fn text(locale: UiLocale, key: TextKey) -> &'static str {
             TextKey::StatusResolvingReleaseAssets => "下载前正在解析 release 资源…",
             TextKey::StatusDownloadAlreadyInProgress => "下载已在进行中",
             TextKey::StatusReleaseAssetLookupRunning => "release 资源查找仍在运行…",
-            TextKey::StatusStartingDownloadUnknown => "开始下载… 验证将是 UNKNOWN",
+            TextKey::StatusStartingDownloadUnknown => "正在连接…等待首批数据；验证将是 UNKNOWN",
             TextKey::StatusDownloadCompleteVerifying => "下载完成；正在验证 SHA256…",
             TextKey::StatusDownloadFailed => "❌ 下载失败",
             TextKey::StatusCancelled => "已取消",
@@ -357,7 +357,10 @@ pub fn project_download_progress(locale: UiLocale, input: ProgressInput) -> Prog
 
     if input.downloaded_bytes == 0 {
         let size_text = total_bytes
-            .map(|total| format!("0.0 / {} MiB", format_mib(total)))
+            .map(|total| match locale {
+                UiLocale::En => format!("total {} MiB", format_mib(total)),
+                UiLocale::Zh => format!("总大小 {} MiB", format_mib(total)),
+            })
             .unwrap_or_else(|| text(locale, TextKey::ProgressUnknownSize).to_string());
         return ProgressProjection {
             indeterminate: true,
@@ -501,6 +504,7 @@ mod tests {
         assert_eq!(projection.fraction, 0.0);
         assert!(projection.primary_text.contains("waiting for first bytes"));
         assert!(!projection.primary_text.contains("0.0%"));
+        assert!(!projection.primary_text.contains("0.0 /"));
         assert_eq!(projection.detail_text, "0.0 B/s · 00:04.2");
     }
 
