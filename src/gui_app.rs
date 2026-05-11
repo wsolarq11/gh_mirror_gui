@@ -11,13 +11,14 @@ use crate::gui_trust_center::{
     render_trust_center_snapshot, source_trust_status_summary,
 };
 use crate::gui_update_candidate::{
-    render_update_apply_plan_preview, render_update_candidate_check, render_update_candidate_stage,
+    render_update_apply_bundle_preview, render_update_apply_plan_preview,
+    render_update_candidate_check, render_update_candidate_stage,
 };
 use crate::RELEASE_PUBLIC_KEY_ASSET;
 use backend_contract::{
     AppliedFileDisposition, DownloadControl, ImportedPublisherKeyPin, MismatchFilePolicy,
-    ResolvedRelease, TrustCenterSnapshot, TrustPolicyConfig, UpdateApplyPlanEvidenceRecord,
-    UpdateCandidateCheckReport, UpdateCandidateStageReport,
+    ResolvedRelease, TrustCenterSnapshot, TrustPolicyConfig, UpdateApplyBundleEvidenceRecord,
+    UpdateApplyPlanEvidenceRecord, UpdateCandidateCheckReport, UpdateCandidateStageReport,
 };
 use directories::UserDirs;
 use eframe::egui;
@@ -118,6 +119,8 @@ pub(crate) struct GhMirrorGui {
     update_stage_thread: Option<thread::JoinHandle<()>>,
     update_stage_rx: Option<mpsc::Receiver<UpdateCandidateStageMessage>>,
     update_apply_plan_evidence_record: Option<UpdateApplyPlanEvidenceRecord>,
+    update_apply_bundle_evidence_record: Option<UpdateApplyBundleEvidenceRecord>,
+    update_apply_bundle_status: String,
     // Persisted state
     download_complete_notified: bool,
     last_download_path: Option<PathBuf>,
@@ -246,6 +249,8 @@ impl GhMirrorGui {
             update_stage_thread: None,
             update_stage_rx: None,
             update_apply_plan_evidence_record: None,
+            update_apply_bundle_evidence_record: None,
+            update_apply_bundle_status: String::new(),
             download_complete_notified: false,
             last_download_path: None,
             last_trust_center_snapshot: None,
@@ -765,6 +770,8 @@ impl eframe::App for GhMirrorGui {
                 // Record a Stage 3 apply plan evidence file (no mutation / no install).
                 // The UI only triggers the backend contract; backend/core resolves the target exe and writes evidence.
                 self.update_apply_plan_evidence_record = None;
+                self.update_apply_bundle_evidence_record = None;
+                self.update_apply_bundle_status.clear();
                 self.update_apply_plan_evidence_record =
                     backend_contract::record_update_apply_plan_evidence_for_current_exe(&report)
                         .ok();
@@ -1344,6 +1351,33 @@ impl eframe::App for GhMirrorGui {
                                 ui.small(format!("Update apply plan preview unavailable ({e})"));
                             }
                         }
+                    }
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        if ui
+                            .button("Prepare controlled helper bundle (no install)")
+                            .clicked()
+                        {
+                            match backend_contract::record_update_apply_bundle_evidence_for_current_exe(report) {
+                                Ok(record) => {
+                                    self.update_apply_bundle_status =
+                                        "Controlled helper bundle prepared; helper execution is not launched by the UI."
+                                            .to_string();
+                                    self.update_apply_bundle_evidence_record = Some(record);
+                                }
+                                Err(e) => {
+                                    self.update_apply_bundle_status =
+                                        format!("Controlled helper bundle unavailable: {e}");
+                                    self.update_apply_bundle_evidence_record = None;
+                                }
+                            }
+                        }
+                        if !self.update_apply_bundle_status.is_empty() {
+                            ui.label(&self.update_apply_bundle_status);
+                        }
+                    });
+                    if let Some(record) = &self.update_apply_bundle_evidence_record {
+                        render_update_apply_bundle_preview(ui, record);
                     }
                 }
             });

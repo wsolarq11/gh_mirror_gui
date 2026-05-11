@@ -423,5 +423,29 @@ pub(crate) fn dispatch_cli(args: &[String]) -> bool {
         return true;
     }
 
+    if args.first().map(|s| s.as_str()) == Some("--update-apply-bundle-contract-selftest") {
+        if let Err(e) = backend_contract::run_update_apply_bundle_contract_selftest(&args[1..]) {
+            eprintln!("update apply bundle contract selftest failed: {e}");
+            std::process::exit(2);
+        }
+        return true;
+    }
+
+    if args.first().map(|s| s.as_str()) == Some("--update-apply-helper") {
+        if let Err(e) = backend_contract::run_update_apply_helper(&args[1..]) {
+            eprintln!("update apply helper failed: {e}");
+            std::process::exit(2);
+        }
+        return true;
+    }
+
+    if args.first().map(|s| s.as_str()) == Some("--update-apply-helper-selftest") {
+        if let Err(e) = backend_contract::run_update_apply_helper_selftest(&args[1..]) {
+            eprintln!("update apply helper selftest failed: {e}");
+            std::process::exit(2);
+        }
+        return true;
+    }
+
     false
 }

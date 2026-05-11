@@ -9,6 +9,8 @@ use crate::source_adapter::{GitHubReleaseAdapter, SourceAdapter};
 use crate::source_spec::SourceSpec;
 use crate::source_trust::SourceTrustPolicyConfig;
 use crate::trust_policy::{AppliedFileDisposition, PlannedFileDisposition, TrustPolicyConfig};
+use crate::update_apply_bundle::{UpdateApplyBundleEvidenceRecord, UpdateApplyBundleOptions};
+use crate::update_apply_helper::UpdateApplyHelperReceipt;
 use crate::update_apply_plan::{
     UpdateApplyFixtureEvidenceRecord, UpdateApplyPlan, UpdateApplyPlanEvidenceRecord,
 };
@@ -869,6 +871,21 @@ impl CoreRuntime {
         crate::update_apply_plan::run_update_apply_fixture_contract_selftest(args)
     }
 
+    pub(crate) fn run_update_apply_bundle_contract_selftest(
+        &self,
+        args: &[String],
+    ) -> Result<(), String> {
+        crate::update_apply_bundle::run_update_apply_bundle_contract_selftest(args)
+    }
+
+    pub(crate) fn run_update_apply_helper(&self, args: &[String]) -> Result<(), String> {
+        crate::update_apply_helper::run_update_apply_helper(args)
+    }
+
+    pub(crate) fn run_update_apply_helper_selftest(&self, args: &[String]) -> Result<(), String> {
+        crate::update_apply_helper::run_update_apply_helper_selftest(args)
+    }
+
     pub(crate) fn artifact_decision_from_update_candidate_check(
         &self,
         report: &UpdateCandidateCheckReport,
@@ -907,6 +924,20 @@ impl CoreRuntime {
         evidence: &UpdateApplyFixtureEvidenceRecord,
     ) -> ArtifactDecision {
         ArtifactDecision::from_update_apply_fixture_evidence(evidence)
+    }
+
+    pub(crate) fn artifact_decision_from_update_apply_bundle_evidence(
+        &self,
+        evidence: &UpdateApplyBundleEvidenceRecord,
+    ) -> ArtifactDecision {
+        ArtifactDecision::from_update_apply_bundle_evidence(evidence)
+    }
+
+    pub(crate) fn artifact_decision_from_update_apply_helper_receipt(
+        &self,
+        receipt: &UpdateApplyHelperReceipt,
+    ) -> ArtifactDecision {
+        ArtifactDecision::from_update_apply_helper_receipt(receipt)
     }
 
     pub(crate) fn artifact_decision_from_update_apply_readiness(
@@ -1346,6 +1377,98 @@ impl CoreRuntime {
                 "📄 Open fixture apply evidence",
                 path.clone(),
                 "Fixture apply evidence path is recorded but not present on disk.",
+            )
+        })
+    }
+
+    pub(crate) fn update_apply_bundle_summary_rows(
+        &self,
+        record: &UpdateApplyBundleEvidenceRecord,
+    ) -> Vec<CoreDisplayRow> {
+        vec![
+            CoreDisplayRow::new(
+                "Status",
+                format!("{:?}", record.bundle.status).to_lowercase(),
+            ),
+            CoreDisplayRow::new("Reason", record.bundle.reason.clone()),
+            CoreDisplayRow::new(
+                "Release",
+                format!("{} @ {}", record.bundle.repo, record.bundle.release_tag),
+            ),
+            CoreDisplayRow::new(
+                "Target exe",
+                record
+                    .bundle
+                    .target_current_exe_path
+                    .as_deref()
+                    .unwrap_or("not recorded"),
+            ),
+            CoreDisplayRow::new(
+                "Backup destination",
+                record
+                    .bundle
+                    .backup_destination_path
+                    .as_deref()
+                    .unwrap_or("not recorded"),
+            ),
+            CoreDisplayRow::new(
+                "Bundle hash",
+                record.bundle_hash.as_deref().unwrap_or("not recorded"),
+            ),
+            CoreDisplayRow::new(
+                "Approval expires",
+                record.bundle.approval_expires_at_unix_ms.to_string(),
+            ),
+            CoreDisplayRow::new(
+                "Helper copy SHA256",
+                record
+                    .bundle
+                    .helper_copy_sha256
+                    .as_deref()
+                    .unwrap_or("not recorded"),
+            ),
+            CoreDisplayRow::new(
+                "Helper copy path",
+                record
+                    .bundle
+                    .helper_copy_path
+                    .as_deref()
+                    .unwrap_or("not recorded"),
+            ),
+            CoreDisplayRow::new(
+                "Rollback after apply",
+                record.bundle.rollback_after_apply.to_string(),
+            ),
+            CoreDisplayRow::new(
+                "No system persistence",
+                record.bundle.no_system_persistence.to_string(),
+            ),
+            CoreDisplayRow::new(
+                "Evidence path",
+                record.evidence_path.as_deref().unwrap_or("not recorded"),
+            ),
+        ]
+    }
+
+    pub(crate) fn update_apply_bundle_evidence_warning(
+        &self,
+        record: &UpdateApplyBundleEvidenceRecord,
+    ) -> Option<String> {
+        record
+            .write_error
+            .as_deref()
+            .map(|error| format!("Evidence write warning: {error}"))
+    }
+
+    pub(crate) fn update_apply_bundle_evidence_action(
+        &self,
+        record: &UpdateApplyBundleEvidenceRecord,
+    ) -> Option<CorePathAction> {
+        record.evidence_path.as_ref().map(|path| {
+            CorePathAction::file(
+                "📄 Open controlled apply bundle",
+                path.clone(),
+                "Controlled apply bundle path is recorded but not present on disk.",
             )
         })
     }
@@ -1935,6 +2058,36 @@ impl CoreRuntime {
             &target_exe_path,
             None,
             ManualApprovalState::Required,
+        ))
+    }
+
+    pub(crate) fn record_update_apply_bundle_evidence_for_stage2(
+        &self,
+        stage_report: &UpdateCandidateStageReport,
+        target_current_exe_path: &Path,
+        backup_boundary_dir: Option<&Path>,
+        manual_approval_state: ManualApprovalState,
+    ) -> UpdateApplyBundleEvidenceRecord {
+        crate::update_apply_bundle::write_update_apply_bundle_evidence_for_stage2(
+            stage_report,
+            target_current_exe_path,
+            backup_boundary_dir,
+            manual_approval_state,
+            UpdateApplyBundleOptions::ui_default(),
+        )
+    }
+
+    pub(crate) fn record_update_apply_bundle_evidence_for_current_exe(
+        &self,
+        stage_report: &UpdateCandidateStageReport,
+    ) -> Result<UpdateApplyBundleEvidenceRecord, String> {
+        let target_exe_path = std::env::current_exe()
+            .map_err(|e| format!("current executable path unavailable: {e}"))?;
+        Ok(self.record_update_apply_bundle_evidence_for_stage2(
+            stage_report,
+            &target_exe_path,
+            None,
+            ManualApprovalState::Granted,
         ))
     }
 

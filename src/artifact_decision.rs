@@ -1,3 +1,5 @@
+use crate::update_apply_bundle::{UpdateApplyBundleEvidenceRecord, UpdateApplyBundleStatus};
+use crate::update_apply_helper::{UpdateApplyHelperReceipt, UpdateApplyHelperStatus};
 use crate::update_apply_plan::{
     UpdateApplyFixtureEvidenceRecord, UpdateApplyFixtureStatus, UpdateApplyPlan,
     UpdateApplyPlanStatus, UpdateApplyStep,
@@ -22,6 +24,8 @@ pub enum ArtifactIntent {
     StageUpdate,
     PlanApply,
     ApplyReadiness,
+    ApplyBundle,
+    ApplyHelper,
     AuditOnly,
 }
 
@@ -35,8 +39,12 @@ pub enum ArtifactVerdict {
     Staged,
     NoUpdate,
     Planned,
+    BundlePrepared,
     Ready,
     ApprovalRequired,
+    Applied,
+    RollbackOk,
+    RollbackFailed,
     Unknown,
     Blocked,
     Refused,
@@ -53,6 +61,8 @@ pub enum ArtifactActionKind {
     Stage,
     PlanApply,
     ApplyReadiness,
+    PrepareApplyBundle,
+    HelperApply,
     AuditOnly,
 }
 
@@ -419,6 +429,162 @@ impl ArtifactDecision {
             },
         )
     }
+
+    pub fn from_update_apply_bundle_evidence(record: &UpdateApplyBundleEvidenceRecord) -> Self {
+        let trusted_bundle = update_apply_bundle_trusted(record);
+        let verdict = match record.bundle.status {
+            UpdateApplyBundleStatus::BundlePrepared if trusted_bundle => {
+                ArtifactVerdict::BundlePrepared
+            }
+            UpdateApplyBundleStatus::BundlePrepared | UpdateApplyBundleStatus::Refused => {
+                ArtifactVerdict::Refused
+            }
+        };
+        let action_kind = match verdict {
+            ArtifactVerdict::BundlePrepared => ArtifactActionKind::HelperApply,
+            _ => ArtifactActionKind::None,
+        };
+        let mut steps: Vec<String> = record
+            .bundle
+            .plan
+            .steps
+            .iter()
+            .map(describe_update_apply_step)
+            .collect();
+        steps.push(format!(
+            "controlled apply bundle result: {} (no_live_mutation={}, apply_performed={}, install_performed={}, no_system_persistence={})",
+            record.bundle.reason,
+            record.no_live_mutation,
+            record.apply_performed,
+            record.install_performed,
+            record.bundle.no_system_persistence
+        ));
+
+        Self::new(
+            ArtifactIntent::ApplyBundle,
+            ArtifactCandidate {
+                source: record.bundle.repo.clone(),
+                artifact_name: record
+                    .bundle
+                    .staged_asset_path
+                    .as_deref()
+                    .and_then(|path| Path::new(path).file_name())
+                    .map(|name| name.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "unknown".to_string()),
+                version_or_tag: Some(record.bundle.release_tag.clone()),
+                uri: record.bundle.staged_asset_path.clone(),
+            },
+            ArtifactEvidenceSummary {
+                evidence_path: record.evidence_path.clone(),
+                hash_status: record.bundle.verification_status.clone(),
+                source_authenticity: record.bundle.source_authenticity_status.clone(),
+                publisher_key_fingerprint_sha256: record
+                    .bundle
+                    .publisher_key_fingerprint_sha256
+                    .clone(),
+                policy_verdict: record
+                    .bundle
+                    .source_trust_decision
+                    .clone()
+                    .or_else(|| Some(bundle_status_label(record.bundle.status).to_string())),
+            },
+            verdict,
+            ArtifactActionPlan {
+                kind: action_kind,
+                status: bundle_status_label(record.bundle.status).to_string(),
+                summary: record.bundle.reason.clone(),
+                reversible: record.bundle.plan.reversible,
+                no_mutation: record.no_live_mutation
+                    && !record.apply_performed
+                    && !record.install_performed,
+                path_action: record.bundle_path.as_ref().map(|path| ArtifactActionPath {
+                    label: "📄 Open controlled apply bundle".to_string(),
+                    path: path.clone(),
+                    missing_message:
+                        "Controlled apply bundle path is recorded but not present on disk."
+                            .to_string(),
+                    kind: ArtifactActionPathKind::File,
+                }),
+                steps,
+            },
+        )
+    }
+
+    pub fn from_update_apply_helper_receipt(receipt: &UpdateApplyHelperReceipt) -> Self {
+        let verdict = match receipt.status {
+            UpdateApplyHelperStatus::AppliedAndVerified if receipt.ok => ArtifactVerdict::Applied,
+            UpdateApplyHelperStatus::RollbackOk if receipt.ok => ArtifactVerdict::RollbackOk,
+            UpdateApplyHelperStatus::RollbackFailed => ArtifactVerdict::RollbackFailed,
+            UpdateApplyHelperStatus::AppliedAndVerified
+            | UpdateApplyHelperStatus::RollbackOk
+            | UpdateApplyHelperStatus::Refused => ArtifactVerdict::Refused,
+        };
+        let action_kind = match verdict {
+            ArtifactVerdict::Applied
+            | ArtifactVerdict::RollbackOk
+            | ArtifactVerdict::RollbackFailed => ArtifactActionKind::AuditOnly,
+            _ => ArtifactActionKind::None,
+        };
+        let mut steps = receipt.states.clone();
+        steps.push(format!(
+            "helper apply result: {} (helper_is_target={}, rollback_ok={}, target_restored={}, no_system_persistence={})",
+            receipt.reason,
+            receipt.helper_current_exe_is_target,
+            receipt.rollback_ok,
+            receipt.target_restored,
+            receipt.no_system_persistence
+        ));
+
+        Self::new(
+            ArtifactIntent::ApplyHelper,
+            ArtifactCandidate {
+                source: receipt
+                    .bundle_path
+                    .as_deref()
+                    .and_then(|path| Path::new(path).parent())
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_else(|| "controlled-apply-helper".to_string()),
+                artifact_name: receipt
+                    .staged_asset_path
+                    .as_deref()
+                    .and_then(|path| Path::new(path).file_name())
+                    .map(|name| name.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "unknown".to_string()),
+                version_or_tag: receipt.approval_id.clone(),
+                uri: receipt.staged_asset_path.clone(),
+            },
+            ArtifactEvidenceSummary {
+                evidence_path: receipt.receipt_path.clone(),
+                hash_status: receipt
+                    .installed_sha256
+                    .as_ref()
+                    .map(|_| "VERIFIED".to_string()),
+                source_authenticity: None,
+                publisher_key_fingerprint_sha256: None,
+                policy_verdict: Some(helper_status_label(receipt.status).to_string()),
+            },
+            verdict,
+            ArtifactActionPlan {
+                kind: action_kind,
+                status: helper_status_label(receipt.status).to_string(),
+                summary: receipt.reason.clone(),
+                reversible: receipt.rollback_ok || receipt.target_restored,
+                no_mutation: false,
+                path_action: receipt
+                    .receipt_path
+                    .as_ref()
+                    .map(|path| ArtifactActionPath {
+                        label: "📄 Open helper apply receipt".to_string(),
+                        path: path.clone(),
+                        missing_message:
+                            "Helper apply receipt path is recorded but not present on disk."
+                                .to_string(),
+                        kind: ArtifactActionPathKind::File,
+                    }),
+                steps,
+            },
+        )
+    }
 }
 
 fn update_apply_readiness_trusted(record: &UpdateApplyReadinessRecord) -> bool {
@@ -480,6 +646,47 @@ fn fixture_apply_trusted(record: &UpdateApplyFixtureEvidenceRecord) -> bool {
             .unwrap_or(false)
 }
 
+fn update_apply_bundle_trusted(record: &UpdateApplyBundleEvidenceRecord) -> bool {
+    record.ok
+        && record.no_live_mutation
+        && !record.apply_performed
+        && !record.install_performed
+        && record.bundle.no_system_persistence
+        && record.bundle.status == UpdateApplyBundleStatus::BundlePrepared
+        && record.bundle.target_before_sha256.is_some()
+        && record
+            .bundle_hash
+            .as_deref()
+            .map(str::trim)
+            .map(|hash| !hash.is_empty())
+            .unwrap_or(false)
+        && record
+            .bundle
+            .verification_status
+            .as_deref()
+            .map(|status| status.eq_ignore_ascii_case("VERIFIED"))
+            .unwrap_or(false)
+        && record
+            .bundle
+            .source_authenticity_status
+            .as_deref()
+            .map(|status| status.eq_ignore_ascii_case("TRUSTED_SIGNATURE"))
+            .unwrap_or(false)
+        && record
+            .bundle
+            .source_trust_decision
+            .as_deref()
+            .map(|decision| decision.eq_ignore_ascii_case("TRUSTED"))
+            .unwrap_or(false)
+        && record
+            .bundle
+            .publisher_key_fingerprint_sha256
+            .as_deref()
+            .map(str::trim)
+            .map(|fingerprint| !fingerprint.is_empty())
+            .unwrap_or(false)
+}
+
 fn report_status_label(status: UpdateApplyPlanStatus) -> String {
     match status {
         UpdateApplyPlanStatus::Planned => "planned".to_string(),
@@ -503,6 +710,22 @@ fn readiness_status_label(status: UpdateApplyReadinessStatus) -> &'static str {
         UpdateApplyReadinessStatus::Unknown => "unknown",
         UpdateApplyReadinessStatus::StaleStage => "stale-stage",
         UpdateApplyReadinessStatus::ApprovalRequired => "approval-required",
+    }
+}
+
+fn bundle_status_label(status: UpdateApplyBundleStatus) -> &'static str {
+    match status {
+        UpdateApplyBundleStatus::Refused => "refused",
+        UpdateApplyBundleStatus::BundlePrepared => "bundle-prepared",
+    }
+}
+
+fn helper_status_label(status: UpdateApplyHelperStatus) -> &'static str {
+    match status {
+        UpdateApplyHelperStatus::Refused => "refused",
+        UpdateApplyHelperStatus::AppliedAndVerified => "applied-and-verified",
+        UpdateApplyHelperStatus::RollbackOk => "rollback-ok",
+        UpdateApplyHelperStatus::RollbackFailed => "rollback-failed",
     }
 }
 

@@ -1,8 +1,8 @@
 use crate::gui_common::render_backend_path_action;
 use eframe::egui;
 use gh_mirror_gui::backend_contract::{
-    self, ArtifactDecision, UpdateApplyPlan, UpdateApplyPlanEvidenceRecord,
-    UpdateCandidateCheckReport, UpdateCandidateStageReport,
+    self, ArtifactDecision, UpdateApplyBundleEvidenceRecord, UpdateApplyPlan,
+    UpdateApplyPlanEvidenceRecord, UpdateCandidateCheckReport, UpdateCandidateStageReport,
 };
 
 fn render_artifact_decision(ui: &mut egui::Ui, grid_id: &'static str, decision: &ArtifactDecision) {
@@ -84,6 +84,38 @@ pub(crate) fn render_update_apply_plan_preview(
         if let Some(message) = backend_contract::update_apply_plan_missing_evidence_message(evidence)
         {
             ui.small(message);
+        }
+    });
+}
+
+pub(crate) fn render_update_apply_bundle_preview(
+    ui: &mut egui::Ui,
+    record: &UpdateApplyBundleEvidenceRecord,
+) {
+    ui.group(|ui| {
+        let decision = backend_contract::artifact_decision_from_update_apply_bundle_evidence(record);
+        ui.label(egui::RichText::new("Self-update Stage 4 (controlled helper bundle)").strong());
+        ui.small(
+            "Backend/core prepared bundle only: no install launched here; helper execution remains explicit and receipt-bound.",
+        );
+
+        render_artifact_decision(ui, "trust_center_update_apply_bundle", &decision);
+        egui::Grid::new("trust_center_update_apply_bundle_summary")
+            .num_columns(2)
+            .striped(true)
+            .show(ui, |ui| {
+                for row in backend_contract::update_apply_bundle_summary_rows(record) {
+                    ui.label(row.label);
+                    ui.label(row.value);
+                    ui.end_row();
+                }
+            });
+
+        if let Some(warning) = backend_contract::update_apply_bundle_evidence_warning(record) {
+            ui.colored_label(egui::Color32::from_rgb(220, 160, 0), warning);
+        }
+        if let Some(action) = backend_contract::update_apply_bundle_evidence_action(record) {
+            render_backend_path_action(ui, action);
         }
     });
 }

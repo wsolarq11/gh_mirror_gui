@@ -2445,6 +2445,195 @@ function Invoke-UpdateApplyFixtureContractSelfTest {
     return $selftest
 }
 
+function Invoke-UpdateApplyBundleContractSelfTest {
+    param(
+        [string]$Exe,
+        [string]$JsonFile
+    )
+
+    Invoke-LoggedNative `
+        -Name 'update-apply-bundle-contract-selftest' `
+        -Exe $Exe `
+        -Arguments @(
+            '--update-apply-bundle-contract-selftest',
+            '--json', $JsonFile
+        )
+    if (!(Test-Path -LiteralPath $JsonFile)) {
+        throw "update apply bundle contract selftest JSON missing: $JsonFile"
+    }
+    $selftest = Get-Content -LiteralPath $JsonFile -Raw | ConvertFrom-Json
+    if (!$selftest.ok) {
+        throw 'update apply bundle contract selftest did not report ok=true'
+    }
+    if ([string]$selftest.module_owner -ne 'src/update_apply_bundle.rs') {
+        throw "update apply bundle module owner $($selftest.module_owner) was not src/update_apply_bundle.rs"
+    }
+    if (!$selftest.no_live_mutation -or $selftest.apply_performed -ne $false -or $selftest.install_performed -ne $false) {
+        throw 'update apply bundle contract selftest must be no-live-mutation and must not apply/install'
+    }
+    if ([string]$selftest.status -ne 'BUNDLE_PREPARED') {
+        throw "update apply bundle status $($selftest.status) was not BUNDLE_PREPARED"
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$selftest.bundle_hash)) {
+        throw 'update apply bundle hash was not recorded'
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$selftest.target_before_sha256)) {
+        throw 'update apply bundle target-before hash was not recorded'
+    }
+    if ([int64]$selftest.approval_expires_at_unix_ms -le 0) {
+        throw 'update apply bundle approval expiry was not recorded'
+    }
+    if (!$selftest.no_system_persistence) {
+        throw 'update apply bundle must prove no_system_persistence=true'
+    }
+    if (!$selftest.bundle_ready) {
+        throw 'update apply bundle evidence file was not ready'
+    }
+    if (!$selftest.record.ok) {
+        throw 'update apply bundle record did not report ok=true'
+    }
+    if ([string]$selftest.record.bundle.status -ne 'BUNDLE_PREPARED') {
+        throw "update apply bundle record status $($selftest.record.bundle.status) was not BUNDLE_PREPARED"
+    }
+    if ([string]$selftest.record.readiness.status -ne 'READY_FOR_MANUAL_APPLY') {
+        throw "update apply bundle readiness status $($selftest.record.readiness.status) was not READY_FOR_MANUAL_APPLY"
+    }
+    if ([string]$selftest.record.readiness.manual_approval_state -ne 'GRANTED') {
+        throw "update apply bundle manual approval $($selftest.record.readiness.manual_approval_state) was not GRANTED"
+    }
+    if ([string]$selftest.artifact_decision.intent -ne 'apply_bundle') {
+        throw "update apply bundle ArtifactDecision intent $($selftest.artifact_decision.intent) was not apply_bundle"
+    }
+    if ([string]$selftest.artifact_decision.verdict -ne 'BUNDLE_PREPARED') {
+        throw "update apply bundle ArtifactDecision verdict $($selftest.artifact_decision.verdict) was not BUNDLE_PREPARED"
+    }
+    if ([string]$selftest.artifact_decision.action_plan.kind -ne 'helper_apply') {
+        throw "update apply bundle ArtifactDecision action kind $($selftest.artifact_decision.action_plan.kind) was not helper_apply"
+    }
+    if (!$selftest.artifact_decision.action_plan.no_mutation) {
+        throw 'update apply bundle ArtifactDecision must be no-mutation/no-live-mutation'
+    }
+
+    return $selftest
+}
+
+function Invoke-UpdateApplyHelperContractSelfTest {
+    param(
+        [string]$Exe,
+        [string]$JsonFile
+    )
+
+    Invoke-LoggedNative `
+        -Name 'update-apply-helper-selftest' `
+        -Exe $Exe `
+        -Arguments @(
+            '--update-apply-helper-selftest',
+            '--json', $JsonFile
+        )
+    if (!(Test-Path -LiteralPath $JsonFile)) {
+        throw "update apply helper selftest JSON missing: $JsonFile"
+    }
+    $selftest = Get-Content -LiteralPath $JsonFile -Raw | ConvertFrom-Json
+    if (!$selftest.ok) {
+        throw 'update apply helper selftest did not report ok=true'
+    }
+    if (!$selftest.fixture_only) {
+        throw 'update apply helper selftest must be fixture-only'
+    }
+    if (!$selftest.no_live_current_exe_mutation) {
+        throw 'update apply helper selftest must not mutate the live current executable'
+    }
+    if (!$selftest.no_system_persistence) {
+        throw 'update apply helper selftest must prove no_system_persistence=true'
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$selftest.helper_copy_sha256)) {
+        throw 'update apply helper selftest did not record helper copy hash'
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$selftest.fixture.helper_copy_path)) {
+        throw 'update apply helper selftest did not record helper copy path'
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$selftest.bundle_hash)) {
+        throw 'update apply helper selftest did not record bundle hash'
+    }
+    if ([int64]$selftest.approval_expires_at_unix_ms -le 0) {
+        throw 'update apply helper selftest did not record approval expiry'
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$selftest.target_before_sha256)) {
+        throw 'update apply helper selftest did not record target-before hash'
+    }
+    if (!$selftest.target_lock_preflight.ok) {
+        throw 'update apply helper target lock preflight was not ok'
+    }
+    if (!$selftest.helper_current_exe_is_not_target) {
+        throw 'update apply helper ran from the target path'
+    }
+    if (!$selftest.rollback_ok -or !$selftest.target_restored) {
+        throw 'update apply helper did not roll back and restore the target'
+    }
+    if (!$selftest.current_exe.unchanged) {
+        throw 'update apply helper mutated the live current executable'
+    }
+    if ([string]$selftest.current_exe.before_sha256 -ne [string]$selftest.current_exe.after_sha256) {
+        throw 'update apply helper live current executable hash changed'
+    }
+
+    $success = $selftest.success_receipt
+    if (!$success.ok -or [string]$success.status -ne 'ROLLBACK_OK') {
+        throw "update apply helper success receipt status $($success.status) was not ROLLBACK_OK"
+    }
+    if (!$success.helper_copy_sha256_match) {
+        throw 'update apply helper success receipt helper copy hash mismatch'
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$success.helper_copy_path)) {
+        throw 'update apply helper success receipt helper copy path missing'
+    }
+    if ($success.helper_current_exe_is_target) {
+        throw 'update apply helper success receipt helper path equaled target path'
+    }
+    if (!$success.target_lock_preflight.ok -or !$success.backup_performed -or !$success.replace_performed -or !$success.rollback_attempted -or !$success.rollback_ok -or !$success.target_restored) {
+        throw 'update apply helper success receipt did not prove backup/replace/verify/rollback'
+    }
+    if ([string]$success.installed_sha256 -ne [string]$selftest.fixture.expected_sha256) {
+        throw "update apply helper installed hash $($success.installed_sha256) did not match expected $($selftest.fixture.expected_sha256)"
+    }
+    if ([string]$selftest.fixture.target_after_success_sha256 -ne [string]$selftest.fixture.target_before_sha256) {
+        throw "update apply helper rollback hash $($selftest.fixture.target_after_success_sha256) did not restore original $($selftest.fixture.target_before_sha256)"
+    }
+    $successReceiptPath = [string]$success.receipt_path
+    if ([string]::IsNullOrWhiteSpace($successReceiptPath) -or !(Test-Path -LiteralPath $successReceiptPath)) {
+        throw "update apply helper success receipt file missing: $successReceiptPath"
+    }
+
+    $forced = $selftest.forced_failure_receipt
+    if ([string]$forced.status -ne 'ROLLBACK_FAILED') {
+        throw "update apply helper forced-failure receipt status $($forced.status) was not ROLLBACK_FAILED"
+    }
+    if (!$forced.backup_performed -or !$forced.rollback_attempted) {
+        throw 'update apply helper forced-failure receipt did not reach rollback branch after backup'
+    }
+    if ($forced.rollback_ok -or $forced.target_restored) {
+        throw 'update apply helper forced-failure receipt unexpectedly reported rollback_ok/target_restored'
+    }
+    if ([string]$selftest.fixture.forced_original_sha256 -ne [string]$selftest.fixture.forced_target_after_sha256) {
+        throw 'update apply helper forced-failure target hash changed'
+    }
+
+    if ([string]$selftest.artifact_decision.intent -ne 'apply_helper') {
+        throw "update apply helper ArtifactDecision intent $($selftest.artifact_decision.intent) was not apply_helper"
+    }
+    if ([string]$selftest.artifact_decision.verdict -ne 'ROLLBACK_OK') {
+        throw "update apply helper ArtifactDecision verdict $($selftest.artifact_decision.verdict) was not ROLLBACK_OK"
+    }
+    if ([string]$selftest.artifact_decision.action_plan.kind -ne 'audit_only') {
+        throw "update apply helper ArtifactDecision action kind $($selftest.artifact_decision.action_plan.kind) was not audit_only"
+    }
+    if ([string]$selftest.forced_artifact_decision.verdict -ne 'ROLLBACK_FAILED') {
+        throw "update apply helper forced ArtifactDecision verdict $($selftest.forced_artifact_decision.verdict) was not ROLLBACK_FAILED"
+    }
+
+    return $selftest
+}
+
 function Invoke-UpdateCandidateLatestSelfTest {
     param(
         [string]$Exe,
@@ -3267,6 +3456,8 @@ function Assert-CoreBackendConvergence {
     $backendPath = Join-Path $RepoRoot 'src\backend_contract.rs'
     $runtimePath = Join-Path $RepoRoot 'src\core_runtime.rs'
     $readinessPath = Join-Path $RepoRoot 'src\update_apply_readiness.rs'
+    $bundlePath = Join-Path $RepoRoot 'src\update_apply_bundle.rs'
+    $helperPath = Join-Path $RepoRoot 'src\update_apply_helper.rs'
     $guiAppPath = Join-Path $RepoRoot 'src\gui_app.rs'
     $guiTrustCenterPath = Join-Path $RepoRoot 'src\gui_trust_center.rs'
     $guiCommonPath = Join-Path $RepoRoot 'src\gui_common.rs'
@@ -3278,6 +3469,12 @@ function Assert-CoreBackendConvergence {
     }
     if (!(Test-Path -LiteralPath $readinessPath)) {
         throw 'live apply readiness module missing: src\update_apply_readiness.rs'
+    }
+    if (!(Test-Path -LiteralPath $bundlePath)) {
+        throw 'controlled apply bundle module missing: src\update_apply_bundle.rs'
+    }
+    if (!(Test-Path -LiteralPath $helperPath)) {
+        throw 'controlled apply helper module missing: src\update_apply_helper.rs'
     }
     if (!(Test-Path -LiteralPath $guiAppPath)) {
         throw 'GUI app module missing: src\gui_app.rs'
@@ -3372,6 +3569,8 @@ function Assert-CoreBackendConvergence {
         'pub(crate) fn build_update_apply_readiness_for_stage2',
         'pub(crate) fn record_update_apply_readiness_evidence_for_stage2',
         'pub(crate) fn record_update_apply_readiness_evidence_for_current_exe',
+        'pub(crate) fn record_update_apply_bundle_evidence_for_stage2',
+        'pub(crate) fn record_update_apply_bundle_evidence_for_current_exe',
         'pub(crate) fn resolve_download_intent',
         'pub(crate) fn official_github_artifact_hosts',
         'pub(crate) fn default_history_path',
@@ -3409,11 +3608,16 @@ function Assert-CoreBackendConvergence {
         'pub(crate) fn run_update_apply_plan_contract_selftest',
         'pub(crate) fn run_update_apply_readiness_contract_selftest',
         'pub(crate) fn run_update_apply_fixture_contract_selftest',
+        'pub(crate) fn run_update_apply_bundle_contract_selftest',
+        'pub(crate) fn run_update_apply_helper',
+        'pub(crate) fn run_update_apply_helper_selftest',
         'pub(crate) fn artifact_decision_from_update_candidate_check',
         'pub(crate) fn artifact_decision_from_update_candidate_stage',
         'pub(crate) fn artifact_decision_from_update_apply_plan',
         'pub(crate) fn artifact_decision_from_update_apply_plan_evidence',
         'pub(crate) fn artifact_decision_from_update_apply_fixture_evidence',
+        'pub(crate) fn artifact_decision_from_update_apply_bundle_evidence',
+        'pub(crate) fn artifact_decision_from_update_apply_helper_receipt',
         'pub(crate) fn artifact_decision_from_update_apply_readiness',
         'pub(crate) fn artifact_decision_rows',
         'pub(crate) fn artifact_decision_step_rows',
@@ -3445,6 +3649,9 @@ function Assert-CoreBackendConvergence {
         'pub(crate) fn update_apply_fixture_summary_rows',
         'pub(crate) fn update_apply_fixture_evidence_warning',
         'pub(crate) fn update_apply_fixture_evidence_action',
+        'pub(crate) fn update_apply_bundle_summary_rows',
+        'pub(crate) fn update_apply_bundle_evidence_warning',
+        'pub(crate) fn update_apply_bundle_evidence_action',
         'pub(crate) fn update_apply_readiness_summary_rows',
         'pub(crate) fn update_apply_readiness_step_rows',
         'pub(crate) fn update_apply_readiness_evidence_warning',
@@ -3602,6 +3809,14 @@ function Assert-CoreBackendConvergence {
             path = $runtimePath
             sha256 = (Get-FileHash -LiteralPath $runtimePath -Algorithm SHA256).Hash
             required_patterns = $runtimeRequired
+        }
+        update_apply_bundle = [ordered]@{
+            path = $bundlePath
+            sha256 = (Get-FileHash -LiteralPath $bundlePath -Algorithm SHA256).Hash
+        }
+        update_apply_helper = [ordered]@{
+            path = $helperPath
+            sha256 = (Get-FileHash -LiteralPath $helperPath -Algorithm SHA256).Hash
         }
         gui_app = [ordered]@{
             path = $guiAppPath
@@ -3986,7 +4201,14 @@ $Receipt.checks.update_candidate_unit_tests = [ordered]@{
             'fixture_apply_refuses_untrusted_source_before_mutation',
             'fixture_apply_refuses_mismatched_staged_sha_before_mutation',
             'fixture_apply_backs_up_replaces_verifies_and_rolls_back',
-            'fixture_apply_never_accepts_live_current_exe_path_by_default'
+            'fixture_apply_never_accepts_live_current_exe_path_by_default',
+            'update_apply_bundle_requires_granted_manual_approval',
+            'update_apply_bundle_prepares_granted_helper_boundary_without_mutation',
+            'update_apply_helper_refuses_current_exe_as_target',
+            'update_apply_helper_refuses_missing_helper_copy_identity',
+            'update_apply_helper_refuses_missing_evidence_before_backup',
+            'update_apply_helper_refuses_bundle_hash_drift_before_backup',
+            'update_apply_helper_rolls_back_forced_failure_after_backup'
         )
 }
 Invoke-LoggedNative -Name 'cargo-clippy-all-targets' -Exe 'cargo' -Arguments @('clippy', '--all-targets', '--locked', '--', '-D', 'warnings')
@@ -4065,6 +4287,12 @@ $Receipt.checks.update_apply_readiness_contract = Invoke-UpdateApplyReadinessCon
 $Receipt.checks.update_apply_fixture_contract = Invoke-UpdateApplyFixtureContractSelfTest `
     -Exe $exe `
     -JsonFile (Join-Path $EvidenceDir 'update-apply-fixture-contract.json')
+$Receipt.checks.update_apply_bundle_contract = Invoke-UpdateApplyBundleContractSelfTest `
+    -Exe $exe `
+    -JsonFile (Join-Path $EvidenceDir 'update-apply-bundle-contract.json')
+$Receipt.checks.update_apply_helper_contract = Invoke-UpdateApplyHelperContractSelfTest `
+    -Exe $exe `
+    -JsonFile (Join-Path $EvidenceDir 'update-apply-helper-contract.json')
  
 # Private repo compatibility:
 # - PowerShell GitHub probes use `Get-GitHubAccessToken` directly.

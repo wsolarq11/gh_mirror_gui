@@ -21,6 +21,12 @@ pub use crate::source_trust::ImportedPublisherKeyPin;
 pub use crate::source_trust::SourceTrustPolicyConfig;
 pub use crate::trust_policy::{AppliedFileDisposition, FileDispositionAction};
 pub use crate::trust_policy::{MismatchFilePolicy, TrustPolicyConfig};
+pub use crate::update_apply_bundle::{
+    UpdateApplyBundle, UpdateApplyBundleEvidenceRecord, UpdateApplyBundleStatus,
+};
+pub use crate::update_apply_helper::{
+    TargetLockPreflight, UpdateApplyHelperReceipt, UpdateApplyHelperStatus,
+};
 pub use crate::update_apply_plan::{
     UpdateApplyFixtureEvidenceRecord, UpdateApplyFixtureStatus, UpdateApplyPlan,
     UpdateApplyPlanEvidenceRecord, UpdateApplyPlanStatus, UpdateApplyStep,
@@ -456,6 +462,18 @@ pub fn run_update_apply_fixture_contract_selftest(args: &[String]) -> Result<(),
     CoreRuntime::default().run_update_apply_fixture_contract_selftest(args)
 }
 
+pub fn run_update_apply_bundle_contract_selftest(args: &[String]) -> Result<(), String> {
+    CoreRuntime::default().run_update_apply_bundle_contract_selftest(args)
+}
+
+pub fn run_update_apply_helper(args: &[String]) -> Result<(), String> {
+    CoreRuntime::default().run_update_apply_helper(args)
+}
+
+pub fn run_update_apply_helper_selftest(args: &[String]) -> Result<(), String> {
+    CoreRuntime::default().run_update_apply_helper_selftest(args)
+}
+
 pub fn artifact_decision_from_update_candidate_check(
     report: &UpdateCandidateCheckReport,
 ) -> ArtifactDecision {
@@ -486,6 +504,18 @@ pub fn artifact_decision_from_update_apply_fixture_evidence(
     evidence: &UpdateApplyFixtureEvidenceRecord,
 ) -> ArtifactDecision {
     CoreRuntime::default().artifact_decision_from_update_apply_fixture_evidence(evidence)
+}
+
+pub fn artifact_decision_from_update_apply_bundle_evidence(
+    evidence: &UpdateApplyBundleEvidenceRecord,
+) -> ArtifactDecision {
+    CoreRuntime::default().artifact_decision_from_update_apply_bundle_evidence(evidence)
+}
+
+pub fn artifact_decision_from_update_apply_helper_receipt(
+    receipt: &UpdateApplyHelperReceipt,
+) -> ArtifactDecision {
+    CoreRuntime::default().artifact_decision_from_update_apply_helper_receipt(receipt)
 }
 
 pub fn artifact_decision_from_update_apply_readiness(
@@ -638,6 +668,30 @@ pub fn update_apply_fixture_evidence_action(
 ) -> Option<BackendPathAction> {
     CoreRuntime::default()
         .update_apply_fixture_evidence_action(record)
+        .map(backend_path_action_from_core)
+}
+
+pub fn update_apply_bundle_summary_rows(
+    record: &UpdateApplyBundleEvidenceRecord,
+) -> Vec<BackendDisplayRow> {
+    CoreRuntime::default()
+        .update_apply_bundle_summary_rows(record)
+        .into_iter()
+        .map(backend_display_row_from_core)
+        .collect()
+}
+
+pub fn update_apply_bundle_evidence_warning(
+    record: &UpdateApplyBundleEvidenceRecord,
+) -> Option<String> {
+    CoreRuntime::default().update_apply_bundle_evidence_warning(record)
+}
+
+pub fn update_apply_bundle_evidence_action(
+    record: &UpdateApplyBundleEvidenceRecord,
+) -> Option<BackendPathAction> {
+    CoreRuntime::default()
+        .update_apply_bundle_evidence_action(record)
         .map(backend_path_action_from_core)
 }
 
@@ -1467,6 +1521,26 @@ pub fn record_update_apply_readiness_evidence_for_current_exe(
     stage_report: &UpdateCandidateStageReport,
 ) -> Result<UpdateApplyReadinessRecord, String> {
     CoreRuntime::default().record_update_apply_readiness_evidence_for_current_exe(stage_report)
+}
+
+pub fn record_update_apply_bundle_evidence_for_stage2(
+    stage_report: &UpdateCandidateStageReport,
+    target_current_exe_path: &Path,
+    backup_boundary_dir: Option<&Path>,
+    manual_approval_state: ManualApprovalState,
+) -> UpdateApplyBundleEvidenceRecord {
+    CoreRuntime::default().record_update_apply_bundle_evidence_for_stage2(
+        stage_report,
+        target_current_exe_path,
+        backup_boundary_dir,
+        manual_approval_state,
+    )
+}
+
+pub fn record_update_apply_bundle_evidence_for_current_exe(
+    stage_report: &UpdateCandidateStageReport,
+) -> Result<UpdateApplyBundleEvidenceRecord, String> {
+    CoreRuntime::default().record_update_apply_bundle_evidence_for_current_exe(stage_report)
 }
 
 pub fn apply_update_fixture_for_stage2(
