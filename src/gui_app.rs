@@ -116,6 +116,10 @@ fn app_focus_rounding() -> egui::Rounding {
     complete_rounding(GOLDEN_SPACE_LG)
 }
 
+fn app_status_pill_rounding() -> egui::Rounding {
+    app_focus_rounding()
+}
+
 fn app_separator_rounding() -> egui::Rounding {
     complete_rounding(0.5)
 }
@@ -158,6 +162,14 @@ fn body_panel_frame() -> egui::Frame {
         .fill(app_background_color())
         .rounding(app_panel_rounding())
         .inner_margin(egui::Margin::symmetric(GOLDEN_SPACE_MD, GOLDEN_SPACE_SM))
+}
+
+fn status_pill_frame() -> egui::Frame {
+    egui::Frame::none()
+        .fill(app_accent_soft_color())
+        .stroke(app_accent_stroke())
+        .rounding(app_status_pill_rounding())
+        .inner_margin(egui::Margin::symmetric(GOLDEN_SPACE_MD, GOLDEN_SPACE_XS))
 }
 
 fn rounded_singleline_text_edit(text: &mut String) -> egui::TextEdit<'_> {
@@ -1435,9 +1447,12 @@ impl GhMirrorGui {
         };
 
         if progress.indeterminate {
-            ui.horizontal_wrapped(|ui| {
-                ui.add(egui::Spinner::new());
-                ui.label(egui::RichText::new(progress.primary_text.clone()).strong());
+            status_pill_frame().show(ui, |ui| {
+                ui.label(
+                    egui::RichText::new(progress.primary_text.clone())
+                        .strong()
+                        .color(app_accent_color()),
+                );
             });
         } else {
             ui.add_sized(
@@ -3271,6 +3286,7 @@ mod tests {
         for rounding in [
             app_panel_rounding(),
             app_focus_rounding(),
+            app_status_pill_rounding(),
             app_control_rounding(),
             app_separator_rounding(),
         ] {
@@ -3366,6 +3382,7 @@ mod tests {
         let source = include_str!("gui_app.rs");
         let frame_ctor = concat!("egui::Frame", "::none()");
         let panel_rounding = concat!(".rounding(", "app_panel_rounding())");
+        let status_pill_rounding = concat!(".rounding(", "app_status_pill_rounding())");
         let progress_ctor = concat!("egui::ProgressBar", "::new(");
         let focus_rounding = concat!(".rounding(", "app_focus_rounding())");
         let scroll_ctor = concat!("egui::ScrollArea", "::vertical()");
@@ -3373,8 +3390,8 @@ mod tests {
 
         assert_eq!(
             source.matches(frame_ctor).count(),
-            source.matches(panel_rounding).count(),
-            "Every visible Frame surface must explicitly apply complete panel rounding"
+            source.matches(panel_rounding).count() + source.matches(status_pill_rounding).count(),
+            "Every visible Frame surface must explicitly apply a complete rounded surface token"
         );
         assert_eq!(
             source
@@ -3424,6 +3441,19 @@ mod tests {
             !source.contains(concat!("ui", ".button(")),
             "Buttons must go through rounded button helpers"
         );
+        for forbidden_non_quadrilateral_shape in [
+            concat!("egui::Spinner", "::new("),
+            concat!("Circle", "Shape"),
+            concat!("Path", "Shape"),
+            concat!("Quadratic", "Bezier", "Shape"),
+            concat!("Cubic", "Bezier", "Shape"),
+            concat!("line", "_segment("),
+        ] {
+            assert!(
+                !source.contains(forbidden_non_quadrilateral_shape),
+                "Non-text painted lines/curves must not bypass the rounded quadrilateral surface contract: {forbidden_non_quadrilateral_shape}"
+            );
+        }
     }
 
     #[test]
